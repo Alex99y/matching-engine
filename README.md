@@ -1,5 +1,8 @@
 # matching-engine
 
+Matching Engine project is a proof of concept for a high-performance order matching engine built in Go, designed to handle a large volume of orders with low latency. The engine supports limit and market orders, various time-in-force options, and is optimized for concurrent processing.
+
+
 ## Project structure
 
 - `core` - core logic of the matching engine, including order processing and matching algorithms
