@@ -4,20 +4,23 @@ import (
 	"errors"
 	"os"
 
+	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/common/pkg/utils"
 )
 
 const RabbitMQURL = "RABBITMQ_URL"
 const MetricsPort = "METRICS_PORT"
 const PostgresURL = "POSTGRESQL_URL"
+const DebugLevel = "DEBUG_LEVEL"
 
 type Config struct {
 	MetricsPort int
 	PostgresURL string
 	RabbitMQURL string
+	DebugLevel  logger.DebugLevel
 }
 
-func GetEnvOrThrow(env string) *string {
+func GetConfigFromEnv(env string) *string {
 	value := os.Getenv(env)
 	if value == "" {
 		return nil
@@ -25,8 +28,16 @@ func GetEnvOrThrow(env string) *string {
 	return &value
 }
 
+func GetDebugLevel() string {
+	debugLevel := GetConfigFromEnv(DebugLevel)
+	if debugLevel == nil {
+		return "info"
+	}
+	return *debugLevel
+}
+
 func GetMetricsPort() (int, error) {
-	metricsPort := GetEnvOrThrow(MetricsPort)
+	metricsPort := GetConfigFromEnv(MetricsPort)
 	if metricsPort == nil {
 		return 0, errors.New("environment variable METRICS_PORT is not set")
 	}
@@ -40,7 +51,7 @@ func GetMetricsPort() (int, error) {
 }
 
 func GetPostgresURL() (string, error) {
-	postgresURL := GetEnvOrThrow(PostgresURL)
+	postgresURL := GetConfigFromEnv(PostgresURL)
 	if postgresURL == nil {
 		return "", errors.New("environment variable POSTGRESQL_URL is not set")
 	}
@@ -48,7 +59,7 @@ func GetPostgresURL() (string, error) {
 }
 
 func GetRabbitMQURL() (string, error) {
-	rabbitMQURL := GetEnvOrThrow(RabbitMQURL)
+	rabbitMQURL := GetConfigFromEnv(RabbitMQURL)
 	if rabbitMQURL == nil {
 		return "", errors.New("environment variable RABBITMQ_URL is not set")
 	}
@@ -72,9 +83,12 @@ func GetAllDefaultConfigs() (*Config, error) {
 		return nil, err
 	}
 
+	debugLevel := GetDebugLevel()
+
 	return &Config{
 		MetricsPort: metricsPort,
 		PostgresURL: postgresURL,
 		RabbitMQURL: rabbitMQURL,
+		DebugLevel:  logger.DebugLevel(debugLevel),
 	}, nil
 }
