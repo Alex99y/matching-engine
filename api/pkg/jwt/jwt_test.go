@@ -15,7 +15,7 @@ const (
 	testSessionID = "session-abc-123"
 )
 
-func newManager() *jwt.JWTManager {
+func newManager() *jwt.Manager {
 	return jwt.NewJWTManager(testSecret)
 }
 

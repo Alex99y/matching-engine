@@ -22,17 +22,17 @@ type Claims struct {
 	SessionID string `json:"session_id"`
 }
 
-// JWTManager signs and verifies JWTs using HMAC-SHA256.
-type JWTManager struct {
+// Manager signs and verifies JWTs using HMAC-SHA256.
+type Manager struct {
 	secret []byte
 }
 
-func NewJWTManager(secret string) *JWTManager {
-	return &JWTManager{secret: []byte(secret)}
+func NewJWTManager(secret string) *Manager {
+	return &Manager{secret: []byte(secret)}
 }
 
 // Sign creates a signed JWT for the given user and session, valid for ttl duration.
-func (m *JWTManager) Sign(userID, sessionID string, ttl time.Duration) (string, error) {
+func (m *Manager) Sign(userID, sessionID string, ttl time.Duration) (string, error) {
 	now := time.Now()
 	claims := &Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -50,7 +50,7 @@ func (m *JWTManager) Sign(userID, sessionID string, ttl time.Duration) (string, 
 // Verify parses and validates the token, returning its claims on success.
 // Returns ErrExpiredToken if the token is valid but past its expiry,
 // or ErrInvalidToken for any other failure (tampered, malformed, wrong algorithm).
-func (m *JWTManager) Verify(tokenString string) (*Claims, error) {
+func (m *Manager) Verify(tokenString string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, ErrInvalidToken
