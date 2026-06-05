@@ -1,0 +1,42 @@
+name: Build
+
+on:
+  push:
+    branches: ["master"]
+    paths:
+      - "api/**"
+      - "common/**"
+      - "db/**"
+      - "go.work"
+      - "go.work.sum"
+  pull_request:
+    branches: ["master"]
+    paths:
+      - "api/**"
+      - "common/**"
+      - "db/**"
+      - "go.work"
+      - "go.work.sum"
+
+jobs:
+  build:
+    name: Build (${{ matrix.module }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [api, common, db]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: Build
+        working-directory: ${{ matrix.module }}
+        run: go build ./...
