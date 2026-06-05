@@ -22,12 +22,13 @@ func DefaultConfig() Config {
 }
 
 type RabbitMQClient struct {
-	conn   *amqp091.Connection
-	logger *logger.Logger
-	uri    string
-	cfg    Config
-	mu     sync.RWMutex
-	done   chan struct{}
+	conn      *amqp091.Connection
+	logger    *logger.Logger
+	uri       string
+	cfg       Config
+	mu        sync.RWMutex
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 func NewClient(log *logger.Logger, uri string, cfg Config) (*RabbitMQClient, error) {
@@ -92,9 +93,11 @@ func (c *RabbitMQClient) Reconnect() {
 
 		c.logger.Info(fmt.Sprintf("RabbitMQ: reconnect attempt %d (delay %s)...", attempts, c.cfg.ReconnectDelay))
 
+		t := time.NewTimer(c.cfg.ReconnectDelay)
 		select {
-		case <-time.After(c.cfg.ReconnectDelay):
+		case <-t.C:
 		case <-c.done:
+			t.Stop()
 			return
 		}
 
@@ -129,12 +132,19 @@ func (c *RabbitMQClient) CreateChannel(prefetchCount, prefetchSize int) (*amqp09
 	return ch, nil
 }
 
+func (c *RabbitMQClient) String() string {
+	return "RabbitMQClient{uri: [redacted]}"
+}
+
 func (c *RabbitMQClient) Close() error {
-	close(c.done)
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.conn != nil && !c.conn.IsClosed() {
-		return c.conn.Close()
-	}
-	return nil
+	var connErr error
+	c.closeOnce.Do(func() {
+		close(c.done)
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		if c.conn != nil && !c.conn.IsClosed() {
+			connErr = c.conn.Close()
+		}
+	})
+	return connErr
 }
