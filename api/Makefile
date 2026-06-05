@@ -1,10 +1,16 @@
 BINARY := api
 CMD     := ./cmd
 
-.PHONY: build test clean
+-include .env
+export
+
+.PHONY: build run test clean
 
 build:
 	go build -o bin/$(BINARY) $(CMD)
+
+run:
+	go run $(CMD)
 
 test:
 	go test ./...
