@@ -83,7 +83,7 @@ func (r *UserRepository) GetUserByUsername(ctx context.Context, username string)
 
 	err := row.Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrUserNotFound
 		}
 
