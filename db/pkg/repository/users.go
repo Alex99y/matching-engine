@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/db/pkg/postgres"
 	"github.com/google/uuid"
 )
+
+const error_prefix = "user repository:"
 
 type UserRepository struct {
 	psql   *sql.DB
@@ -42,16 +45,16 @@ func (r *UserRepository) InsertUser(
 	if err != nil {
 		if constraint, isUnique := postgres.IsUniqueConstraintViolation(err); isUnique {
 			if constraint == UserUniqueConstraintName {
-				return ErrUserAlreadyExists
+				return fmt.Errorf("%s %w", error_prefix, ErrUserAlreadyExists)
 			}
 			r.logger.Error("unknown unique constraint violation when inserting user")
 			r.logger.ErrorO(err)
-			return ErrUnknownUserConstraint
+			return fmt.Errorf("%s %w", error_prefix, ErrUnknownUserConstraint)
 		}
 
 		r.logger.Error("error inserting user")
 		r.logger.ErrorO(err)
-		return ErrUserInsertFailed
+		return fmt.Errorf("%s %w", error_prefix, ErrUserInsertFailed)
 	}
 
 	rowsAffected, err := row.RowsAffected()
@@ -60,7 +63,7 @@ func (r *UserRepository) InsertUser(
 		if err != nil {
 			r.logger.ErrorO(err)
 		}
-		return ErrUserNotInserted
+		return fmt.Errorf("%s %w", error_prefix, ErrUserNotInserted)
 	}
 	return nil
 }
@@ -84,12 +87,12 @@ func (r *UserRepository) GetUserByUsername(ctx context.Context, username string)
 	err := row.Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrUserNotFound
+			return nil, fmt.Errorf("%s %w", error_prefix, ErrUserNotFound)
 		}
 
 		r.logger.Error("error scanning user")
 		r.logger.ErrorO(err)
-		return nil, ErrUserGetFailed
+		return nil, fmt.Errorf("%s %w", error_prefix, ErrUserGetFailed)
 	}
 
 	return user, nil
