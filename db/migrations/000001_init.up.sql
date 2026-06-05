@@ -26,7 +26,7 @@ CREATE TABLE user_balances (
 
 CREATE UNIQUE INDEX user_balances_user_instrument_uk ON user_balances (user_id, instrument_id);
 
-CREATE TABLE pairs (
+CREATE TABLE markets (
     id SERIAL PRIMARY KEY,
     base_instrument_id INT NOT NULL REFERENCES instruments(id),
     quote_instrument_id INT NOT NULL REFERENCES instruments(id),
@@ -34,7 +34,7 @@ CREATE TABLE pairs (
     amount_quantum BIGINT NOT NULL DEFAULT 1,
     min_order_size BIGINT NOT NULL DEFAULT 1,
     max_order_size BIGINT NOT NULL DEFAULT 1000000000,
-    CONSTRAINT pairs_base_quote_uk UNIQUE (base_instrument_id, quote_instrument_id)
+    CONSTRAINT markets_base_quote_uk UNIQUE (base_instrument_id, quote_instrument_id)
 );
 
 
@@ -47,7 +47,7 @@ CREATE TABLE pairs (
 --- Market + GTC — nonsensical combination. A market order has no price to sit in the book with. You should reject this at the application layer.
 
 CREATE TABLE orders (
-    id BIGSERIAL PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT uuidv7(),
     user_id UUID NOT NULL REFERENCES users(id),
     have_instrument_id INT NOT NULL REFERENCES instruments(id),
     want_instrument_id INT NOT NULL REFERENCES instruments(id),
@@ -65,9 +65,9 @@ CREATE INDEX orders_user_id_created_at ON orders (user_id, created_at DESC);
 
 CREATE TABLE open_orders (
     id BIGSERIAL PRIMARY KEY,
-    order_id BIGINT NOT NULL REFERENCES orders(id),
+    order_id UUID NOT NULL REFERENCES orders(id),
     price BIGINT NOT NULL,
-    pair_id INT NOT NULL REFERENCES pairs(id),
+    market_id INT NOT NULL REFERENCES markets(id),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     side VARCHAR(4) NOT NULL CHECK (side IN ('buy', 'sell')),
     remaining_have_amount BIGINT NOT NULL,
@@ -79,13 +79,13 @@ CREATE TABLE open_orders (
 );
 
 CREATE INDEX idx_open_orders_order_id ON open_orders (order_id);
-CREATE INDEX idx_open_orders_asks ON open_orders (pair_id, price ASC)  WHERE side = 'sell';
-CREATE INDEX idx_open_orders_bids ON open_orders (pair_id, price DESC) WHERE side = 'buy';
+CREATE INDEX idx_open_orders_asks ON open_orders (market_id, price ASC)  WHERE side = 'sell';
+CREATE INDEX idx_open_orders_bids ON open_orders (market_id, price DESC) WHERE side = 'buy';
 
 
 CREATE TABLE cancelled_orders (
     id BIGSERIAL PRIMARY KEY,
-    order_id BIGINT NOT NULL REFERENCES orders(id),
+    order_id UUID NOT NULL REFERENCES orders(id),
     cancelled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     remaining_have_amount BIGINT NOT NULL,
     remaining_want_amount BIGINT NOT NULL
@@ -94,10 +94,10 @@ CREATE TABLE cancelled_orders (
 CREATE INDEX idx_cancelled_orders_order_id ON cancelled_orders (order_id);
 
 CREATE TABLE matches (
-    id BIGSERIAL PRIMARY KEY,
-    pair_id INT NOT NULL REFERENCES pairs(id),
-    buy_order_id BIGINT NOT NULL REFERENCES orders(id),
-    sell_order_id BIGINT NOT NULL REFERENCES orders(id),
+    id UUID PRIMARY KEY DEFAULT uuidv7(),
+    market_id INT NOT NULL REFERENCES markets(id),
+    buy_order_id UUID NOT NULL REFERENCES orders(id),
+    sell_order_id UUID NOT NULL REFERENCES orders(id),
     match_buy_amount BIGINT NOT NULL,
     match_sell_amount BIGINT NOT NULL,
     match_price BIGINT NOT NULL,
@@ -109,6 +109,6 @@ CREATE TABLE matches (
     is_sell_order_filled BOOLEAN NOT NULL
 );
 
-CREATE INDEX idx_matches_pair_id ON matches (pair_id, match_time DESC);
+CREATE INDEX idx_matches_market_id ON matches (market_id, match_time DESC);
 CREATE INDEX idx_matches_buy_order_id ON matches (buy_order_id);
 CREATE INDEX idx_matches_sell_order_id ON matches (sell_order_id);

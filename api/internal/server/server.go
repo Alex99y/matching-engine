@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/alex99y/matching-engine/api/internal/instruments"
+	"github.com/alex99y/matching-engine/api/internal/markets"
 	"github.com/alex99y/matching-engine/api/internal/users"
 	"github.com/alex99y/matching-engine/api/pkg/middleware"
 	"github.com/alex99y/matching-engine/api/pkg/validations"
@@ -19,7 +21,9 @@ import (
 type ServerDependencies struct {
 	Logger *logger.Logger
 	// Metrics       *metrics.ApiMetrics
-	UsersHandler *users.UserHandler
+	UsersHandler       *users.UserHandler
+	InstrumentsHandler *instruments.InstrumentHandler
+	MarketsHandler     *markets.MarketHandler
 }
 
 type Server struct {
@@ -41,6 +45,12 @@ func NewServer(dependencies ServerDependencies) *Server {
 	if dependencies.UsersHandler == nil {
 		panic("user handler cannot be nil")
 	}
+	if dependencies.InstrumentsHandler == nil {
+		panic("instruments handler cannot be nil")
+	}
+	if dependencies.MarketsHandler == nil {
+		panic("markets handler cannot be nil")
+	}
 
 	app := fiber.New(fiber.Config{
 		StructValidator: validations.NewStructValidator(),
@@ -61,6 +71,8 @@ func NewServer(dependencies ServerDependencies) *Server {
 	app.Get("/health", healthcheck.New())
 	apiV1 := app.Group("/api/v1")
 	users.RegisterUserRoutes(apiV1, dependencies.UsersHandler)
+	instruments.RegisterInstrumentRoutes(apiV1, dependencies.InstrumentsHandler)
+	markets.RegisterMarketRoutes(apiV1, dependencies.MarketsHandler)
 
 	return &Server{httpServer: app}
 }

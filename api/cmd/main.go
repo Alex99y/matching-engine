@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/alex99y/matching-engine/api/internal/config"
+	"github.com/alex99y/matching-engine/api/internal/instruments"
+	"github.com/alex99y/matching-engine/api/internal/markets"
 	"github.com/alex99y/matching-engine/api/internal/server"
 	"github.com/alex99y/matching-engine/api/internal/users"
 	"github.com/alex99y/matching-engine/api/pkg/jwt"
@@ -50,9 +52,19 @@ func main() {
 	userService := users.NewUserService(log, jwtManager, userRepository)
 	userHandler := users.NewUserHandler(log, userService)
 
+	instrumentRepository := repository.NewInstrumentRepository(log, postgresqlClient)
+	instrumentService := instruments.NewInstrumentService(log, instrumentRepository)
+	instrumentHandler := instruments.NewInstrumentHandler(log, instrumentService)
+
+	marketRepository := repository.NewMarketRepository(log, postgresqlClient)
+	marketService := markets.NewMarketService(log, marketRepository)
+	marketHandler := markets.NewMarketHandler(log, marketService)
+
 	server := server.NewServer(server.ServerDependencies{
-		Logger:       log,
-		UsersHandler: userHandler,
+		Logger:             log,
+		UsersHandler:       userHandler,
+		InstrumentsHandler: instrumentHandler,
+		MarketsHandler:     marketHandler,
 	})
 
 	serverErrCh := make(chan error, 1)
