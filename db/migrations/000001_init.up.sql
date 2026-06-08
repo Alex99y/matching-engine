@@ -60,6 +60,10 @@ CREATE TABLE orders (
     expires_at TIMESTAMP,
     type          VARCHAR(6) NOT NULL CHECK (type IN ('limit', 'market')),
     time_in_force VARCHAR(3) NOT NULL CHECK (time_in_force IN ('GTC', 'IOC', 'FOK'))
+    CHECK (
+        (type = 'limit'  AND have_quantity IS NOT NULL) OR
+        (type = 'market' AND want_quantity IS NOT NULL)
+    )
 );
 
 CREATE INDEX orders_user_id_created_at ON orders (user_id, created_at DESC);
@@ -77,10 +81,6 @@ CREATE TABLE open_orders (
     side VARCHAR(4) NOT NULL CHECK (side IN ('buy', 'sell')),
     remaining_have_amount BIGINT NOT NULL,
     remaining_want_amount BIGINT NOT NULL,
-    CHECK (
-        (type = 'limit'  AND have_quantity IS NOT NULL) OR
-        (type = 'market' AND want_quantity IS NOT NULL)
-    )
 );
 
 CREATE INDEX idx_open_orders_order_id ON open_orders (order_id);
