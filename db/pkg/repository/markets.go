@@ -28,10 +28,10 @@ type Market struct {
 	ID            int
 	BaseSymbol    string
 	QuoteSymbol   string
-	PriceQuantum  int64
-	AmountQuantum int64
-	MinOrderSize  int64
-	MaxOrderSize  int64
+	PriceQuantum  uint64
+	AmountQuantum uint64
+	MinOrderSize  uint64
+	MaxOrderSize  uint64
 }
 
 type MarketRepository struct {

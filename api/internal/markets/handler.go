@@ -16,10 +16,10 @@ type MarketHandler struct {
 type GetMarketResponse struct {
 	BaseSymbol    string `json:"base_symbol"`
 	QuoteSymbol   string `json:"quote_symbol"`
-	PriceQuantum  int64  `json:"price_quantum"`
-	AmountQuantum int64  `json:"amount_quantum"`
-	MinOrderSize  int64  `json:"min_order_size"`
-	MaxOrderSize  int64  `json:"max_order_size"`
+	PriceQuantum  uint64 `json:"price_quantum"`
+	AmountQuantum uint64 `json:"amount_quantum"`
+	MinOrderSize  uint64 `json:"min_order_size"`
+	MaxOrderSize  uint64 `json:"max_order_size"`
 }
 
 func (h *MarketHandler) GetMarket(c fiber.Ctx) error {

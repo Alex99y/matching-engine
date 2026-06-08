@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/alex99y/matching-engine/api/pkg/utils"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	"github.com/alex99y/matching-engine/common/pkg/utils"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
 )
 
@@ -22,10 +22,10 @@ var (
 type Market struct {
 	BaseSymbol    string
 	QuoteSymbol   string
-	PriceQuantum  int64
-	AmountQuantum int64
-	MinOrderSize  int64
-	MaxOrderSize  int64
+	PriceQuantum  uint64
+	AmountQuantum uint64
+	MinOrderSize  uint64
+	MaxOrderSize  uint64
 }
 
 type MarketRepository interface {
