@@ -4,6 +4,7 @@ import (
 	"database/sql"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	"github.com/google/uuid"
 )
 
 type OrderRepository struct {
@@ -13,6 +14,14 @@ type OrderRepository struct {
 
 func (o *OrderRepository) CreateNewOrder() (string, error) {
 	return "", nil
+}
+
+func (o *OrderRepository) GetOrderById(id uuid.UUID) (any, error) {
+	return nil, nil
+}
+
+func (o *OrderRepository) GetOrdersByUser(userId uuid.UUID) ([]any, error) {
+	return nil, nil
 }
 
 func NewOrderRepository(logger *logger.Logger, psql *sql.DB) *OrderRepository {

@@ -48,6 +48,7 @@ CREATE TABLE markets (
 
 CREATE TABLE orders (
     id UUID PRIMARY KEY DEFAULT uuidv7(),
+    client_order_id VARCHAR(64),
     user_id UUID NOT NULL REFERENCES users(id),
     have_instrument_id INT NOT NULL REFERENCES instruments(id),
     want_instrument_id INT NOT NULL REFERENCES instruments(id),
@@ -62,6 +63,10 @@ CREATE TABLE orders (
 );
 
 CREATE INDEX orders_user_id_created_at ON orders (user_id, created_at DESC);
+CREATE UNIQUE INDEX orders_client_order_id_user_id_uk
+    ON orders (user_id, client_order_id)
+    WHERE client_order_id IS NOT NULL;
+
 
 CREATE TABLE open_orders (
     id BIGSERIAL PRIMARY KEY,
