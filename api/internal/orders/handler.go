@@ -116,6 +116,7 @@ func (o *OrderHandler) GetOrders(c fiber.Ctx) error {
 
 	filter := GetOrdersFilter{
 		ClientOrderID:       c.Query("client_order_id"),
+		Market:              c.Query("market"),
 		ShowOpenOrders:      c.Query("show_open") == "true",
 		ShowCancelledOrders: c.Query("show_cancelled") == "true",
 	}
@@ -124,6 +125,9 @@ func (o *OrderHandler) GetOrders(c fiber.Ctx) error {
 	if err != nil {
 		if errors.Is(err, ErrOrderNotFound) {
 			return utils.NewErrorResponse(c, fiber.StatusNotFound, "order not found")
+		}
+		if errors.Is(err, ErrMarketNotFound) {
+			return utils.NewErrorResponse(c, fiber.StatusNotFound, "market not found")
 		}
 		return utils.NewServerErrorResponse(c, o.logger, err)
 	}

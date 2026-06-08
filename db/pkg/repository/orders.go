@@ -140,6 +140,7 @@ func (o *OrderRepository) GetOrdersByUser(
 	userID uuid.UUID,
 	showOpenOrders bool,
 	showCanceledOrders bool,
+	baseInstrumentID, quoteInstrumentID *int,
 ) ([]OrderRow, error) {
 	// Base columns always selected from orders.
 	cols := []string{
@@ -185,9 +186,21 @@ func (o *OrderRepository) GetOrdersByUser(
 		sb.WriteByte('\n')
 		sb.WriteString(j)
 	}
+	args := []any{userID}
 	sb.WriteString("\nWHERE orders.user_id = $1")
 
-	dbRows, err := o.psql.QueryContext(ctx, sb.String(), userID)
+	if baseInstrumentID != nil && quoteInstrumentID != nil {
+		baseIdx := len(args) + 1
+		quoteIdx := len(args) + 2
+		args = append(args, *baseInstrumentID, *quoteInstrumentID)
+		sb.WriteString(fmt.Sprintf(
+			"\nAND ((orders.have_instrument_id = $%d AND orders.want_instrument_id = $%d)"+
+				" OR (orders.have_instrument_id = $%d AND orders.want_instrument_id = $%d))",
+			baseIdx, quoteIdx, quoteIdx, baseIdx,
+		))
+	}
+
+	dbRows, err := o.psql.QueryContext(ctx, sb.String(), args...)
 	if err != nil {
 		o.logger.Error("GetOrdersByUser: " + err.Error())
 		return nil, fmt.Errorf("get orders by user: %w", err)

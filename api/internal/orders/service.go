@@ -33,6 +33,7 @@ type OrderToPublish struct {
 
 type GetOrdersFilter struct {
 	ClientOrderID       string
+	Market              string
 	ShowOpenOrders      bool
 	ShowCancelledOrders bool
 }
@@ -44,7 +45,7 @@ type CacheService interface {
 type OrderRepository interface {
 	GetOrderByID(ctx context.Context, userID uuid.UUID, id uuid.UUID) (*repository.OrderRow, error)
 	GetOrderByClientOrderID(ctx context.Context, userID uuid.UUID, clientOrderID string) (*repository.OrderRow, error)
-	GetOrdersByUser(ctx context.Context, userID uuid.UUID, showOpenOrders bool, showCancelledOrders bool) ([]repository.OrderRow, error)
+	GetOrdersByUser(ctx context.Context, userID uuid.UUID, showOpenOrders bool, showCancelledOrders bool, baseInstrumentID, quoteInstrumentID *int) ([]repository.OrderRow, error)
 }
 
 type OrderCommandPublisher interface {
@@ -82,7 +83,17 @@ func (o *OrderService) GetOrders(ctx context.Context, userID uuid.UUID, filter G
 		return []repository.OrderRow{*order}, nil
 	}
 
-	orders, err := o.orderRepository.GetOrdersByUser(ctx, userID, filter.ShowOpenOrders, filter.ShowCancelledOrders)
+	var baseInstrumentID, quoteInstrumentID *int
+	if filter.Market != "" {
+		market, err := o.cacheService.GetMarketByRef(filter.Market)
+		if err != nil {
+			return nil, ErrMarketNotFound
+		}
+		baseInstrumentID = &market.BaseInstrumentID
+		quoteInstrumentID = &market.QuoteInstrumentID
+	}
+
+	orders, err := o.orderRepository.GetOrdersByUser(ctx, userID, filter.ShowOpenOrders, filter.ShowCancelledOrders, baseInstrumentID, quoteInstrumentID)
 	if err != nil {
 		return nil, fmt.Errorf("get orders: %w", err)
 	}

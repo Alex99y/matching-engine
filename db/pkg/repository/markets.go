@@ -25,13 +25,15 @@ var (
 const MarketBaseQuoteUniqueConstraint = "markets_base_quote_uk"
 
 type Market struct {
-	ID            int
-	BaseSymbol    string
-	QuoteSymbol   string
-	PriceQuantum  uint64
-	AmountQuantum uint64
-	MinOrderSize  uint64
-	MaxOrderSize  uint64
+	ID                int
+	BaseSymbol        string
+	QuoteSymbol       string
+	PriceQuantum      uint64
+	AmountQuantum     uint64
+	MinOrderSize      uint64
+	MaxOrderSize      uint64
+	BaseInstrumentID  int
+	QuoteInstrumentID int
 }
 
 type MarketRepository struct {
@@ -79,7 +81,8 @@ func (r *MarketRepository) CreateMarket(
 func (r *MarketRepository) GetMarket(ctx context.Context, baseSymbol, quoteSymbol string) (*Market, error) {
 	query := `
 		SELECT m.id, bi.symbol, qi.symbol,
-		       m.price_quantum, m.amount_quantum, m.min_order_size, m.max_order_size
+		       m.price_quantum, m.amount_quantum, m.min_order_size, m.max_order_size,
+		       m.base_instrument_id, m.quote_instrument_id
 		FROM markets m
 		JOIN instruments bi ON m.base_instrument_id = bi.id
 		JOIN instruments qi ON m.quote_instrument_id = qi.id
@@ -88,7 +91,7 @@ func (r *MarketRepository) GetMarket(ctx context.Context, baseSymbol, quoteSymbo
 	row := r.psql.QueryRowContext(ctx, query, baseSymbol, quoteSymbol)
 	m := &Market{}
 
-	err := row.Scan(&m.ID, &m.BaseSymbol, &m.QuoteSymbol, &m.PriceQuantum, &m.AmountQuantum, &m.MinOrderSize, &m.MaxOrderSize)
+	err := row.Scan(&m.ID, &m.BaseSymbol, &m.QuoteSymbol, &m.PriceQuantum, &m.AmountQuantum, &m.MinOrderSize, &m.MaxOrderSize, &m.BaseInstrumentID, &m.QuoteInstrumentID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("%s %w", marketErrPrefix, ErrMarketNotFound)
@@ -104,7 +107,8 @@ func (r *MarketRepository) GetMarket(ctx context.Context, baseSymbol, quoteSymbo
 func (r *MarketRepository) GetMarkets(ctx context.Context) ([]Market, error) {
 	query := `
 		SELECT m.id, bi.symbol, qi.symbol,
-		       m.price_quantum, m.amount_quantum, m.min_order_size, m.max_order_size
+		       m.price_quantum, m.amount_quantum, m.min_order_size, m.max_order_size,
+		       m.base_instrument_id, m.quote_instrument_id
 		FROM markets m
 		JOIN instruments bi ON m.base_instrument_id = bi.id
 		JOIN instruments qi ON m.quote_instrument_id = qi.id
@@ -121,7 +125,7 @@ func (r *MarketRepository) GetMarkets(ctx context.Context) ([]Market, error) {
 	markets := []Market{}
 	for rows.Next() {
 		var m Market
-		if err := rows.Scan(&m.ID, &m.BaseSymbol, &m.QuoteSymbol, &m.PriceQuantum, &m.AmountQuantum, &m.MinOrderSize, &m.MaxOrderSize); err != nil {
+		if err := rows.Scan(&m.ID, &m.BaseSymbol, &m.QuoteSymbol, &m.PriceQuantum, &m.AmountQuantum, &m.MinOrderSize, &m.MaxOrderSize, &m.BaseInstrumentID, &m.QuoteInstrumentID); err != nil {
 			r.logger.Error("error scanning market row")
 			r.logger.ErrorO(err)
 			return nil, fmt.Errorf("%s %w", marketErrPrefix, ErrMarketGetFailed)
