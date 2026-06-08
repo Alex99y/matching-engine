@@ -7,6 +7,7 @@ import (
 
 	"github.com/alex99y/matching-engine/api/internal/instruments"
 	"github.com/alex99y/matching-engine/api/internal/markets"
+	"github.com/alex99y/matching-engine/api/internal/orders"
 	"github.com/alex99y/matching-engine/api/internal/users"
 	"github.com/alex99y/matching-engine/api/pkg/middleware"
 	"github.com/alex99y/matching-engine/api/pkg/validations"
@@ -19,11 +20,13 @@ import (
 )
 
 type ServerDependencies struct {
-	Logger *logger.Logger
+	Logger         *logger.Logger
+	AuthMiddleware middleware.AuthMiddleware
 	// Metrics       *metrics.ApiMetrics
 	UsersHandler       *users.UserHandler
 	InstrumentsHandler *instruments.InstrumentHandler
 	MarketsHandler     *markets.MarketHandler
+	OrdersHandler      *orders.OrderHandler
 }
 
 type Server struct {
@@ -42,6 +45,9 @@ func NewServer(dependencies ServerDependencies) *Server {
 	if dependencies.Logger == nil {
 		panic("logger cannot be nil")
 	}
+	if dependencies.AuthMiddleware == nil {
+		panic("auth middleware cannot be nil")
+	}
 	if dependencies.UsersHandler == nil {
 		panic("user handler cannot be nil")
 	}
@@ -50,6 +56,9 @@ func NewServer(dependencies ServerDependencies) *Server {
 	}
 	if dependencies.MarketsHandler == nil {
 		panic("markets handler cannot be nil")
+	}
+	if dependencies.OrdersHandler == nil {
+		panic("orders handler cannot be nil")
 	}
 
 	app := fiber.New(fiber.Config{
@@ -73,6 +82,7 @@ func NewServer(dependencies ServerDependencies) *Server {
 	users.RegisterUserRoutes(apiV1, dependencies.UsersHandler)
 	instruments.RegisterInstrumentRoutes(apiV1, dependencies.InstrumentsHandler)
 	markets.RegisterMarketRoutes(apiV1, dependencies.MarketsHandler)
+	orders.RegisterOrderRoutes(app, dependencies.AuthMiddleware, dependencies.OrdersHandler)
 
 	return &Server{httpServer: app}
 }
