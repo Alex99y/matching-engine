@@ -80,7 +80,7 @@ CREATE TABLE open_orders (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     side VARCHAR(4) NOT NULL CHECK (side IN ('buy', 'sell')),
     remaining_have_amount BIGINT NOT NULL,
-    remaining_want_amount BIGINT NOT NULL,
+    remaining_want_amount BIGINT NOT NULL
 );
 
 CREATE INDEX idx_open_orders_order_id ON open_orders (order_id);

@@ -1,7 +1,7 @@
 services:
   rabbitmq:
     image: rabbitmq:4.2.4-management
-    container_name: rabbitmq
+    container_name: me-rabbitmq
     hostname: rabbitmq
     ports:
       - "5672:5672"
@@ -21,10 +21,38 @@ services:
 
   postgres:
     image: postgres:18.4
-    container_name: postgres
+    container_name: me-postgres
     ports:
       - "5432:5432"
     environment:
       - POSTGRES_USER=admin
       - POSTGRES_PASSWORD=admin
-      - POSTGRES_DB=deposit-collector
+      - POSTGRES_DB=matching-engine
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   container_name: prometheus
+  #   command:
+  #     - "--config.file=/etc/prometheus/prometheus.yml"
+  #     - "--web.enable-lifecycle"
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  #   depends_on:
+  #     rabbitmq:
+  #       condition: service_healthy
+
+  # grafana:
+  #   image: grafana/grafana-oss:latest
+  #   container_name: grafana
+  #   ports:
+  #     - "10000:3000"
+  #   environment:
+  #     - GF_SECURITY_ADMIN_USER=admin
+  #     - GF_SECURITY_ADMIN_PASSWORD=admin
+  #     - GF_USERS_ALLOW_SIGN_UP=false
+  #   volumes:
+  #     - ./grafana/provisioning:/etc/grafana/provisioning:ro
+  #     - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+  #   depends_on:
+  #     - prometheus
