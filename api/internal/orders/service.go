@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/common/pkg/uuidv7"
@@ -17,6 +18,7 @@ var (
 	ErrInvalidOrder   = errors.New("invalid order")
 	ErrCreatingUUID   = errors.New("could not create uuid for order")
 	ErrOrderNotFound  = errors.New("order not found")
+	ErrInvalidLimit   = errors.New("limit must be between 1 and 100")
 )
 
 type OrderToPublish struct {
@@ -34,6 +36,9 @@ type OrderToPublish struct {
 type GetOrdersFilter struct {
 	ClientOrderID       string
 	Market              string
+	StartDate           *time.Time
+	EndDate             *time.Time
+	Limit               int
 	ShowOpenOrders      bool
 	ShowCancelledOrders bool
 }
@@ -45,7 +50,7 @@ type CacheService interface {
 type OrderRepository interface {
 	GetOrderByID(ctx context.Context, userID uuid.UUID, id uuid.UUID) (*repository.OrderRow, error)
 	GetOrderByClientOrderID(ctx context.Context, userID uuid.UUID, clientOrderID string) (*repository.OrderRow, error)
-	GetOrdersByUser(ctx context.Context, userID uuid.UUID, showOpenOrders bool, showCancelledOrders bool, baseInstrumentID, quoteInstrumentID *int) ([]repository.OrderRow, error)
+	GetOrdersByUser(ctx context.Context, userID uuid.UUID, showOpenOrders bool, showCancelledOrders bool, baseInstrumentID, quoteInstrumentID *int, startDate, endDate *time.Time, limit int) ([]repository.OrderRow, error)
 }
 
 type OrderCommandPublisher interface {
@@ -83,6 +88,13 @@ func (o *OrderService) GetOrders(ctx context.Context, userID uuid.UUID, filter G
 		return []repository.OrderRow{*order}, nil
 	}
 
+	limit := filter.Limit
+	if limit == 0 {
+		limit = 10
+	} else if limit > 100 {
+		return nil, ErrInvalidLimit
+	}
+
 	var baseInstrumentID, quoteInstrumentID *int
 	if filter.Market != "" {
 		market, err := o.cacheService.GetMarketByRef(filter.Market)
@@ -93,7 +105,7 @@ func (o *OrderService) GetOrders(ctx context.Context, userID uuid.UUID, filter G
 		quoteInstrumentID = &market.QuoteInstrumentID
 	}
 
-	orders, err := o.orderRepository.GetOrdersByUser(ctx, userID, filter.ShowOpenOrders, filter.ShowCancelledOrders, baseInstrumentID, quoteInstrumentID)
+	orders, err := o.orderRepository.GetOrdersByUser(ctx, userID, filter.ShowOpenOrders, filter.ShowCancelledOrders, baseInstrumentID, quoteInstrumentID, filter.StartDate, filter.EndDate, limit)
 	if err != nil {
 		return nil, fmt.Errorf("get orders: %w", err)
 	}

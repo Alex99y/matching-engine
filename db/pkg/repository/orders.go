@@ -141,6 +141,8 @@ func (o *OrderRepository) GetOrdersByUser(
 	showOpenOrders bool,
 	showCanceledOrders bool,
 	baseInstrumentID, quoteInstrumentID *int,
+	startDate, endDate *time.Time,
+	limit int,
 ) ([]OrderRow, error) {
 	// Base columns always selected from orders.
 	cols := []string{
@@ -189,6 +191,16 @@ func (o *OrderRepository) GetOrdersByUser(
 	args := []any{userID}
 	sb.WriteString("\nWHERE orders.user_id = $1")
 
+	if startDate != nil {
+		args = append(args, *startDate)
+		sb.WriteString(fmt.Sprintf("\nAND orders.created_at >= $%d", len(args)))
+	}
+
+	if endDate != nil {
+		args = append(args, *endDate)
+		sb.WriteString(fmt.Sprintf("\nAND orders.created_at < $%d", len(args)))
+	}
+
 	if baseInstrumentID != nil && quoteInstrumentID != nil {
 		baseIdx := len(args) + 1
 		quoteIdx := len(args) + 2
@@ -200,6 +212,9 @@ func (o *OrderRepository) GetOrdersByUser(
 		))
 	}
 
+	args = append(args, limit)
+	sb.WriteString(fmt.Sprintf("\nORDER BY orders.created_at DESC\nLIMIT $%d", len(args)))
+
 	dbRows, err := o.psql.QueryContext(ctx, sb.String(), args...)
 	if err != nil {
 		o.logger.Error("GetOrdersByUser: " + err.Error())
@@ -207,7 +222,7 @@ func (o *OrderRepository) GetOrdersByUser(
 	}
 	defer dbRows.Close()
 
-	var result []OrderRow
+	result := make([]OrderRow, 0, limit)
 	for dbRows.Next() {
 		var row OrderRow
 

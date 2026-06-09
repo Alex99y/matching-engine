@@ -2,6 +2,8 @@ package orders
 
 import (
 	"errors"
+	"strconv"
+	"time"
 
 	"github.com/alex99y/matching-engine/api/pkg/middleware"
 	"github.com/alex99y/matching-engine/api/pkg/utils"
@@ -121,6 +123,30 @@ func (o *OrderHandler) GetOrders(c fiber.Ctx) error {
 		ShowCancelledOrders: c.Query("show_cancelled") == "true",
 	}
 
+	if raw := c.Query("start_date"); raw != "" {
+		t, err := time.Parse("2006-01-02", raw)
+		if err != nil {
+			return utils.NewErrorResponse(c, fiber.StatusBadRequest, "invalid start_date, expected YYYY-MM-DD")
+		}
+		filter.StartDate = &t
+	}
+
+	if raw := c.Query("end_date"); raw != "" {
+		t, err := time.Parse("2006-01-02", raw)
+		if err != nil {
+			return utils.NewErrorResponse(c, fiber.StatusBadRequest, "invalid end_date, expected YYYY-MM-DD")
+		}
+		filter.EndDate = &t
+	}
+
+	if raw := c.Query("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			return utils.NewErrorResponse(c, fiber.StatusBadRequest, "invalid limit, must be a positive integer")
+		}
+		filter.Limit = n
+	}
+
 	orders, err := o.orderService.GetOrders(c.Context(), userID, filter)
 	if err != nil {
 		if errors.Is(err, ErrOrderNotFound) {
@@ -128,6 +154,9 @@ func (o *OrderHandler) GetOrders(c fiber.Ctx) error {
 		}
 		if errors.Is(err, ErrMarketNotFound) {
 			return utils.NewErrorResponse(c, fiber.StatusNotFound, "market not found")
+		}
+		if errors.Is(err, ErrInvalidLimit) {
+			return utils.NewErrorResponse(c, fiber.StatusBadRequest, "limit must be between 1 and 100")
 		}
 		return utils.NewServerErrorResponse(c, o.logger, err)
 	}
