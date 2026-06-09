@@ -65,7 +65,7 @@ func NewOrdersQueue(
 	queue, err := rabbitmq.NewQueue(
 		rabbitMqClient,
 		rabbitmq.ChannelArgs{
-			PrefetchCount: 1,
+			PrefetchCount: 16,
 			PrefetchSize:  0,
 		},
 		rabbitmq.QueueArgs{
