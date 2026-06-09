@@ -7,21 +7,22 @@ import (
 )
 
 func RegisterOrderRoutes(app fiber.Router, authMiddleware middleware.AuthMiddleware, orderHandler *OrderHandler) {
+	auth := fiber.Handler(authMiddleware)
 	userGroup := app.Group("/order")
 	userGroup.Post(
 		"/",
 		validations.ValidateContentType(validations.ContentTypeJSON),
-		authMiddleware,
+		auth,
 		orderHandler.CreateOrder,
 	)
 	userGroup.Get(
 		"/",
-		authMiddleware,
+		auth,
 		orderHandler.GetOrders,
 	)
 	userGroup.Get(
 		"/:id",
-		authMiddleware,
+		auth,
 		orderHandler.GetOrder,
 	)
 }

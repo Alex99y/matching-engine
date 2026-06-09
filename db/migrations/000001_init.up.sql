@@ -59,10 +59,10 @@ CREATE TABLE orders (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     expires_at TIMESTAMP,
     type          VARCHAR(6) NOT NULL CHECK (type IN ('limit', 'market')),
-    time_in_force VARCHAR(3) NOT NULL CHECK (time_in_force IN ('GTC', 'IOC', 'FOK'))
+    time_in_force VARCHAR(3) NOT NULL CHECK (time_in_force IN ('GTC', 'IOC', 'FOK')),
     CHECK (
         (type = 'limit'  AND have_quantity IS NOT NULL) OR
-        (type = 'market' AND want_quantity IS NOT NULL)
+        (type = 'market' AND (have_quantity IS NOT NULL OR want_quantity IS NOT NULL))
     )
 );
 
