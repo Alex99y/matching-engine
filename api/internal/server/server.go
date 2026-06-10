@@ -82,7 +82,7 @@ func NewServer(dependencies ServerDependencies) *Server {
 	users.RegisterUserRoutes(apiV1, dependencies.UsersHandler)
 	instruments.RegisterInstrumentRoutes(apiV1, dependencies.InstrumentsHandler)
 	markets.RegisterMarketRoutes(apiV1, dependencies.MarketsHandler)
-	orders.RegisterOrderRoutes(app, dependencies.AuthMiddleware, dependencies.OrdersHandler)
+	orders.RegisterOrderRoutes(apiV1, dependencies.AuthMiddleware, dependencies.OrdersHandler)
 
 	return &Server{httpServer: app}
 }
