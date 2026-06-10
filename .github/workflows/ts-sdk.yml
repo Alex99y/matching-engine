@@ -1,0 +1,52 @@
+name: TS SDK
+
+on:
+  push:
+    branches: ["master"]
+    paths:
+      - "ts-sdk/**"
+  pull_request:
+    branches: ["master"]
+    paths:
+      - "ts-sdk/**"
+
+defaults:
+  run:
+    working-directory: ts-sdk
+
+jobs:
+  build-test:
+    name: Build & Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Node >= 22 only: the bigint JSON reviver needs V8 source-text access
+        # (Node >= 21.7); older runtimes would silently lose uint64 precision.
+        node: ["22.x", "24.x"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: ts-sdk/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Test (with coverage)
+        run: npm run test:coverage
+
+      - name: Audit (fail on high/critical)
+        run: npm audit --audit-level=high
