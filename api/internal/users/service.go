@@ -21,11 +21,13 @@ var (
 	ErrInvalidPassword  = errors.New("invalid username or password")
 	ErrSessionExpired   = jwt.ErrExpiredToken
 	ErrInvalidSession   = jwt.ErrInvalidToken
+	ErrGetBalances      = errors.New("error getting balances")
 )
 
 type UserRepository interface {
 	InsertUser(ctx context.Context, username, email, passwordHash string) error
 	GetUserByUsername(ctx context.Context, username string) (*repository.User, error)
+	GetUserBalances(ctx context.Context, userID uuid.UUID) ([]repository.UserBalance, error)
 }
 
 type JWTManager interface {
@@ -126,6 +128,14 @@ func (u *UserService) IsLoggedIn(jwt string) (*uuid.UUID, string, error) {
 	}
 
 	return &id, session.SessionID, nil
+}
+
+func (u *UserService) GetUserBalances(ctx context.Context, userID uuid.UUID) ([]repository.UserBalance, error) {
+	balances, err := u.userRepository.GetUserBalances(ctx, userID)
+	if err != nil {
+		return nil, ErrGetBalances
+	}
+	return balances, nil
 }
 
 func NewUserService(

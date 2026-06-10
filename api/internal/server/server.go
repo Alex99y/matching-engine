@@ -79,7 +79,7 @@ func NewServer(dependencies ServerDependencies) *Server {
 
 	app.Get("/health", healthcheck.New())
 	apiV1 := app.Group("/api/v1")
-	users.RegisterUserRoutes(apiV1, dependencies.UsersHandler)
+	users.RegisterUserRoutes(apiV1, dependencies.AuthMiddleware, dependencies.UsersHandler)
 	instruments.RegisterInstrumentRoutes(apiV1, dependencies.InstrumentsHandler)
 	markets.RegisterMarketRoutes(apiV1, dependencies.MarketsHandler)
 	orders.RegisterOrderRoutes(apiV1, dependencies.AuthMiddleware, dependencies.OrdersHandler)

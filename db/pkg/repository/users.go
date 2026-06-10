@@ -25,6 +25,7 @@ var (
 	ErrUserNotFound          = errors.New("user not found")
 	ErrUserGetFailed         = errors.New("failed to get user")
 	ErrUnknownUserConstraint = errors.New("unknown user constraint violation")
+	ErrGetBalancesFailed     = errors.New("failed to get user balances")
 )
 
 const UserUniqueConstraintName = "users_username_uk"
@@ -96,6 +97,54 @@ func (r *UserRepository) GetUserByUsername(ctx context.Context, username string)
 	}
 
 	return user, nil
+}
+
+type UserBalance struct {
+	InstrumentName     string
+	InstrumentSymbol   string
+	InstrumentDecimals int
+	Balance            int64
+	Blocked            int64
+}
+
+func (r *UserRepository) GetUserBalances(ctx context.Context, userID uuid.UUID) ([]UserBalance, error) {
+	query := `
+		SELECT
+			i.name,
+			i.symbol,
+			i.decimals,
+			ub.balance,
+			ub.blocked
+		FROM user_balances ub
+		JOIN instruments i ON i.id = ub.instrument_id
+		WHERE ub.user_id = $1
+	`
+
+	rows, err := r.psql.QueryContext(ctx, query, userID)
+	if err != nil {
+		r.logger.Error("error getting user balances")
+		r.logger.ErrorO(err)
+		return nil, fmt.Errorf("%s %w", error_prefix, ErrGetBalancesFailed)
+	}
+	defer rows.Close()
+
+	var balances []UserBalance
+	for rows.Next() {
+		var b UserBalance
+		if err := rows.Scan(&b.InstrumentName, &b.InstrumentSymbol, &b.InstrumentDecimals, &b.Balance, &b.Blocked); err != nil {
+			r.logger.Error("error scanning user balance")
+			r.logger.ErrorO(err)
+			return nil, fmt.Errorf("%s %w", error_prefix, ErrGetBalancesFailed)
+		}
+		balances = append(balances, b)
+	}
+	if err := rows.Err(); err != nil {
+		r.logger.Error("error iterating user balances")
+		r.logger.ErrorO(err)
+		return nil, fmt.Errorf("%s %w", error_prefix, ErrGetBalancesFailed)
+	}
+
+	return balances, nil
 }
 
 func NewUserRepository(logger *logger.Logger, psql *sql.DB) *UserRepository {

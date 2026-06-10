@@ -3,6 +3,7 @@ package users
 import (
 	"errors"
 
+	"github.com/alex99y/matching-engine/api/pkg/middleware"
 	"github.com/alex99y/matching-engine/api/pkg/utils"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/gofiber/fiber/v3"
@@ -85,6 +86,36 @@ func (u *UserHandler) IsUsernameAvailable(c fiber.Ctx) error {
 	}
 
 	return c.Status(fiber.StatusOK).JSON(UsernameAvailableResponse{Available: available})
+}
+
+type BalanceResponse struct {
+	Name     string `json:"name"`
+	Symbol   string `json:"symbol"`
+	Decimals int    `json:"decimals"`
+	Balance  int64  `json:"balance"`
+	Blocked  int64  `json:"blocked"`
+}
+
+func (u *UserHandler) GetBalance(c fiber.Ctx) error {
+	userID := middleware.UserIDFromContext(c)
+
+	balances, err := u.userService.GetUserBalances(c.Context(), userID)
+	if err != nil {
+		return utils.NewServerErrorResponse(c, u.logger, err)
+	}
+
+	response := make([]BalanceResponse, len(balances))
+	for i, b := range balances {
+		response[i] = BalanceResponse{
+			Name:     b.InstrumentName,
+			Symbol:   b.InstrumentSymbol,
+			Decimals: b.InstrumentDecimals,
+			Balance:  b.Balance,
+			Blocked:  b.Blocked,
+		}
+	}
+
+	return c.JSON(response)
 }
 
 func NewUserHandler(logger *logger.Logger, userService *UserService) *UserHandler {
