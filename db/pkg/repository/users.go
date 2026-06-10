@@ -26,6 +26,8 @@ var (
 	ErrUserGetFailed         = errors.New("failed to get user")
 	ErrUnknownUserConstraint = errors.New("unknown user constraint violation")
 	ErrGetBalancesFailed     = errors.New("failed to get user balances")
+	ErrUpdateBalanceFailed   = errors.New("failed to update user balance")
+	ErrInsufficientBalance   = errors.New("insufficient balance")
 )
 
 const UserUniqueConstraintName = "users_username_uk"
@@ -145,6 +147,46 @@ func (r *UserRepository) GetUserBalances(ctx context.Context, userID uuid.UUID) 
 	}
 
 	return balances, nil
+}
+
+func (r *UserRepository) AddUserBalance(ctx context.Context, userID uuid.UUID, instrumentID int, amount int64) error {
+	query := `
+		INSERT INTO user_balances (user_id, instrument_id, balance)
+		VALUES ($1, $2, $3)
+		ON CONFLICT ON CONSTRAINT user_balances_user_instrument_uk
+		DO UPDATE SET balance = user_balances.balance + EXCLUDED.balance
+	`
+	_, err := r.psql.ExecContext(ctx, query, userID, instrumentID, amount)
+	if err != nil {
+		r.logger.Error("error adding user balance")
+		r.logger.ErrorO(err)
+		return fmt.Errorf("%s %w", error_prefix, ErrUpdateBalanceFailed)
+	}
+	return nil
+}
+
+func (r *UserRepository) RemoveUserBalance(ctx context.Context, userID uuid.UUID, instrumentID int, amount int64) error {
+	query := `
+		UPDATE user_balances
+		SET balance = balance - $3
+		WHERE user_id = $1 AND instrument_id = $2 AND balance >= $3
+	`
+	result, err := r.psql.ExecContext(ctx, query, userID, instrumentID, amount)
+	if err != nil {
+		r.logger.Error("error removing user balance")
+		r.logger.ErrorO(err)
+		return fmt.Errorf("%s %w", error_prefix, ErrUpdateBalanceFailed)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		r.logger.Error("error checking rows affected when removing balance")
+		r.logger.ErrorO(err)
+		return fmt.Errorf("%s %w", error_prefix, ErrUpdateBalanceFailed)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%s %w", error_prefix, ErrInsufficientBalance)
+	}
+	return nil
 }
 
 func NewUserRepository(logger *logger.Logger, psql *sql.DB) *UserRepository {

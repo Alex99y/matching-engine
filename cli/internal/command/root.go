@@ -15,6 +15,7 @@ import (
 var (
 	instrumentRepo *repository.InstrumentRepository
 	marketRepo     *repository.MarketRepository
+	userRepo       *repository.UserRepository
 )
 
 var rootCmd = &cobra.Command{
@@ -35,6 +36,7 @@ var rootCmd = &cobra.Command{
 
 		instrumentRepo = repository.NewInstrumentRepository(log, conn)
 		marketRepo = repository.NewMarketRepository(log, conn)
+		userRepo = repository.NewUserRepository(log, conn)
 		return nil
 	},
 }
@@ -46,4 +48,5 @@ func Execute() error {
 func init() {
 	rootCmd.AddCommand(newInstrumentCmd())
 	rootCmd.AddCommand(newMarketCmd())
+	rootCmd.AddCommand(newUserCmd())
 }
