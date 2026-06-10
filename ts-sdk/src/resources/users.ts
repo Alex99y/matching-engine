@@ -1,8 +1,8 @@
-// Users resource: register and login. These are public (unauthenticated).
+// Users resource: register, login (public) and balance query (authenticated).
 
 import type { Transport } from "../http/transport.js";
-import type { LoginParams, RegisterParams } from "../types/index.js";
-import { parseLoginToken } from "../utils/parse.js";
+import type { Balance, LoginParams, RegisterParams } from "../types/index.js";
+import { parseBalances, parseLoginToken } from "../utils/parse.js";
 import {
   validateLoginParams,
   validateRegisterParams,
@@ -10,6 +10,7 @@ import {
 
 const REGISTER_PATH = "/api/v1/users/register";
 const LOGIN_PATH = "/api/v1/users/login";
+const BALANCES_PATH = "/api/v1/users/balances";
 
 export async function register(
   transport: Transport,
@@ -35,4 +36,13 @@ export async function login(
     body: { username: params.username, password: params.password },
   });
   return parseLoginToken(raw);
+}
+
+/** Returns all instrument balances for the authenticated user. */
+export async function getBalances(
+  transport: Transport,
+  token: string,
+): Promise<Balance[]> {
+  const raw = await transport.request<unknown>("GET", BALANCES_PATH, { token });
+  return parseBalances(raw);
 }

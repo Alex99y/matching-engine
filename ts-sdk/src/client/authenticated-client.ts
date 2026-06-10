@@ -1,6 +1,8 @@
 import type { Transport } from "../http/transport.js";
 import * as orders from "../resources/orders.js";
+import * as users from "../resources/users.js";
 import type {
+  Balance,
   CreateOrderParams,
   CreateOrderResult,
   GetOrdersFilter,
@@ -73,6 +75,18 @@ export class AuthenticatedClient {
    */
   async createOrder(params: CreateOrderParams): Promise<CreateOrderResult> {
     return orders.createOrder(this.transport, this.token, params);
+  }
+
+  /**
+   * Fetch all instrument balances for the authenticated user.
+   *
+   * @throws {@link APIError} on server-side failures.
+   * @example
+   * const balances = await session.getBalances();
+   * console.log(balances[0]?.symbol, balances[0]?.balance);
+   */
+  async getBalances(): Promise<Balance[]> {
+    return users.getBalances(this.transport, this.token);
   }
 
   /**

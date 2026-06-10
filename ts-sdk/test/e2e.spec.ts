@@ -37,7 +37,10 @@ function startServer(): Promise<Server> {
       };
 
       // Private routes require the bearer token issued at login.
-      if (url.pathname.startsWith("/api/v1/order") && auth !== "Bearer e2e-token") {
+      const isPrivate =
+        url.pathname.startsWith("/api/v1/order") ||
+        url.pathname === "/api/v1/users/balances";
+      if (isPrivate && auth !== "Bearer e2e-token") {
         sendJson(401, '{"message":"missing or invalid authorization header"}');
         return;
       }
@@ -75,6 +78,12 @@ function startServer(): Promise<Server> {
           sendJson(
             200,
             '{"id":"order-1","type":"limit","time_in_force":"gtc","have_quantity":5,"want_quantity":10,"created_at":1700000000}',
+          );
+          return;
+        case "GET /api/v1/users/balances":
+          sendJson(
+            200,
+            '[{"name":"Ether","symbol":"ETH","decimals":18,"balance":5000000000000000000,"blocked":1000000000000000000}]',
           );
           return;
         default:
@@ -136,6 +145,11 @@ describe("end-to-end flow against a mock server", () => {
 
     const order = await session.getOrder(orderId);
     expect(order.id).toBe("order-1");
+
+    const balances = await session.getBalances();
+    expect(balances[0]?.symbol).toBe("ETH");
+    expect(balances[0]?.balance).toBe(5000000000000000000n);
+    expect(balances[0]?.blocked).toBe(1000000000000000000n);
 
     await expect(session.logout()).resolves.toBeUndefined();
   });

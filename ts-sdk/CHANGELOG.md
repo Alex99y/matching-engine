@@ -12,10 +12,15 @@ optional surface is a minor bump.
 - `MatchingEngineClient(host, port, options)` — public entry point exposing
   `register`, `login`, `getMarkets`, and `getInstruments`.
 - `AuthenticatedClient` — returned by `login()`; exposes `getOrder`,
-  `getOrders`, `createOrder`, and a (currently no-op) `logout`.
+  `getOrders`, `createOrder`, `getBalances`, and a (currently no-op) `logout`.
+- `AuthenticatedClient.getBalances()` — fetches all instrument balances for the
+  authenticated user (`GET /api/v1/users/balances`). Returns `Balance[]` with
+  `name`, `symbol`, `decimals`, `balance` (bigint), and `blocked` (bigint).
+- `Balance` type exported from the public SDK surface.
 - Full SDK error hierarchy: `SDKError`, `NetworkError`, `TimeoutError`,
   `APIError`, `AuthenticationError`, `RateLimitError`, `ValidationError`,
   `ParseError`.
-- bigint-safe (de)serialization for uint64 amount/price fields.
+- bigint-safe (de)serialization for uint64 amount/price fields; `"balance"` and
+  `"blocked"` included in `BIGINT_WIRE_FIELDS`.
 - Per-request timeout, retries with exponential backoff + jitter (429/5xx),
   client-side input validation, and response-shape validation.

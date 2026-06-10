@@ -5,6 +5,7 @@
 
 import { ParseError } from "../errors/index.js";
 import type {
+  Balance,
   CancelledOrder,
   CreateOrderResult,
   Instrument,
@@ -165,4 +166,19 @@ export function parseCreateOrderResult(raw: unknown): CreateOrderResult {
 export function parseLoginToken(raw: unknown): string {
   const o = asRecord(raw, "login response");
   return reqString(o, "token");
+}
+
+function parseBalance(raw: unknown): Balance {
+  const o = asRecord(raw, "balance");
+  return {
+    name: reqString(o, "name"),
+    symbol: reqString(o, "symbol"),
+    decimals: reqNumber(o, "decimals"),
+    balance: reqBigInt(o, "balance"),
+    blocked: reqBigInt(o, "blocked"),
+  };
+}
+
+export function parseBalances(raw: unknown): Balance[] {
+  return asArray(raw, "balances").map(parseBalance);
 }

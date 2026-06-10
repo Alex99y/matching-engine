@@ -94,6 +94,18 @@ export interface GetOrdersFilter {
   readonly showCancelled?: boolean;
 }
 
+// ---- Authenticated user responses ----
+
+export interface Balance {
+  readonly name: string;
+  readonly symbol: string;
+  readonly decimals: number;
+  /** Available (unlocked) amount. uint64. */
+  readonly balance: bigint;
+  /** Amount currently locked in open orders. uint64. */
+  readonly blocked: bigint;
+}
+
 // ---- Order responses ----
 
 export interface OpenOrder {

@@ -51,6 +51,17 @@ describe("AuthenticatedClient", () => {
     expect(result.orderId).toBe("abc");
   });
 
+  it("getBalances returns parsed balances and forwards the token", async () => {
+    const { session, request } = client([
+      { name: "Ether", symbol: "ETH", decimals: 18, balance: 3n, blocked: 1n },
+    ]);
+    const balances = await session.getBalances();
+    expect(balances).toHaveLength(1);
+    expect(balances[0]?.symbol).toBe("ETH");
+    expect(balances[0]?.balance).toBe(3n);
+    expect(request.mock.calls[0]?.[2]?.token).toBe("tok");
+  });
+
   it("logout resolves without touching the transport", async () => {
     const { session, request } = client(undefined);
     await expect(session.logout()).resolves.toBeUndefined();
