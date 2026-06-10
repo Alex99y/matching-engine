@@ -86,7 +86,7 @@ export interface GetOrdersFilter {
   readonly market?: string;
   /** YYYY-MM-DD (inclusive lower bound). */
   readonly startDate?: string;
-  /** YYYY-MM-DD (inclusive upper bound). */
+  /** YYYY-MM-DD (exclusive upper bound: returns orders where created_at < endDate). */
   readonly endDate?: string;
   /** 1-100. The API defaults to 10 when omitted. */
   readonly limit?: number;

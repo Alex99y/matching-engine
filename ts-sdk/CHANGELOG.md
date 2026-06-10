@@ -9,6 +9,8 @@ optional surface is a minor bump.
 
 ### Added
 
+- `AuthenticatedClient.cancelOrder(orderId)` — requests cancellation of an open
+  order (`DELETE /api/v1/order/:id`). Returns `void` on HTTP 202.
 - `MatchingEngineClient(host, port, options)` — public entry point exposing
   `register`, `login`, `getMarkets`, and `getInstruments`.
 - `AuthenticatedClient` — returned by `login()`; exposes `getOrder`,
@@ -24,3 +26,8 @@ optional surface is a minor bump.
   `"blocked"` included in `BIGINT_WIRE_FIELDS`.
 - Per-request timeout, retries with exponential backoff + jitter (429/5xx),
   client-side input validation, and response-shape validation.
+
+### Fixed
+
+- `GetOrdersFilter.endDate` JSDoc corrected to "exclusive upper bound"
+  (`created_at < endDate`); the previous comment incorrectly said "inclusive".

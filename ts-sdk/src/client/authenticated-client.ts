@@ -57,6 +57,21 @@ export class AuthenticatedClient {
   }
 
   /**
+   * Request cancellation of an open order. The API accepts the cancel
+   * asynchronously (HTTP 202); the order is removed from the book out of band.
+   *
+   * @param orderId - UUID of the order to cancel.
+   * @throws {@link ValidationError} when `orderId` is empty.
+   * @throws {@link APIError} (404) when the order does not exist or does not
+   *   belong to the authenticated user.
+   * @example
+   * await session.cancelOrder("0190f...");
+   */
+  async cancelOrder(orderId: string): Promise<void> {
+    return orders.cancelOrder(this.transport, this.token, orderId);
+  }
+
+  /**
    * Submit a new order. The API accepts it asynchronously (HTTP 202) and
    * returns the assigned order id; matching happens out of band.
    *

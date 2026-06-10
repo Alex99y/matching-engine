@@ -63,6 +63,19 @@ export async function getOrders(
   return parseOrders(raw);
 }
 
+export async function cancelOrder(
+  transport: Transport,
+  token: string,
+  orderId: string,
+): Promise<void> {
+  validateOrderId(orderId);
+  await transport.request<void>(
+    "DELETE",
+    `${ORDERS_BASE}/${encodeURIComponent(orderId)}`,
+    { token },
+  );
+}
+
 export async function createOrder(
   transport: Transport,
   token: string,

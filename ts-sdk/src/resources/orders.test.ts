@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ValidationError } from "../errors/index.js";
 import type { Transport } from "../http/transport.js";
 import { OrderSide, OrderType, TimeInForce } from "../types/index.js";
-import { createOrder, getOrder, getOrders } from "./orders.js";
+import { cancelOrder, createOrder, getOrder, getOrders } from "./orders.js";
 
 const TOKEN = "tok";
 
@@ -19,6 +19,26 @@ const orderRow = {
   want_quantity: 200n,
   created_at: 1700000000,
 };
+
+describe("orders.cancelOrder", () => {
+  it("sends DELETE to the order endpoint with the bearer token", async () => {
+    const { transport, request } = stubTransport(undefined);
+    await cancelOrder(transport, TOKEN, "o1");
+    expect(request).toHaveBeenCalledWith("DELETE", "/api/v1/order/o1", { token: TOKEN });
+  });
+
+  it("rejects an empty orderId without calling the API", async () => {
+    const { transport, request } = stubTransport(undefined);
+    await expect(cancelOrder(transport, TOKEN, "")).rejects.toBeInstanceOf(ValidationError);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("URL-encodes the orderId", async () => {
+    const { transport, request } = stubTransport(undefined);
+    await cancelOrder(transport, TOKEN, "a/b");
+    expect(request).toHaveBeenCalledWith("DELETE", "/api/v1/order/a%2Fb", { token: TOKEN });
+  });
+});
 
 describe("orders.getOrder", () => {
   it("requests a single order with the token", async () => {

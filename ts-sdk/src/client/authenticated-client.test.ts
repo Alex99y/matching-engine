@@ -62,6 +62,12 @@ describe("AuthenticatedClient", () => {
     expect(request.mock.calls[0]?.[2]?.token).toBe("tok");
   });
 
+  it("cancelOrder sends DELETE and forwards the token", async () => {
+    const { session, request } = client(undefined);
+    await session.cancelOrder("o1");
+    expect(request).toHaveBeenCalledWith("DELETE", "/api/v1/order/o1", { token: "tok" });
+  });
+
   it("logout resolves without touching the transport", async () => {
     const { session, request } = client(undefined);
     await expect(session.logout()).resolves.toBeUndefined();
