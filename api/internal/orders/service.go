@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	"github.com/alex99y/matching-engine/common/pkg/utils"
 	"github.com/alex99y/matching-engine/common/pkg/uuidv7"
 	"github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
@@ -45,6 +46,7 @@ type GetOrdersFilter struct {
 
 type CacheService interface {
 	GetMarketByRef(marketRef string) (*repository.Market, error)
+	GetInstrumentByID(id int) (*repository.Instrument, error)
 }
 
 type OrderRepository interface {
@@ -127,7 +129,7 @@ func (o *OrderService) PublishOrderToQueue(
 		return nil, ErrCreatingUUID
 	}
 
-	orderEvent := &order_events_queue.OrderEvent{
+	openEvent := &order_events_queue.OpenOrderEvent{
 		OrderID:       orderID,
 		UserID:        userID,
 		ClientOrderID: order.ClientOrderID,
@@ -142,7 +144,7 @@ func (o *OrderService) PublishOrderToQueue(
 	}
 
 	if err := order_events_queue.ValidateOrderEvent(
-		orderEvent,
+		openEvent,
 		order_events_queue.MarketConstraints{
 			PriceQuantum:  uint64(market.PriceQuantum),
 			AmountQuantum: uint64(market.AmountQuantum),
@@ -153,11 +155,60 @@ func (o *OrderService) PublishOrderToQueue(
 		return nil, fmt.Errorf("%w: %w", ErrInvalidOrder, err)
 	}
 
-	if err := o.publisher.Publish(ctx, order.MarketID, orderEvent); err != nil {
+	event, err := order_events_queue.NewOpenOrderEvent(openEvent)
+	if err != nil {
+		return nil, fmt.Errorf("create open order event: %w", err)
+	}
+
+	if err := o.publisher.Publish(ctx, order.MarketID, event); err != nil {
 		return nil, fmt.Errorf("publish order event: %w", err)
 	}
 
 	return &orderID, nil
+}
+
+func (o *OrderService) CancelOrder(ctx context.Context, userID uuid.UUID, orderID uuid.UUID) error {
+	order, err := o.orderRepository.GetOrderByID(ctx, userID, orderID)
+	if err != nil {
+		if errors.Is(err, repository.ErrOrderNotFound) {
+			return ErrOrderNotFound
+		}
+		return fmt.Errorf("cancel order: get order: %w", err)
+	}
+
+	haveInstr, err := o.cacheService.GetInstrumentByID(order.HaveInstrumentID)
+	if err != nil {
+		return fmt.Errorf("cancel order: resolve have instrument: %w", err)
+	}
+	wantInstr, err := o.cacheService.GetInstrumentByID(order.WantInstrumentID)
+	if err != nil {
+		return fmt.Errorf("cancel order: resolve want instrument: %w", err)
+	}
+
+	// Sell side: have=base, want=quote → "BTC-USDT"
+	// Buy side:  have=quote, want=base → "USDT-BTC" → try inverted → "BTC-USDT"
+	marketRef := utils.MergeMarketRef(haveInstr.Symbol, wantInstr.Symbol)
+	if _, err := o.cacheService.GetMarketByRef(marketRef); err != nil {
+		marketRef = utils.MergeMarketRef(wantInstr.Symbol, haveInstr.Symbol)
+		if _, err := o.cacheService.GetMarketByRef(marketRef); err != nil {
+			return ErrMarketNotFound
+		}
+	}
+
+	cancelEvent := &order_events_queue.CancelOrderEvent{
+		OrderID:   orderID,
+		MarketRef: marketRef,
+	}
+	event, err := order_events_queue.NewCancelOrderEvent(cancelEvent)
+	if err != nil {
+		return fmt.Errorf("cancel order: create event: %w", err)
+	}
+
+	if err := o.publisher.Publish(ctx, marketRef, event); err != nil {
+		return fmt.Errorf("cancel order: publish: %w", err)
+	}
+
+	return nil
 }
 
 func NewOrderService(

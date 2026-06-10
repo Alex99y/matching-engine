@@ -25,7 +25,7 @@ func (o *OrdersEventsQueue) EmitNewOrderToME(ctx context.Context, order *OrderEv
 	return nil
 }
 
-func (o *OrdersEventsQueue) WatchForNewOrders(ctx context.Context, callback OrderEventConsumeCallback) error {
+func (o *OrdersEventsQueue) WatchForOrderEvents(ctx context.Context, callback OrderEventConsumeCallback) error {
 	return o.queue.Consume(ctx, func(args *rabbitmq.ConsumeArgs) {
 		order, err := ParseOrderEvent(args.RawMessage())
 		if err != nil {

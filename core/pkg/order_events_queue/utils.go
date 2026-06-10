@@ -25,7 +25,7 @@ type MarketConstraints struct {
 // ValidateOrderEvent checks structural correctness, market availability, and market
 // constraints. availableMarkets must contain an entry for every active market;
 // the key must match the MarketID used in OrderEvent.
-func ValidateOrderEvent(order *OrderEvent, constraints MarketConstraints) error {
+func ValidateOrderEvent(order *OpenOrderEvent, constraints MarketConstraints) error {
 	if order == nil {
 		return ErrEmptyOrderEvent
 	}

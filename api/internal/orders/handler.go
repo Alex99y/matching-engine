@@ -205,6 +205,24 @@ func (o *OrderHandler) CreateOrder(c fiber.Ctx) error {
 	return c.Status(fiber.StatusAccepted).JSON(CreateOrderResponse{OrderID: *orderID})
 }
 
+func (o *OrderHandler) CancelOrder(c fiber.Ctx) error {
+	orderID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return utils.NewErrorResponse(c, fiber.StatusBadRequest, "invalid order id")
+	}
+
+	userID := middleware.UserIDFromContext(c)
+
+	if err := o.orderService.CancelOrder(c.Context(), userID, orderID); err != nil {
+		if errors.Is(err, ErrOrderNotFound) {
+			return utils.NewErrorResponse(c, fiber.StatusNotFound, "order not found")
+		}
+		return utils.NewServerErrorResponse(c, o.logger, err)
+	}
+
+	return c.SendStatus(fiber.StatusAccepted)
+}
+
 func NewOrderHandler(logger *logger.Logger, orderService *OrderService) *OrderHandler {
 	if logger == nil {
 		panic("logger cannot be nil")
