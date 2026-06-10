@@ -123,6 +123,10 @@ export class Transport {
       if (text.length === 0) {
         return undefined as T;
       }
+      const contentType = response.headers.get("Content-Type") ?? "";
+      if (!contentType.includes("application/json")) {
+        return undefined as T;
+      }
       try {
         return parseWithBigInts(text) as T;
       } catch (err) {

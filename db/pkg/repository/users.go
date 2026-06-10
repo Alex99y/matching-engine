@@ -153,7 +153,7 @@ func (r *UserRepository) AddUserBalance(ctx context.Context, userID uuid.UUID, i
 	query := `
 		INSERT INTO user_balances (user_id, instrument_id, balance)
 		VALUES ($1, $2, $3)
-		ON CONFLICT ON CONSTRAINT user_balances_user_instrument_uk
+		ON CONFLICT (user_id, instrument_id)
 		DO UPDATE SET balance = user_balances.balance + EXCLUDED.balance
 	`
 	_, err := r.psql.ExecContext(ctx, query, userID, instrumentID, amount)
