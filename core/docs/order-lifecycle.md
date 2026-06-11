@@ -22,7 +22,7 @@ when the database transaction fails.
 sequenceDiagram
   autonumber
   participant API
-  participant Q as RabbitMQ<br/>orders.commands.&lt;market&gt;
+  participant Q as RabbitMQ command queue
   participant C as Consumer goroutine
   participant CH as ordersChannel
   participant M as Matcher goroutine
