@@ -105,8 +105,6 @@ func (o *OrderEvent) ToBytes() ([]byte, error) {
 	return json.Marshal(o)
 }
 
-type OrderEventConsumeCallback func(order *OrderEvent) error
-
 func ParseOrderEvent(raw []byte) (*OrderEvent, error) {
 	event := &OrderEvent{}
 	if err := json.Unmarshal(raw, event); err != nil {

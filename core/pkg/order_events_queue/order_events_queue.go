@@ -25,9 +25,39 @@ func (o *OrdersEventsQueue) EmitNewOrderToME(ctx context.Context, order *OrderEv
 	return nil
 }
 
-func (o *OrdersEventsQueue) WatchForOrderEvents(ctx context.Context, callback OrderEventConsumeCallback) error {
+// OrderDelivery couples a parsed order event with its broker acknowledgement
+// controls. Under ack-after-commit the matcher acknowledges a message only once the
+// batch containing it is durably committed, so ack/nack are deferred to the matcher
+// rather than performed here by the consumer.
+type OrderDelivery struct {
+	Event *OrderEvent
+	id    string
+	ack   func() error
+	nack  func() error
+}
+
+func (d *OrderDelivery) ID() string  { return d.id }
+func (d *OrderDelivery) Ack() error  { return d.ack() }
+func (d *OrderDelivery) Nack() error { return d.nack() }
+
+// NewOrderDelivery builds a delivery from an already-parsed event and its ack/nack
+// controls. The consumer constructs deliveries directly; this is the exported path
+// used by callers (and tests) that supply their own acknowledgement hooks.
+func NewOrderDelivery(event *OrderEvent, id string, ack, nack func() error) *OrderDelivery {
+	return &OrderDelivery{Event: event, id: id, ack: ack, nack: nack}
+}
+
+// OrderDeliveryHandler receives each successfully parsed delivery. It must not block
+// for long: it hands the delivery off to the matcher and returns. Ownership of the
+// eventual ack/nack passes to whoever holds the OrderDelivery.
+type OrderDeliveryHandler func(*OrderDelivery)
+
+// WatchForOrderEvents consumes the market's command queue. It parses each envelope,
+// dead-letters malformed ones, and forwards the rest to the handler without
+// acknowledging — the matcher acks/nacks after the batch commits.
+func (o *OrdersEventsQueue) WatchForOrderEvents(ctx context.Context, handler OrderDeliveryHandler) error {
 	return o.queue.Consume(ctx, func(args *rabbitmq.ConsumeArgs) {
-		order, err := ParseOrderEvent(args.RawMessage())
+		event, err := ParseOrderEvent(args.RawMessage())
 		if err != nil {
 			// API sent a malformed message — reject without requeue (dead-letter it, do not retry).
 			o.logger.Error(fmt.Sprintf("order_events_queue: malformed message id=%s: %v", args.Id(), err))
@@ -36,17 +66,12 @@ func (o *OrdersEventsQueue) WatchForOrderEvents(ctx context.Context, callback Or
 			}
 			return
 		}
-		if err := callback(order); err != nil {
-			// Transient processing failure — nack and requeue for retry.
-			o.logger.Error(fmt.Sprintf("order_events_queue: processing failed id=%s: %v", args.Id(), err))
-			if nackErr := args.Nack(); nackErr != nil {
-				o.logger.Error(fmt.Sprintf("order_events_queue: nack failed id=%s: %v", args.Id(), nackErr))
-			}
-			return
-		}
-		if ackErr := args.Ack(); ackErr != nil {
-			o.logger.Error(fmt.Sprintf("order_events_queue: ack failed id=%s: %v", args.Id(), ackErr))
-		}
+		handler(&OrderDelivery{
+			Event: event,
+			id:    args.Id(),
+			ack:   args.Ack,
+			nack:  args.Nack,
+		})
 	})
 }
 

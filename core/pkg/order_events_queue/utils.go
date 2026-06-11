@@ -80,18 +80,29 @@ func ValidateOrderEvent(order *OpenOrderEvent, constraints MarketConstraints) er
 		if order.Price != 0 {
 			return fmt.Errorf("%w: market orders must not set a price", ErrInvalidOrderEvent)
 		}
+		// Market orders are denominated by side so the funds to block are always
+		// computable up front: a buy spends a known quote budget (quote_qty); a sell
+		// offers a known base quantity. The opposite denomination has an unknown cost
+		// (no price to convert with) and is rejected.
 		hasQty := order.Quantity > 0
 		hasQuoteQty := order.QuoteQty != nil && *order.QuoteQty > 0
-		if !hasQty && !hasQuoteQty {
-			return fmt.Errorf("%w: market orders require quantity or quote_qty", ErrInvalidOrderEvent)
-		}
-		if hasQty && hasQuoteQty {
-			return fmt.Errorf("%w: market orders must set quantity or quote_qty, not both", ErrInvalidOrderEvent)
-		}
-		// Quantity-based market order: validate lot size and order size bounds.
-		// Quote-based market order: execution price is unknown upfront, so quantity
-		// constraints cannot be applied without the current market price.
-		if hasQty {
+		switch order.Side {
+		case BuyOrder:
+			if !hasQuoteQty {
+				return fmt.Errorf("%w: market buy orders require quote_qty", ErrInvalidOrderEvent)
+			}
+			if hasQty {
+				return fmt.Errorf("%w: market buy orders must not set quantity, only quote_qty", ErrInvalidOrderEvent)
+			}
+		case SellOrder:
+			if !hasQty {
+				return fmt.Errorf("%w: market sell orders require quantity", ErrInvalidOrderEvent)
+			}
+			if hasQuoteQty {
+				return fmt.Errorf("%w: market sell orders must not set quote_qty, only quantity", ErrInvalidOrderEvent)
+			}
+			// Execution price is unknown for a quote-based order, so lot/size bounds
+			// only apply to the base quantity of a sell.
 			if err := validateQuantityConstraints(order.Quantity, constraints); err != nil {
 				return err
 			}

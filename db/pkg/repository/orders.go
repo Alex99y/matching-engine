@@ -44,11 +44,31 @@ type OrderRow struct {
 	CRemainingWantAmount *uint64
 }
 
-type InsertNewOpenOrderRow struct {
+type InsertOrderParams struct {
+	ID               uuid.UUID
+	ClientOrderID    *string
+	UserID           uuid.UUID
+	HaveInstrumentID int
+	WantInstrumentID int
+	HaveQuantity     *uint64
+	WantQuantity     *uint64
+	// Status is the order lifecycle state persisted in the orders table. It must be
+	// one of the OrderStatus* constants. Callers that build params for the matcher's
+	// batch flush set it from the matching outcome; ProcessBatch sets it to
+	// OrderStatusCancelled for orders rejected at reservation time.
+	Status      string
+	Type        string
+	TimeInForce string
+	ExpiresAt   *time.Time
 }
 
-func (o *OrderRepository) InsertOpenOrder(ctx context.Context, newOrder InsertNewOpenOrderRow) error {
-	return nil
+type InsertOpenOrderParams struct {
+	OrderID             uuid.UUID
+	Price               uint64
+	MarketID            int
+	Side                string
+	RemainingHaveAmount uint64
+	RemainingWantAmount uint64
 }
 
 // getOrder is an internal helper called only by GetOrderById and GetOrderByClientOrderID.
