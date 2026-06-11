@@ -13,6 +13,13 @@ The system uses two RabbitMQ exchange/queue topologies with distinct responsibil
 | Ordering required | Yes — strict FIFO per market | No |
 | Durability | Persistent (durable queue + persistent messages) | Transient acceptable |
 
+> **Implementation status.** Queue 1 and the matcher are implemented. **Queue 2 (the
+> event log) is designed but not yet implemented** — `core` persists to Postgres but does
+> not yet publish lifecycle/trade/orderbook events. For the implementation-level walk
+> through (consumer, micro-batch transaction, balance settlement, and commit-failure
+> recovery) see [`docs/`](docs/README.md). This file remains the messaging-topology
+> reference.
+
 ---
 
 ## Queue 1 — Command queue (order submission)
@@ -58,15 +65,33 @@ The API does not wait for the match result. The client tracks the final state vi
 core consumer (per market)
   ├── Receives order from queue
   ├── Validates order event (market constraints, field rules)
-  ├── Pushes to in-process channel → Acks message
-  └── [matcher goroutine handles all DB writes — see below]
+  ├── Pushes {event, ack, nack} to in-process channel  (does NOT ack)
+  └── [matcher goroutine matches, persists, and acks after commit — see below]
 ```
 
-The consumer is intentionally kept free of I/O. It validates and acks immediately, giving the broker the green light while the matcher processes asynchronously. All DB writes are concentrated in the matcher's transaction.
+The consumer is kept free of I/O — it validates (no DB access) and enqueues. Crucially it
+does **not** acknowledge the message. Under **ack-after-commit**, ownership of the ack/nack
+travels with the event to the matcher, which acknowledges only once the transaction that
+persists the order has committed (a malformed envelope is still rejected/dead-lettered
+immediately, and an invalid/unknown event is dropped-and-acked since it has no DB effect).
 
-**Prefetch count:** `prefetchCount=16`. With the consumer doing no I/O (validation only), the two RabbitMQ network round-trips (deliver + ack) dominate the per-order cycle time. `prefetchCount=16` lets RabbitMQ pre-fill the local delivery buffer so the consumer processes the next message immediately while the previous ack is still in-flight — hiding up to 16 ack round-trips behind the processing time and yielding roughly 16× the throughput of `prefetchCount=1` under network latency.
+> **Why not ack on enqueue?** Acking the moment the order is buffered would lose it on a
+> commit failure — gone from the broker, never written to the DB. Deferring the ack to
+> after commit makes "accepted and persisted" a single atomic fact. The cost is that
+> in-flight (unacked) messages are redelivered after a crash; idempotent reprocessing
+> (keyed on the `orders` table) makes that safe. See [`docs/order-lifecycle.md`](docs/order-lifecycle.md).
 
-Ordering is preserved because the consumer loop (`for delivery := range deliveries`) is sequential: messages are drained from the buffer one at a time in FIFO arrival order. A sequencer is only needed when messages are processed concurrently across goroutines, which is not the case here. The only trade-off is that on a crash, up to 16 unacked messages are redelivered by the broker.
+**Prefetch count:** `prefetchCount=16`. With ack-after-commit, prefetch bounds the number
+of **unacked in-flight** messages to 16, which in turn caps the matcher's micro-batch and
+provides natural backpressure if the matcher stalls (e.g. during a DB outage): once 16 are
+unacked the broker stops delivering until the matcher commits and acks a batch. The
+throughput win comes from amortising one `BEGIN/COMMIT` across the batch, not from hiding
+per-message ack round-trips.
+
+Ordering is preserved because the consumer loop (`for delivery := range deliveries`) is
+sequential: messages are drained one at a time in FIFO arrival order, and the matcher
+replays each batch in arrival order. A sequencer is only needed when messages are processed
+concurrently across goroutines, which is not the case here.
 
 ---
 
@@ -87,33 +112,72 @@ Throughput comparison (approximate):
 
 ```
 for {
-    batch = drain(ordersChannel, maxSize=N, maxWait=5ms)
-    if len(batch) == 0 { break }  // channel closed — drain complete
-    runMatchingOnBatch(batch)      // pure in-memory, no I/O
-    flushBatchToDB(batch)          // one transaction, bulk inserts via UNNEST
+    batch = drain(ordersChannel, maxSize=32, maxWait=5ms)
+    if channel closed and drained { break }     // matcher exits
+    err = ProcessBatch(batch):                   // ONE transaction:
+            phase 1  reserve funds per order     // atomic UPDATE; skip already-persisted
+            phase 2  runMatchingOnBatch          // pure in-memory; funded orders only
+            phase 3  flushBatchToDB              // bulk writes
+          COMMIT
+    if err == nil  → ack every message in the batch          // ack-after-commit
+    else           → nack/requeue + rebuild book from DB     // recovery, see below
 }
 ```
 
 `drain` blocks on the first item (avoids busy-waiting), then collects additional items non-blocking until `maxSize` is reached or `maxWait` elapses. This keeps latency bounded: a lone order in a quiet market is committed within `maxWait` of arrival.
 
+**Reservation gates matching.** Funds are blocked in **phase 1**, inside the same
+transaction, *before* matching — so an order that cannot be funded never touches the book.
+A failed reservation is a normal *rejection* (recorded as `cancelled`), not a transaction
+error. This is what keeps the engine the single, atomic owner of orders **and** balances
+(reserve → settle → release all commit together). The trade-off is a per-order conditional
+`UPDATE` inside the batch; the heavy writes still go out in bulk.
+
 **Ordering guarantee:** The matching algorithm runs on the batch sequentially in arrival order (FIFO from the channel), preserving price-time priority. The DB flush writes all results of the batch in a single transaction — atomicity is maintained across all orders in the batch.
 
-**Batch flush — one transaction, bulk writes:**
+**Recovery on commit failure.** Phase 2 mutates the in-memory book, but the writes are
+durable only at `COMMIT`. If the transaction fails, Postgres rolls back while the book is
+left dirty, so the matcher **nacks/requeues** the batch and **rebuilds the book from
+`open_orders`** (`LoadOpenOrders` → `Hydrate`) before continuing. The requeued messages are
+redelivered and reprocessed; idempotency (skipping orders already in the `orders` table)
+makes the commit-ambiguous case safe. Full protocol in
+[`docs/order-lifecycle.md`](docs/order-lifecycle.md#6-commit-failure-recovery).
+
+**The transaction — reserve, match, then bulk flush:**
 
 ```sql
 BEGIN;
-  INSERT INTO orders              SELECT ... FROM UNNEST($ids, $users, ...)
-  UPDATE orders SET status = ...  WHERE id = ANY($filled_ids)
-  INSERT INTO open_orders         SELECT ... FROM UNNEST(...)
-  INSERT INTO cancelled_orders    SELECT ... FROM UNNEST(...)
-  UPDATE user_balances SET ...    WHERE (user_id, instrument_id) = ANY(...)
-  INSERT INTO matches             SELECT ... FROM UNNEST(...)
+  -- phase 1: per order, conditional reservation (skip if id already in `orders`)
+  UPDATE user_balances SET balance = balance - $amt, blocked = blocked + $amt
+    WHERE user_id = $u AND instrument_id = $i AND balance >= $amt;   -- 0 rows ⇒ reject
+
+  -- phase 2: in-memory matching of funded orders (no SQL)
+
+  -- phase 3: bulk flush of the BatchResult, FK-safe order
+  INSERT INTO orders            VALUES (...),(...),...  ON CONFLICT (id) DO NOTHING;
+  UPDATE orders SET status=...  FROM (VALUES ...) ...;     -- maker transitions
+  INSERT INTO open_orders       VALUES (...),(...),...;    -- GTC remainder rests
+  UPDATE open_orders SET ...    FROM (VALUES ...) ...;     -- partially-filled makers
+  DELETE FROM open_orders       WHERE order_id = ANY($ids);-- filled / cancelled makers
+  INSERT INTO cancelled_orders  VALUES (...),(...),...;
+  INSERT INTO matches           VALUES (...),(...),...;    -- one row per fill
+  UPDATE user_balances SET ...  FROM (VALUES ...) ...;     -- settlement + release
 COMMIT;
 ```
+
+> The bulk writes use **multi-row `VALUES`** rather than literal `UNNEST`: `lib/pq` cannot
+> encode `NULL`s inside array parameters (nullable `client_order_id`, `have/want_quantity`,
+> `expires_at`), and multi-row `VALUES` gives the same one-round-trip-per-table benefit while
+> handling `NULL`s natively. Each statement is skipped when it has nothing to write.
 
 ---
 
 ## Queue 2 — Event log (core → world)
+
+> **Status: designed, not yet implemented.** The matcher persists to Postgres but does not
+> yet publish to an event log; the `emit*` hooks in the order book currently produce only
+> database side-effects. The topology below is the target design. The `seq`, snapshot, and
+> delta mechanics are likewise not built.
 
 ### Exchange and binding topology
 
