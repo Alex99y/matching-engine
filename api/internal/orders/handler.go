@@ -2,6 +2,7 @@ package orders
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -15,6 +16,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const MaxBatchSize = 500
+
 type CreateOrderRequest struct {
 	ClientOrderID string                         `json:"client_order_id"    validate:"omitempty,min=32,max=64"`
 	OrderSide     order_events_queue.OrderSide   `json:"order_side"         validate:"required"`
@@ -27,8 +30,27 @@ type CreateOrderRequest struct {
 	ExpiresAt     *int64                         `json:"expires_at,omitempty"`
 }
 
-type CreateOrderResponse struct {
-	OrderID uuid.UUID `json:"order_id"`
+type BatchCreateOrderResult struct {
+	Index   int        `json:"index"`
+	OrderID *uuid.UUID `json:"order_id,omitempty"`
+	Error   *string    `json:"error,omitempty"`
+}
+
+type BatchCreateOrderResponse struct {
+	Results []BatchCreateOrderResult `json:"results"`
+}
+
+type BatchCancelOrderRequest struct {
+	OrderIDs []string `json:"order_ids"`
+}
+
+type BatchCancelOrderResult struct {
+	OrderID string  `json:"order_id"`
+	Error   *string `json:"error,omitempty"`
+}
+
+type BatchCancelOrderResponse struct {
+	Results []BatchCancelOrderResult `json:"results"`
 }
 
 type OpenOrder struct {
@@ -169,58 +191,107 @@ func (o *OrderHandler) GetOrders(c fiber.Ctx) error {
 }
 
 func (o *OrderHandler) CreateOrder(c fiber.Ctx) error {
-	var req CreateOrderRequest
-	if err := c.Bind().Body(&req); err != nil {
+	var reqs []CreateOrderRequest
+	if err := c.Bind().Body(&reqs); err != nil {
 		o.logger.Error("CreateOrder: invalid body, request_id=" + requestid.FromContext(c))
 		return utils.NewErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
-	userID := middleware.UserIDFromContext(c)
-
-	orderID, err := o.orderService.PublishOrderToQueue(
-		c.Context(),
-		userID,
-		&OrderToPublish{
-			ClientOrderID: req.ClientOrderID,
-			MarketID:      req.Market,
-			Side:          req.OrderSide,
-			Type:          req.OrderType,
-			TimeInForce:   req.TimeInForce,
-			Price:         req.Price,
-			Quantity:      req.Quantity,
-			QuoteQty:      req.QuoteQty,
-			ExpiresAt:     req.ExpiresAt,
-		},
-	)
-	if err != nil {
-		if errors.Is(err, ErrMarketNotFound) {
-			return utils.NewErrorResponse(c, fiber.StatusNotFound, "market not found")
-		}
-		if errors.Is(err, ErrInvalidOrder) {
-			return utils.NewErrorResponse(c, fiber.StatusUnprocessableEntity, "invalid order")
-		}
-		return utils.NewServerErrorResponse(c, o.logger, err)
+	if len(reqs) == 0 {
+		return utils.NewErrorResponse(c, fiber.StatusBadRequest, "request body must be a non-empty array")
+	}
+	if len(reqs) > MaxBatchSize {
+		return utils.NewErrorResponse(c, fiber.StatusUnprocessableEntity, fmt.Sprintf("batch size exceeds maximum of %d", MaxBatchSize))
 	}
 
-	return c.Status(fiber.StatusAccepted).JSON(CreateOrderResponse{OrderID: *orderID})
+	userID := middleware.UserIDFromContext(c)
+	results := make([]BatchCreateOrderResult, len(reqs))
+
+	for i, req := range reqs {
+		orderID, err := o.orderService.PublishOrderToQueue(
+			c.Context(),
+			userID,
+			&OrderToPublish{
+				ClientOrderID: req.ClientOrderID,
+				MarketID:      req.Market,
+				Side:          req.OrderSide,
+				Type:          req.OrderType,
+				TimeInForce:   req.TimeInForce,
+				Price:         req.Price,
+				Quantity:      req.Quantity,
+				QuoteQty:      req.QuoteQty,
+				ExpiresAt:     req.ExpiresAt,
+			},
+		)
+		if err != nil {
+			var errStr string
+			switch {
+			case errors.Is(err, ErrMarketNotFound):
+				errStr = "market not found"
+			case errors.Is(err, ErrInvalidOrder):
+				errStr = "invalid order"
+			default:
+				o.logger.Error(fmt.Sprintf("CreateOrder: index %d: %v, request_id=%s", i, err, requestid.FromContext(c)))
+				errStr = "internal error"
+			}
+			results[i] = BatchCreateOrderResult{Index: i, Error: &errStr}
+		} else {
+			results[i] = BatchCreateOrderResult{Index: i, OrderID: orderID}
+		}
+	}
+
+	return c.Status(fiber.StatusAccepted).JSON(BatchCreateOrderResponse{Results: results})
 }
 
 func (o *OrderHandler) CancelOrder(c fiber.Ctx) error {
-	orderID, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return utils.NewErrorResponse(c, fiber.StatusBadRequest, "invalid order id")
+	var req BatchCancelOrderRequest
+	if err := c.Bind().Body(&req); err != nil {
+		o.logger.Error("CancelOrder: invalid body, request_id=" + requestid.FromContext(c))
+		return utils.NewErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
+	}
+
+	if len(req.OrderIDs) == 0 {
+		return utils.NewErrorResponse(c, fiber.StatusBadRequest, "order_ids must be a non-empty array")
+	}
+	if len(req.OrderIDs) > MaxBatchSize {
+		return utils.NewErrorResponse(c, fiber.StatusUnprocessableEntity, fmt.Sprintf("batch size exceeds maximum of %d", MaxBatchSize))
+	}
+
+	orderIDs := make([]uuid.UUID, 0, len(req.OrderIDs))
+	for _, raw := range req.OrderIDs {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return utils.NewErrorResponse(c, fiber.StatusBadRequest, fmt.Sprintf("invalid order id: %s", raw))
+		}
+		orderIDs = append(orderIDs, id)
 	}
 
 	userID := middleware.UserIDFromContext(c)
 
-	if err := o.orderService.CancelOrder(c.Context(), userID, orderID); err != nil {
-		if errors.Is(err, ErrOrderNotFound) {
-			return utils.NewErrorResponse(c, fiber.StatusNotFound, "order not found")
-		}
+	cancelResults, err := o.orderService.BatchCancelOrders(c.Context(), userID, orderIDs)
+	if err != nil {
 		return utils.NewServerErrorResponse(c, o.logger, err)
 	}
 
-	return c.SendStatus(fiber.StatusAccepted)
+	results := make([]BatchCancelOrderResult, len(cancelResults))
+	for i, r := range cancelResults {
+		results[i] = BatchCancelOrderResult{OrderID: r.OrderID.String()}
+		if r.Err != nil {
+			var errStr string
+			switch {
+			case errors.Is(r.Err, ErrOrderNotFound):
+				errStr = "order not found"
+			case errors.Is(r.Err, ErrMarketNotFound):
+				errStr = "market not found"
+			default:
+				o.logger.Error(fmt.Sprintf("CancelOrder: index %d: %v, request_id=%s", i, r.Err, requestid.FromContext(c)))
+				errStr = "internal error"
+			}
+			results[i].Error = &errStr
+		}
+	}
+
+	return c.Status(fiber.StatusAccepted).JSON(BatchCancelOrderResponse{Results: results})
 }
 
 func NewOrderHandler(logger *logger.Logger, orderService *OrderService) *OrderHandler {

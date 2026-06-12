@@ -26,7 +26,8 @@ func RegisterOrderRoutes(app fiber.Router, authMiddleware middleware.AuthMiddlew
 		orderHandler.GetOrder,
 	)
 	userGroup.Delete(
-		"/:id",
+		"/",
+		validations.ValidateContentType(validations.ContentTypeJSON),
 		auth,
 		orderHandler.CancelOrder,
 	)

@@ -53,6 +53,12 @@ type OrderRepository interface {
 	GetOrderByID(ctx context.Context, userID uuid.UUID, id uuid.UUID) (*repository.OrderRow, error)
 	GetOrderByClientOrderID(ctx context.Context, userID uuid.UUID, clientOrderID string) (*repository.OrderRow, error)
 	GetOrdersByUser(ctx context.Context, userID uuid.UUID, showOpenOrders bool, showCancelledOrders bool, baseInstrumentID, quoteInstrumentID *int, startDate, endDate *time.Time, limit int) ([]repository.OrderRow, error)
+	GetOrdersByIDs(ctx context.Context, userID uuid.UUID, ids []uuid.UUID) ([]repository.OrderRow, error)
+}
+
+type BatchCancelResult struct {
+	OrderID uuid.UUID
+	Err     error
 }
 
 type OrderCommandPublisher interface {
@@ -209,6 +215,66 @@ func (o *OrderService) CancelOrder(ctx context.Context, userID uuid.UUID, orderI
 	}
 
 	return nil
+}
+
+func (o *OrderService) BatchCancelOrders(ctx context.Context, userID uuid.UUID, orderIDs []uuid.UUID) ([]BatchCancelResult, error) {
+	orders, err := o.orderRepository.GetOrdersByIDs(ctx, userID, orderIDs)
+	if err != nil {
+		return nil, fmt.Errorf("batch cancel orders: %w", err)
+	}
+
+	found := make(map[uuid.UUID]*repository.OrderRow, len(orders))
+	for i := range orders {
+		found[orders[i].ID] = &orders[i]
+	}
+
+	results := make([]BatchCancelResult, len(orderIDs))
+	for i, orderID := range orderIDs {
+		order, ok := found[orderID]
+		if !ok {
+			results[i] = BatchCancelResult{OrderID: orderID, Err: ErrOrderNotFound}
+			continue
+		}
+
+		haveInstr, err := o.cacheService.GetInstrumentByID(order.HaveInstrumentID)
+		if err != nil {
+			results[i] = BatchCancelResult{OrderID: orderID, Err: fmt.Errorf("batch cancel: resolve have instrument: %w", err)}
+			continue
+		}
+		wantInstr, err := o.cacheService.GetInstrumentByID(order.WantInstrumentID)
+		if err != nil {
+			results[i] = BatchCancelResult{OrderID: orderID, Err: fmt.Errorf("batch cancel: resolve want instrument: %w", err)}
+			continue
+		}
+
+		marketRef := utils.MergeMarketRef(haveInstr.Symbol, wantInstr.Symbol)
+		if _, err := o.cacheService.GetMarketByRef(marketRef); err != nil {
+			marketRef = utils.MergeMarketRef(wantInstr.Symbol, haveInstr.Symbol)
+			if _, err := o.cacheService.GetMarketByRef(marketRef); err != nil {
+				results[i] = BatchCancelResult{OrderID: orderID, Err: ErrMarketNotFound}
+				continue
+			}
+		}
+
+		cancelEvent := &order_events_queue.CancelOrderEvent{
+			OrderID:   orderID,
+			MarketRef: marketRef,
+		}
+		event, err := order_events_queue.NewCancelOrderEvent(cancelEvent)
+		if err != nil {
+			results[i] = BatchCancelResult{OrderID: orderID, Err: fmt.Errorf("batch cancel: create event: %w", err)}
+			continue
+		}
+
+		if err := o.publisher.Publish(ctx, marketRef, event); err != nil {
+			results[i] = BatchCancelResult{OrderID: orderID, Err: fmt.Errorf("batch cancel: publish: %w", err)}
+			continue
+		}
+
+		results[i] = BatchCancelResult{OrderID: orderID}
+	}
+
+	return results, nil
 }
 
 func NewOrderService(

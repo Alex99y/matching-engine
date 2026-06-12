@@ -10,6 +10,7 @@ import (
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 var (
@@ -314,6 +315,98 @@ func (o *OrderRepository) GetOrdersByUser(
 		return nil, fmt.Errorf("get orders by user: %w", err)
 	}
 
+	return result, nil
+}
+
+func (o *OrderRepository) GetOrdersByIDs(ctx context.Context, userID uuid.UUID, ids []uuid.UUID) ([]OrderRow, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	const query = `
+		SELECT
+			orders.id,
+			orders.client_order_id,
+			orders.user_id,
+			orders.have_instrument_id,
+			orders.want_instrument_id,
+			orders.have_quantity,
+			orders.want_quantity,
+			orders.created_at,
+			orders.expires_at,
+			orders.type,
+			orders.time_in_force,
+			open_orders.price,
+			open_orders.market_id,
+			open_orders.side,
+			open_orders.remaining_have_amount,
+			open_orders.remaining_want_amount,
+			cancelled_orders.remaining_have_amount,
+			cancelled_orders.remaining_want_amount,
+			cancelled_orders.cancelled_at
+		FROM orders
+		LEFT JOIN open_orders      ON open_orders.order_id      = orders.id
+		LEFT JOIN cancelled_orders ON cancelled_orders.order_id = orders.id
+		WHERE orders.user_id = $1 AND orders.id = ANY($2::uuid[])`
+
+	rows, err := o.psql.QueryContext(ctx, query, userID, pq.Array(uuidStrings(ids)))
+	if err != nil {
+		o.logger.Error("GetOrdersByIDs: " + err.Error())
+		return nil, fmt.Errorf("get orders by ids: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]OrderRow, 0, len(ids))
+	for rows.Next() {
+		var row OrderRow
+		var createdAt time.Time
+		var expiresAt sql.NullTime
+		var cancelledAt sql.NullTime
+		var clientOrderID sql.NullString
+		var haveQty, wantQty sql.NullInt64
+
+		if err := rows.Scan(
+			&row.ID,
+			&clientOrderID,
+			&row.UserID,
+			&row.HaveInstrumentID,
+			&row.WantInstrumentID,
+			&haveQty,
+			&wantQty,
+			&createdAt,
+			&expiresAt,
+			&row.Type,
+			&row.TimeInForce,
+			&row.Price,
+			&row.MarketID,
+			&row.Side,
+			&row.ORemainingHaveAmount,
+			&row.ORemainingWantAmount,
+			&row.CRemainingHaveAmount,
+			&row.CRemainingWantAmount,
+			&cancelledAt,
+		); err != nil {
+			o.logger.Error("GetOrdersByIDs: scan: " + err.Error())
+			return nil, fmt.Errorf("get orders by ids: scan: %w", err)
+		}
+
+		row.CreatedAt = createdAt.Unix()
+		row.ClientOrderID = clientOrderID.String
+		row.HaveQuantity = uint64(haveQty.Int64)
+		row.WantQuantity = uint64(wantQty.Int64)
+		if expiresAt.Valid {
+			v := expiresAt.Time.Unix()
+			row.ExpiresAt = &v
+		}
+		if cancelledAt.Valid {
+			v := cancelledAt.Time.Unix()
+			row.CancelledAt = &v
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		o.logger.Error("GetOrdersByIDs: " + err.Error())
+		return nil, fmt.Errorf("get orders by ids: %w", err)
+	}
 	return result, nil
 }
 
