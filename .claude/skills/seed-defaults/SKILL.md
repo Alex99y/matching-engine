@@ -35,19 +35,15 @@ If yes, write or append `POSTGRESQL_URL=<url>` to `cli/.env`.
 
 ---
 
-## Step 2 — Ensure the binary is built
+## Step 2 — Build the CLI binary
 
-Check whether `cli/bin/cli` exists:
-
-```bash
-test -f cli/bin/cli && echo "exists"
-```
-
-If it does **not** exist, build it before proceeding:
+Always build the CLI before running any commands to ensure the binary is up-to-date:
 
 ```bash
 make -C cli build
 ```
+
+If the build fails, stop and report the error to the user. Do not proceed with a stale or missing binary.
 
 ---
 
