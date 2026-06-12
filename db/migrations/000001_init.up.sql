@@ -59,7 +59,7 @@ CREATE TABLE orders (
     have_quantity BIGINT,
     want_quantity BIGINT,
     CHECK (have_quantity IS NOT NULL OR want_quantity IS NOT NULL),
-    status VARCHAR(10) NOT NULL CHECK (status IN ('open', 'filled', 'partially_filled', 'cancelled')),
+    status VARCHAR(16) NOT NULL CHECK (status IN ('open', 'filled', 'partially_filled', 'cancelled')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     expires_at TIMESTAMP,
     type          VARCHAR(6) NOT NULL CHECK (type IN ('limit', 'market')),
