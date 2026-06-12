@@ -104,15 +104,17 @@ func (o *OrderRepository) getOrder(ctx context.Context, where string, args ...an
 	var createdAt time.Time
 	var expiresAt sql.NullTime
 	var cancelledAt sql.NullTime
+	var clientOrderID sql.NullString   // client_order_id is nullable
+	var haveQty, wantQty sql.NullInt64 // have/want_quantity are nullable (market orders)
 
 	err := o.psql.QueryRowContext(ctx, query, args...).Scan(
 		&row.ID,
-		&row.ClientOrderID,
+		&clientOrderID,
 		&row.UserID,
 		&row.HaveInstrumentID,
 		&row.WantInstrumentID,
-		&row.HaveQuantity,
-		&row.WantQuantity,
+		&haveQty,
+		&wantQty,
 		&createdAt,
 		&expiresAt,
 		&row.Type,
@@ -135,6 +137,9 @@ func (o *OrderRepository) getOrder(ctx context.Context, where string, args ...an
 	}
 
 	row.CreatedAt = createdAt.Unix()
+	row.ClientOrderID = clientOrderID.String
+	row.HaveQuantity = uint64(haveQty.Int64)
+	row.WantQuantity = uint64(wantQty.Int64)
 	if expiresAt.Valid {
 		v := expiresAt.Time.Unix()
 		row.ExpiresAt = &v
@@ -251,15 +256,17 @@ func (o *OrderRepository) GetOrdersByUser(
 		var createdAt time.Time
 		var expiresAt sql.NullTime
 		var cancelledAt sql.NullTime
+		var clientOrderID sql.NullString   // client_order_id is nullable
+		var haveQty, wantQty sql.NullInt64 // have/want_quantity are nullable (market orders)
 
 		scanArgs := []any{
 			&row.ID,
-			&row.ClientOrderID,
+			&clientOrderID,
 			&row.UserID,
 			&row.HaveInstrumentID,
 			&row.WantInstrumentID,
-			&row.HaveQuantity,
-			&row.WantQuantity,
+			&haveQty,
+			&wantQty,
 			&createdAt,
 			&expiresAt,
 			&row.Type,
@@ -288,6 +295,9 @@ func (o *OrderRepository) GetOrdersByUser(
 		}
 
 		row.CreatedAt = createdAt.Unix()
+		row.ClientOrderID = clientOrderID.String
+		row.HaveQuantity = uint64(haveQty.Int64)
+		row.WantQuantity = uint64(wantQty.Int64)
 		if expiresAt.Valid {
 			v := expiresAt.Time.Unix()
 			row.ExpiresAt = &v

@@ -3,6 +3,7 @@ package order_events_queue
 import (
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/google/uuid"
 )
@@ -11,6 +12,10 @@ var (
 	ErrEmptyOrderEvent = errors.New("order event cannot be nil")
 	ErrInvalidMarketID = errors.New("invalid market id")
 )
+
+// maxStorableAmount is the largest value a BIGINT column can hold. Any quantity, price,
+// quote budget, or derived notional persisted by the engine must fit within it.
+const maxStorableAmount uint64 = math.MaxInt64
 
 // MarketConstraints holds the per-market rules used to validate incoming orders.
 // The caller (API service) builds this from repository.Market and passes it in —
@@ -68,6 +73,13 @@ func ValidateOrderEvent(order *OpenOrderEvent, constraints MarketConstraints) er
 		if order.QuoteQty != nil {
 			return fmt.Errorf("%w: limit orders must not set quote_qty", ErrInvalidOrderEvent)
 		}
+		// The notional (price × quantity) is persisted as a BIGINT and used for the
+		// reservation; reject orders whose product overflows it even though price and
+		// quantity are each individually valid. Quantity is guaranteed non-zero above.
+		if order.Price > maxStorableAmount/order.Quantity {
+			return fmt.Errorf("%w: notional price*quantity overflows storable maximum (price %d, quantity %d)",
+				ErrInvalidOrderEvent, order.Price, order.Quantity)
+		}
 		if constraints.PriceQuantum > 0 && order.Price%constraints.PriceQuantum != 0 {
 			return fmt.Errorf("%w: price %d is not a multiple of tick size %d",
 				ErrInvalidOrderEvent, order.Price, constraints.PriceQuantum)
@@ -94,12 +106,20 @@ func ValidateOrderEvent(order *OpenOrderEvent, constraints MarketConstraints) er
 			if hasQty {
 				return fmt.Errorf("%w: market buy orders must not set quantity, only quote_qty", ErrInvalidOrderEvent)
 			}
+			// quote_qty is persisted/reserved as a BIGINT.
+			if *order.QuoteQty > maxStorableAmount {
+				return fmt.Errorf("%w: quote_qty %d overflows storable maximum", ErrInvalidOrderEvent, *order.QuoteQty)
+			}
 		case SellOrder:
 			if !hasQty {
 				return fmt.Errorf("%w: market sell orders require quantity", ErrInvalidOrderEvent)
 			}
 			if hasQuoteQty {
 				return fmt.Errorf("%w: market sell orders must not set quote_qty, only quantity", ErrInvalidOrderEvent)
+			}
+			// Base quantity is persisted/reserved as a BIGINT.
+			if order.Quantity > maxStorableAmount {
+				return fmt.Errorf("%w: quantity %d overflows storable maximum", ErrInvalidOrderEvent, order.Quantity)
 			}
 			// Execution price is unknown for a quote-based order, so lot/size bounds
 			// only apply to the base quantity of a sell.

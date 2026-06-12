@@ -2,6 +2,7 @@ package orderprocessors
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -18,6 +19,15 @@ const (
 	maxBatchSize       = 32
 	maxBatchWait       = 5 * time.Millisecond
 	rebuildBackoff     = 2 * time.Second
+	// transientBackoff paces retries of a batch that failed on infrastructure (DB down,
+	// deadlock), so a sick dependency can't spin the matcher.
+	transientBackoff = 1 * time.Second
+	// poisonBackoff paces re-attempts of a poison candidate during isolation, giving an
+	// operator time to react before the candidate is dead-lettered.
+	poisonBackoff = 250 * time.Millisecond
+	// maxOrderFailures is how many isolation failures an order survives before it is
+	// dead-lettered (rejected without requeue).
+	maxOrderFailures = 10
 )
 
 // orderEventsQueue is the subset of order_events_queue.OrdersEventsQueue the processor needs.
@@ -49,6 +59,9 @@ type OrderProcessor struct {
 	book          *orderbook.OrderBook // owned and mutated solely by the matcher goroutine
 	ordersChannel chan *queuedEvent
 	stopMatcher   atomic.Bool
+	// failures counts consecutive isolation failures per order id; accessed only by the
+	// matcher goroutine. An order is dead-lettered once it reaches maxOrderFailures.
+	failures map[uuid.UUID]int
 }
 
 // Start hydrates the book from the DB, launches the matcher goroutine, then blocks on
@@ -171,9 +184,8 @@ func (o *OrderProcessor) drain() ([]*queuedEvent, bool) {
 	return batch, true
 }
 
-// runBatch processes one micro-batch in a single transaction. It returns false only
-// when shutdown is requested while recovering from a failure.
-func (o *OrderProcessor) runBatch(shutdownCtx, dbCtx context.Context, batch []*queuedEvent) bool {
+// buildIncoming maps the batch's open orders to their persistence + reservation params.
+func (o *OrderProcessor) buildIncoming(batch []*queuedEvent) []repository.IncomingOrder {
 	incoming := make([]repository.IncomingOrder, 0, len(batch))
 	for _, qe := range batch {
 		if qe.open == nil {
@@ -189,11 +201,15 @@ func (o *OrderProcessor) runBatch(shutdownCtx, dbCtx context.Context, batch []*q
 			},
 		})
 	}
+	return incoming
+}
 
-	// match runs in-memory under ProcessBatch's transaction, after funds are reserved.
-	// It replays the batch in arrival order so cancels and opens interleave with strict
-	// FIFO priority; only funded opens reach the book.
-	match := func(fundedOrderIDs []uuid.UUID) (*repository.BatchResult, error) {
+// buildMatch returns the in-memory matching callback for a batch. It runs under
+// ProcessBatch's transaction, after funds are reserved, replaying the batch in arrival
+// order so cancels and opens interleave with strict FIFO priority; only funded opens
+// reach the book.
+func (o *OrderProcessor) buildMatch(batch []*queuedEvent) repository.MatchFunc {
+	return func(fundedOrderIDs []uuid.UUID) (*repository.BatchResult, error) {
 		funded := make(map[uuid.UUID]struct{}, len(fundedOrderIDs))
 		for _, id := range fundedOrderIDs {
 			funded[id] = struct{}{}
@@ -211,18 +227,117 @@ func (o *OrderProcessor) runBatch(shutdownCtx, dbCtx context.Context, batch []*q
 		}
 		return result, nil
 	}
+}
 
-	if err := o.repo.ProcessBatch(dbCtx, incoming, match); err != nil {
-		o.logger.Error(fmt.Sprintf("order processor %s-%s: batch failed, rebuilding book: %s",
-			o.market.BaseSymbol, o.market.QuoteSymbol, err))
-		// The match callback already mutated the book before the rollback, so it is
-		// dirty: requeue the batch and rebuild from the last committed DB state.
-		o.nackBatch(batch)
-		return o.loadBook(shutdownCtx, dbCtx)
+// runBatch processes one micro-batch in a single transaction. On a transient failure it
+// rebuilds the book, requeues the batch, and backs off. On a deterministic data error it
+// isolates the poison order (committing the healthy ones). Returns false only when
+// shutdown is requested mid-recovery.
+func (o *OrderProcessor) runBatch(shutdownCtx, dbCtx context.Context, batch []*queuedEvent) bool {
+	err := o.repo.ProcessBatch(dbCtx, o.buildIncoming(batch), o.buildMatch(batch))
+	if err == nil {
+		o.ackBatch(batch)
+		return true
 	}
 
-	o.ackBatch(batch)
+	o.logger.Error(fmt.Sprintf("order processor %s-%s: batch failed: %s",
+		o.market.BaseSymbol, o.market.QuoteSymbol, err))
+	// The match callback mutated the book before the rollback, so it is dirty: rebuild
+	// from the last committed DB state before deciding what to do with the messages.
+	if !o.loadBook(shutdownCtx, dbCtx) {
+		o.nackBatch(batch)
+		return false
+	}
+
+	if errors.Is(err, repository.ErrPoison) {
+		// At least one order fails deterministically — isolate it so the rest commit.
+		return o.isolate(shutdownCtx, dbCtx, batch)
+	}
+
+	// Transient infrastructure failure: requeue the whole batch and back off so a sick
+	// dependency does not spin the matcher (the bug that let one batch retry ~48k times).
+	o.nackBatch(batch)
+	return o.backoff(shutdownCtx, transientBackoff)
+}
+
+// isolate reprocesses a data-error batch one order at a time so the healthy orders still
+// commit, then pinpoints the poison order. An order that keeps failing deterministically
+// is requeued until it exceeds maxOrderFailures, after which it is dead-lettered so it can
+// never wedge the market again.
+func (o *OrderProcessor) isolate(shutdownCtx, dbCtx context.Context, batch []*queuedEvent) bool {
+	o.logger.Warn(fmt.Sprintf("order processor %s-%s: data error, isolating batch of %d to find the poison order",
+		o.market.BaseSymbol, o.market.QuoteSymbol, len(batch)))
+
+	requeued := false
+	for i := range batch {
+		qe := batch[i]
+		single := batch[i : i+1]
+		err := o.repo.ProcessBatch(dbCtx, o.buildIncoming(single), o.buildMatch(single))
+		if err == nil {
+			o.ackBatch(single)
+			delete(o.failures, orderKey(qe))
+			continue
+		}
+
+		// Single order failed; the book is dirty again.
+		if !o.loadBook(shutdownCtx, dbCtx) {
+			o.nackBatch(batch[i:])
+			return false
+		}
+
+		if !errors.Is(err, repository.ErrPoison) {
+			// A transient blip mid-isolation — requeue this order and the remainder and
+			// let the normal retry path handle it; do not blame the order.
+			o.logger.Error(fmt.Sprintf("order processor %s-%s: transient error during isolation, requeueing remainder: %s",
+				o.market.BaseSymbol, o.market.QuoteSymbol, err))
+			o.nackBatch(batch[i:])
+			return o.backoff(shutdownCtx, transientBackoff)
+		}
+
+		key := orderKey(qe)
+		o.failures[key]++
+		if o.failures[key] >= maxOrderFailures {
+			o.logger.Error(fmt.Sprintf("order processor %s-%s: DEAD-LETTERING poison order %s after %d failures: %s",
+				o.market.BaseSymbol, o.market.QuoteSymbol, key, o.failures[key], err))
+			delete(o.failures, key)
+			if rerr := qe.delivery.Reject(); rerr != nil {
+				o.logger.Error(fmt.Sprintf("order processor: reject (dead-letter) failed id=%s: %s", qe.delivery.ID(), rerr))
+			}
+			continue
+		}
+		o.logger.Warn(fmt.Sprintf("order processor %s-%s: poison candidate %s (failure %d/%d), requeueing: %s",
+			o.market.BaseSymbol, o.market.QuoteSymbol, key, o.failures[key], maxOrderFailures, err))
+		if nerr := qe.delivery.Nack(); nerr != nil {
+			o.logger.Error(fmt.Sprintf("order processor: nack failed id=%s: %s", qe.delivery.ID(), nerr))
+		}
+		requeued = true
+	}
+
+	if requeued {
+		// Pace re-attempts of requeued poison candidates.
+		return o.backoff(shutdownCtx, poisonBackoff)
+	}
 	return true
+}
+
+// backoff sleeps for d unless shutdown is requested first; returns false on shutdown.
+func (o *OrderProcessor) backoff(shutdownCtx context.Context, d time.Duration) bool {
+	select {
+	case <-shutdownCtx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
+}
+
+func orderKey(qe *queuedEvent) uuid.UUID {
+	if qe.open != nil {
+		return qe.open.OrderID
+	}
+	if qe.cancel != nil {
+		return qe.cancel.OrderID
+	}
+	return uuid.UUID{}
 }
 
 // loadBook rebuilds the in-memory book from the persisted open orders, retrying until
@@ -301,5 +416,6 @@ func NewOrderProcessor(
 			MaxOrderSize:  market.MaxOrderSize,
 		},
 		ordersChannel: make(chan *queuedEvent, orderChannelBuffer),
+		failures:      make(map[uuid.UUID]int),
 	}
 }

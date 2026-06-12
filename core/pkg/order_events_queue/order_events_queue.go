@@ -30,21 +30,27 @@ func (o *OrdersEventsQueue) EmitNewOrderToME(ctx context.Context, order *OrderEv
 // batch containing it is durably committed, so ack/nack are deferred to the matcher
 // rather than performed here by the consumer.
 type OrderDelivery struct {
-	Event *OrderEvent
-	id    string
-	ack   func() error
-	nack  func() error
+	Event  *OrderEvent
+	id     string
+	ack    func() error
+	nack   func() error
+	reject func() error
 }
 
 func (d *OrderDelivery) ID() string  { return d.id }
 func (d *OrderDelivery) Ack() error  { return d.ack() }
 func (d *OrderDelivery) Nack() error { return d.nack() }
 
-// NewOrderDelivery builds a delivery from an already-parsed event and its ack/nack
+// Reject discards the message without requeueing it (dead-letter). With a dead-letter
+// exchange configured it is routed there for inspection; otherwise it is dropped. Used
+// by the matcher to evict a poison order that fails deterministically.
+func (d *OrderDelivery) Reject() error { return d.reject() }
+
+// NewOrderDelivery builds a delivery from an already-parsed event and its ack/nack/reject
 // controls. The consumer constructs deliveries directly; this is the exported path
 // used by callers (and tests) that supply their own acknowledgement hooks.
-func NewOrderDelivery(event *OrderEvent, id string, ack, nack func() error) *OrderDelivery {
-	return &OrderDelivery{Event: event, id: id, ack: ack, nack: nack}
+func NewOrderDelivery(event *OrderEvent, id string, ack, nack, reject func() error) *OrderDelivery {
+	return &OrderDelivery{Event: event, id: id, ack: ack, nack: nack, reject: reject}
 }
 
 // OrderDeliveryHandler receives each successfully parsed delivery. It must not block
@@ -67,10 +73,11 @@ func (o *OrdersEventsQueue) WatchForOrderEvents(ctx context.Context, handler Ord
 			return
 		}
 		handler(&OrderDelivery{
-			Event: event,
-			id:    args.Id(),
-			ack:   args.Ack,
-			nack:  args.Nack,
+			Event:  event,
+			id:     args.Id(),
+			ack:    args.Ack,
+			nack:   args.Nack,
+			reject: args.Reject,
 		})
 	})
 }

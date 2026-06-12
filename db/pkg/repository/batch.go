@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alex99y/matching-engine/db/pkg/postgres"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
@@ -17,7 +18,20 @@ var (
 	ErrBatchFlush  = errors.New("flush batch failed")
 	ErrBatchCommit = errors.New("commit batch failed")
 	ErrReserve     = errors.New("reserve balance failed")
+	// ErrPoison tags a deterministic data/constraint failure (see postgres.IsDataError)
+	// so the matcher can isolate and dead-letter the offending order instead of
+	// requeueing the whole batch forever.
+	ErrPoison = errors.New("poison: deterministic data error")
 )
+
+// wrapPoison adds the ErrPoison sentinel to the error chain when cause is a
+// deterministic data error, so callers can branch on errors.Is(err, ErrPoison).
+func wrapPoison(wrapped, cause error) error {
+	if postgres.IsDataError(cause) {
+		return fmt.Errorf("%w: %w", ErrPoison, wrapped)
+	}
+	return wrapped
+}
 
 // Canonical orders.status values. They mirror the CHECK constraint in the migration.
 const (
@@ -219,7 +233,7 @@ func (o *OrderRepository) ProcessBatch(ctx context.Context, incoming []IncomingO
 		ok, err := reserveBalance(ctx, tx, ord.Insert.UserID, ord.Reserve.InstrumentID, ord.Reserve.Amount)
 		if err != nil {
 			o.logger.Error("ProcessBatch: reserve: " + err.Error())
-			return fmt.Errorf("process batch: %w: %w", ErrReserve, err)
+			return wrapPoison(fmt.Errorf("process batch: %w: %w", ErrReserve, err), err)
 		}
 		if !ok {
 			appendRejection(result, ord.Insert)
@@ -241,12 +255,12 @@ func (o *OrderRepository) ProcessBatch(ctx context.Context, incoming []IncomingO
 	// Phase 3 — bulk write everything.
 	if err := flushBatch(ctx, tx, result); err != nil {
 		o.logger.Error("ProcessBatch: flush: " + err.Error())
-		return fmt.Errorf("process batch: %w: %w", ErrBatchFlush, err)
+		return wrapPoison(fmt.Errorf("process batch: %w: %w", ErrBatchFlush, err), err)
 	}
 
 	if err := tx.Commit(); err != nil {
 		o.logger.Error("ProcessBatch: commit: " + err.Error())
-		return fmt.Errorf("process batch: %w: %w", ErrBatchCommit, err)
+		return wrapPoison(fmt.Errorf("process batch: %w: %w", ErrBatchCommit, err), err)
 	}
 	return nil
 }
