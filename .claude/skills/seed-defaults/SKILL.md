@@ -74,9 +74,9 @@ Run a single CLI call with all three markets:
 
 ```bash
 POSTGRESQL_URL=<url> ./cli/bin/cli market create --json '[
-  {"name": "ETH-USDT", "price_quantum": 1, "amount_quantum": 1000000000000000,  "min_order_size": 1000000000000000,  "max_order_size": 1000000000000000000},
-  {"name": "BTC-USDT", "price_quantum": 1, "amount_quantum": 1000000,           "min_order_size": 1000000,           "max_order_size": 1000000000000000000},
-  {"name": "ETH-BTC",  "price_quantum": 1, "amount_quantum": 1000000000000000,  "min_order_size": 1000000000000000,  "max_order_size": 1000000000000000000}
+  {"name": "ETH-USDT", "price_quantum": 1, "amount_quantum": 1000000000000000,  "min_order_size": 1000000000000000,  "max_order_size": 1000000000000000000, "taker_fee_bps": 100, "maker_fee_bps": 50},
+  {"name": "BTC-USDT", "price_quantum": 1, "amount_quantum": 1000000,           "min_order_size": 1000000,           "max_order_size": 1000000000000000000, "taker_fee_bps": 100, "maker_fee_bps": 50},
+  {"name": "ETH-BTC",  "price_quantum": 1, "amount_quantum": 1000000000000000,  "min_order_size": 1000000000000000,  "max_order_size": 1000000000000000000, "taker_fee_bps": 100, "maker_fee_bps": 50}
 ]'
 ```
 
@@ -84,6 +84,9 @@ POSTGRESQL_URL=<url> ./cli/bin/cli market create --json '[
 > token's decimal precision (ETH: 18, BTC: 9, USDT: 6), but the user may want different values
 > for their use case. If the user provided explicit quantum/size values before invoking this skill,
 > use those instead.
+
+> **Fees:** the defaults seed **100 bps taker (1%) and 50 bps maker (0.5%)** on every market. If
+> the user wants fee-free markets, drop the `taker_fee_bps`/`maker_fee_bps` fields (they default to 0).
 
 If any market already exists the CLI will report it and continue — this is not a fatal error.
 Only stop if an unexpected error occurs.

@@ -29,7 +29,7 @@ type Market struct {
 }
 
 type MarketRepository interface {
-	CreateMarket(ctx context.Context, baseSymbol, quoteSymbol string, priceQuantum, amountQuantum, minOrderSize, maxOrderSize int64) error
+	CreateMarket(ctx context.Context, baseSymbol, quoteSymbol string, priceQuantum, amountQuantum, minOrderSize, maxOrderSize int64, takerFeeBps, makerFeeBps int64) error
 	GetMarket(ctx context.Context, baseSymbol, quoteSymbol string) (*repository.Market, error)
 	GetMarkets(ctx context.Context) ([]repository.Market, error)
 	RemoveOneMarket(ctx context.Context, baseSymbol, quoteSymbol string) error
@@ -50,7 +50,9 @@ func (s *MarketService) CreateMarket(
 		return err
 	}
 
-	if err := s.marketRepository.CreateMarket(ctx, baseSymbol, quoteSymbol, priceQuantum, amountQuantum, minOrderSize, maxOrderSize); err != nil {
+	// The public HTTP API does not expose fees yet; markets are created with zero fees.
+	// Set fees via the CLI (or a future API field).
+	if err := s.marketRepository.CreateMarket(ctx, baseSymbol, quoteSymbol, priceQuantum, amountQuantum, minOrderSize, maxOrderSize, 0, 0); err != nil {
 		if errors.Is(err, repository.ErrMarketAlreadyExists) {
 			return ErrMarketAlreadyExists
 		}

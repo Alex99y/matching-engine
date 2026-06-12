@@ -47,16 +47,17 @@ func (r *MarketRepository) CreateMarket(
 	ctx context.Context,
 	baseSymbol, quoteSymbol string,
 	priceQuantum, amountQuantum, minOrderSize, maxOrderSize int64,
+	takerFeeBps, makerFeeBps int64,
 ) error {
 	// INSERT ... SELECT avoids a separate lookup round-trip.
 	// If either symbol is missing the SELECT returns 0 rows → rowsAffected == 0.
 	query := `
-		INSERT INTO markets (base_instrument_id, quote_instrument_id, price_quantum, amount_quantum, min_order_size, max_order_size)
-		SELECT bi.id, qi.id, $3, $4, $5, $6
+		INSERT INTO markets (base_instrument_id, quote_instrument_id, price_quantum, amount_quantum, min_order_size, max_order_size, taker_fee_bps, maker_fee_bps)
+		SELECT bi.id, qi.id, $3, $4, $5, $6, $7, $8
 		FROM instruments bi, instruments qi
 		WHERE bi.symbol = $1 AND qi.symbol = $2
 	`
-	result, err := r.psql.ExecContext(ctx, query, baseSymbol, quoteSymbol, priceQuantum, amountQuantum, minOrderSize, maxOrderSize)
+	result, err := r.psql.ExecContext(ctx, query, baseSymbol, quoteSymbol, priceQuantum, amountQuantum, minOrderSize, maxOrderSize, takerFeeBps, makerFeeBps)
 	if err != nil {
 		if constraint, isUnique := postgres.IsUniqueConstraintViolation(err); isUnique {
 			if constraint == MarketBaseQuoteUniqueConstraint {
