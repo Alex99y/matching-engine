@@ -73,7 +73,7 @@ func NewServer(dependencies ServerDependencies) *Server {
 
 	// TODO: Configure limiter
 	app.Use(limiter.New(limiter.Config{
-		Max:        100,
+		Max:        60000,
 		Expiration: 1 * time.Minute,
 	}))
 
