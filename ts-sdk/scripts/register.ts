@@ -14,3 +14,16 @@ try {
   console.error("Registration failed:", err instanceof Error ? err.message : err);
   process.exit(1);
 }
+
+
+try {
+  await client.register({
+    username:"bob",
+    email:"bob@example.com",
+    password:"bobpass123456"
+  });
+  console.log("User 'bob' registered successfully.");
+} catch (err) {
+  console.error("Registration failed:", err instanceof Error ? err.message : err);
+  process.exit(1);
+}
