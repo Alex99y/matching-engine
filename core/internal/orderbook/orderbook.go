@@ -2,6 +2,7 @@ package orderbook
 
 import (
 	"container/list"
+	"math/bits"
 	"strings"
 	"time"
 
@@ -256,30 +257,58 @@ func (o *OrderBook) emitTrade(taker, maker *Order, qty, price uint64, result *re
 	quoteAmt := price * qty
 
 	var buyer, seller *Order
-	if taker.OpenOrder.Side == oeq.BuyOrder {
+	buyerIsTaker := taker.OpenOrder.Side == oeq.BuyOrder
+	if buyerIsTaker {
 		buyer, seller = taker, maker
 	} else {
 		buyer, seller = maker, taker
 	}
 
-	// Buyer pays quote from blocked and receives base; seller pays base from blocked
-	// and receives quote. The matching price is the maker's resting price.
+	// Fees are charged on the asset each party receives, at the taker or maker rate
+	// per role. They simply leave the traders' balances (no house account) and are
+	// recorded on the match. The buyer receives base, the seller receives quote.
+	buyerFeeBps, sellerFeeBps := o.market.MakerFeeBps, o.market.TakerFeeBps
+	if buyerIsTaker {
+		buyerFeeBps, sellerFeeBps = o.market.TakerFeeBps, o.market.MakerFeeBps
+	}
+	buyerFee := feeOf(qty, buyerFeeBps)        // in base
+	sellerFee := feeOf(quoteAmt, sellerFeeBps) // in quote
+
+	// Buyer pays quote from blocked and receives base (minus fee); seller pays base
+	// from blocked and receives quote (minus fee). Price is the maker's resting price.
 	result.AddBalanceDelta(buyer.OpenOrder.UserID, o.quoteInstr(), 0, -int64(quoteAmt))
-	result.AddBalanceDelta(buyer.OpenOrder.UserID, o.baseInstr(), int64(qty), 0)
+	result.AddBalanceDelta(buyer.OpenOrder.UserID, o.baseInstr(), int64(qty-buyerFee), 0)
 	result.AddBalanceDelta(seller.OpenOrder.UserID, o.baseInstr(), 0, -int64(qty))
-	result.AddBalanceDelta(seller.OpenOrder.UserID, o.quoteInstr(), int64(quoteAmt), 0)
+	result.AddBalanceDelta(seller.OpenOrder.UserID, o.quoteInstr(), int64(quoteAmt-sellerFee), 0)
 
 	result.Matches = append(result.Matches, repository.InsertMatchParams{
 		MarketID:          o.market.ID,
 		BuyOrderID:        buyer.OpenOrder.OrderID,
 		SellOrderID:       seller.OpenOrder.OrderID,
-		MatchBuyAmount:    qty,      // base bought
-		MatchSellAmount:   quoteAmt, // quote sold
+		MatchBuyAmount:    qty,       // base bought
+		MatchSellAmount:   quoteAmt,  // quote sold
 		MatchPrice:        price,
-		BuyOrderIsTaker:   taker.OpenOrder.Side == oeq.BuyOrder,
+		MatchBuyFees:      buyerFee,  // buyer's fee, in base
+		MatchSellFees:     sellerFee, // seller's fee, in quote
+		BuyOrderIsTaker:   buyerIsTaker,
 		IsBuyOrderFilled:  buyer.fullyFilled(),
 		IsSellOrderFilled: seller.fullyFilled(),
 	})
+}
+
+// feeOf returns amount × bps / 10000, floored. It uses a 128-bit intermediate so a
+// large amount (quote notional can be huge) cannot overflow; bps is capped at 10000
+// by the DB CHECK, but the guard keeps a misconfiguration from panicking Div64.
+func feeOf(amount, bps uint64) uint64 {
+	if bps == 0 {
+		return 0
+	}
+	hi, lo := bits.Mul64(amount, bps)
+	if hi >= 10000 {
+		return amount / 10000 * bps
+	}
+	fee, _ := bits.Div64(hi, lo, 10000)
+	return fee
 }
 
 func (o *OrderBook) emitMakerFilled(maker *Order, result *repository.BatchResult) {

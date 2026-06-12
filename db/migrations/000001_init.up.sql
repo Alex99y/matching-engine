@@ -34,6 +34,10 @@ CREATE TABLE markets (
     amount_quantum BIGINT NOT NULL DEFAULT 1,
     min_order_size BIGINT NOT NULL DEFAULT 1,
     max_order_size BIGINT NOT NULL DEFAULT 1000000000,
+    -- Maker/taker fees in basis points (1 bp = 0.01%), charged on the asset each party
+    -- receives at match time. Defaulted to 0 so CreateMarket needs no change.
+    taker_fee_bps BIGINT NOT NULL DEFAULT 0 CHECK (taker_fee_bps BETWEEN 0 AND 10000),
+    maker_fee_bps BIGINT NOT NULL DEFAULT 0 CHECK (maker_fee_bps BETWEEN 0 AND 10000),
     CONSTRAINT markets_base_quote_uk UNIQUE (base_instrument_id, quote_instrument_id)
 );
 

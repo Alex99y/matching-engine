@@ -178,16 +178,64 @@ func TestMarketBuyQuoteBudget(t *testing.T) {
 }
 
 // assertConserved checks that, summed across all users, each instrument's total
-// (balance + blocked) movement nets to zero — funds are only ever transferred.
+// (balance + blocked) movement equals the negative of the fees collected in that
+// instrument — funds are only ever transferred, minus what the house takes as fees.
 func assertConserved(t *testing.T, r *repository.BatchResult) {
 	t.Helper()
 	net := map[int]int64{}
 	for _, d := range r.BalanceDeltas() {
 		net[d.InstrumentID] += d.BalanceDelta + d.BlockedDelta
 	}
+	fees := map[int]int64{}
+	for _, m := range r.Matches {
+		fees[baseInstr] += int64(m.MatchBuyFees)   // buyer fee, in base
+		fees[quoteInstr] += int64(m.MatchSellFees) // seller fee, in quote
+	}
 	for instr, n := range net {
-		if n != 0 {
-			t.Fatalf("instrument %d not conserved: net %d", instr, n)
+		if n != -fees[instr] {
+			t.Fatalf("instrument %d not conserved: net %d, fees %d (want net == -fees)", instr, n, fees[instr])
 		}
 	}
+}
+
+// Fees are charged on the asset each party receives, at the taker rate for the taker
+// and the maker rate for the resting maker, and deducted from the credited amount.
+func TestTakerMakerFees(t *testing.T) {
+	o := NewOrderBook(logger.NewLogger(logger.Error), &repository.Market{
+		ID:                1,
+		BaseInstrumentID:  baseInstr,
+		QuoteInstrumentID: quoteInstr,
+		TakerFeeBps:       10, // 0.10%
+		MakerFeeBps:       5,  // 0.05%
+	})
+	seller := uuid.New() // resting maker (sell)
+	buyer := uuid.New()  // incoming taker (buy)
+	restSell(o, seller, 100, 10000)
+
+	r := repository.NewBatchResult()
+	o.MatchOrder(&oeq.OpenOrderEvent{
+		OrderID:     uuid.New(),
+		UserID:      buyer,
+		MarketID:    1,
+		Side:        oeq.BuyOrder,
+		Type:        oeq.LimitOrder,
+		TimeInForce: oeq.GoodTillCancel,
+		Price:       100,
+		Quantity:    10000,
+	}, r)
+
+	// Trade: 10000 base @ 100 → quoteAmt 1,000,000.
+	// Buyer is taker → base fee = 10000 * 10 / 10000 = 10.
+	// Seller is maker → quote fee = 1,000,000 * 5 / 10000 = 500.
+	m := r.Matches[0]
+	if m.MatchBuyFees != 10 || m.MatchSellFees != 500 {
+		t.Fatalf("fees: buy=%d sell=%d (want 10, 500)", m.MatchBuyFees, m.MatchSellFees)
+	}
+	if bb := delta(t, r, buyer, baseInstr); bb.BalanceDelta != 10000-10 {
+		t.Fatalf("buyer base credit=%d (want 9990)", bb.BalanceDelta)
+	}
+	if sq := delta(t, r, seller, quoteInstr); sq.BalanceDelta != 1000000-500 {
+		t.Fatalf("seller quote credit=%d (want 999500)", sq.BalanceDelta)
+	}
+	assertConserved(t, r) // now holds with net == -fees
 }

@@ -176,12 +176,18 @@ the order's full `have` amount.
 
 | Party | base | quote |
 |---|---|---|
-| Buyer | `balance += q` | `blocked −= quoteAmt` |
-| Seller | `blocked −= q` | `balance += quoteAmt` |
+| Buyer | `balance += q − buyerFee` | `blocked −= quoteAmt` |
+| Seller | `blocked −= q` | `balance += quoteAmt − sellerFee` |
 
 The buyer spends reserved quote and receives base; the seller gives up reserved base and
 receives quote. A maker always trades at its own resting price, so its reservation is
-consumed exactly.
+consumed exactly. **Fees** are charged on the asset each party *receives*, at the taker
+rate for the incoming order and the maker rate for the resting order
+(`feeOf(amount, bps) = amount × bps / 10000`, floored). They are deducted from the
+credit, recorded on the `matches` row (`match_buy_fees` in base, `match_sell_fees` in
+quote), and otherwise leave the system — there is no house account. Fees do **not** touch
+reservation or release: the buyer still pays the full `quoteAmt`, it just receives less
+base. Rates come from the market (`taker_fee_bps` / `maker_fee_bps`, default 0).
 
 **Completion release** (taker only) returns funds the taker reserved but will not use:
 
@@ -200,7 +206,7 @@ This single rule covers every case:
 
 A **cancel** (`CancelOrder`) releases all still-blocked funds of the resting remainder.
 
-Worked example — limit buy 10 @ 120 hits a resting sell 10 @ 100:
+Worked example (fees off) — limit buy 10 @ 120 hits a resting sell 10 @ 100:
 
 ```
 reserve:        quote balance −1200, blocked +1200
@@ -212,8 +218,9 @@ net buyer:      quote −1000 total, base +10        (paid 1000, got 10)
 net seller:     base  −10 total,   quote +1000     (gave 10, got 1000)
 ```
 
-The conservation invariant — every instrument's `Σ(balance + blocked)` change nets to
-zero — is asserted in `orderbook_test.go`.
+The conservation invariant — every instrument's `Σ(balance + blocked)` change equals
+`−(fees collected in that instrument)` (zero when fees are off) — is asserted in
+`orderbook_test.go`.
 
 ---
 

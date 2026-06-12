@@ -34,6 +34,8 @@ type Market struct {
 	MaxOrderSize      uint64
 	BaseInstrumentID  int
 	QuoteInstrumentID int
+	TakerFeeBps       uint64
+	MakerFeeBps       uint64
 }
 
 type MarketRepository struct {
@@ -82,7 +84,8 @@ func (r *MarketRepository) GetMarket(ctx context.Context, baseSymbol, quoteSymbo
 	query := `
 		SELECT m.id, bi.symbol, qi.symbol,
 		       m.price_quantum, m.amount_quantum, m.min_order_size, m.max_order_size,
-		       m.base_instrument_id, m.quote_instrument_id
+		       m.base_instrument_id, m.quote_instrument_id,
+		       m.taker_fee_bps, m.maker_fee_bps
 		FROM markets m
 		JOIN instruments bi ON m.base_instrument_id = bi.id
 		JOIN instruments qi ON m.quote_instrument_id = qi.id
@@ -91,7 +94,7 @@ func (r *MarketRepository) GetMarket(ctx context.Context, baseSymbol, quoteSymbo
 	row := r.psql.QueryRowContext(ctx, query, baseSymbol, quoteSymbol)
 	m := &Market{}
 
-	err := row.Scan(&m.ID, &m.BaseSymbol, &m.QuoteSymbol, &m.PriceQuantum, &m.AmountQuantum, &m.MinOrderSize, &m.MaxOrderSize, &m.BaseInstrumentID, &m.QuoteInstrumentID)
+	err := row.Scan(&m.ID, &m.BaseSymbol, &m.QuoteSymbol, &m.PriceQuantum, &m.AmountQuantum, &m.MinOrderSize, &m.MaxOrderSize, &m.BaseInstrumentID, &m.QuoteInstrumentID, &m.TakerFeeBps, &m.MakerFeeBps)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("%s %w", marketErrPrefix, ErrMarketNotFound)
@@ -108,7 +111,8 @@ func (r *MarketRepository) GetMarkets(ctx context.Context) ([]Market, error) {
 	query := `
 		SELECT m.id, bi.symbol, qi.symbol,
 		       m.price_quantum, m.amount_quantum, m.min_order_size, m.max_order_size,
-		       m.base_instrument_id, m.quote_instrument_id
+		       m.base_instrument_id, m.quote_instrument_id,
+		       m.taker_fee_bps, m.maker_fee_bps
 		FROM markets m
 		JOIN instruments bi ON m.base_instrument_id = bi.id
 		JOIN instruments qi ON m.quote_instrument_id = qi.id
@@ -125,7 +129,7 @@ func (r *MarketRepository) GetMarkets(ctx context.Context) ([]Market, error) {
 	markets := []Market{}
 	for rows.Next() {
 		var m Market
-		if err := rows.Scan(&m.ID, &m.BaseSymbol, &m.QuoteSymbol, &m.PriceQuantum, &m.AmountQuantum, &m.MinOrderSize, &m.MaxOrderSize, &m.BaseInstrumentID, &m.QuoteInstrumentID); err != nil {
+		if err := rows.Scan(&m.ID, &m.BaseSymbol, &m.QuoteSymbol, &m.PriceQuantum, &m.AmountQuantum, &m.MinOrderSize, &m.MaxOrderSize, &m.BaseInstrumentID, &m.QuoteInstrumentID, &m.TakerFeeBps, &m.MakerFeeBps); err != nil {
 			r.logger.Error("error scanning market row")
 			r.logger.ErrorO(err)
 			return nil, fmt.Errorf("%s %w", marketErrPrefix, ErrMarketGetFailed)
