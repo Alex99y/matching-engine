@@ -66,7 +66,7 @@ function startServer(): Promise<Server> {
           return;
         case "POST /api/v1/order/":
           lastCreateOrderRaw = await readBody(req);
-          sendJson(202, '{"order_id":"order-1"}');
+          sendJson(202, '{"results":[{"index":0,"order_id":"order-1"}]}');
           return;
         case "GET /api/v1/order/":
           sendJson(
@@ -125,14 +125,15 @@ describe("end-to-end flow against a mock server", () => {
     const session = await client.login({ username: "bot", password: "supersecret" });
     expect(session.authToken).toBe("e2e-token");
 
-    const { orderId } = await session.createOrder({
+    const { results: createResults } = await session.createOrders([{
       market: "ETH-USDT",
       side: OrderSide.Buy,
       type: OrderType.Limit,
       timeInForce: TimeInForce.GoodTillCancel,
       price: PRICE,
       quantity: 5n,
-    });
+    }]);
+    const orderId = createResults[0]?.orderId ?? "";
     expect(orderId).toBe("order-1");
 
     // The server received the bigint price as an exact, unquoted integer.

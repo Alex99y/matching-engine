@@ -6,8 +6,11 @@
 import { ParseError } from "../errors/index.js";
 import type {
   Balance,
+  BatchCancelOrderResponse,
+  BatchCancelOrderResult,
+  BatchCreateOrderResponse,
+  BatchCreateOrderResult,
   CancelledOrder,
-  CreateOrderResult,
   Instrument,
   Market,
   OpenOrder,
@@ -158,9 +161,37 @@ export function parseOrders(raw: unknown): Order[] {
   return asArray(raw, "orders").map(parseOrder);
 }
 
-export function parseCreateOrderResult(raw: unknown): CreateOrderResult {
-  const o = asRecord(raw, "create order result");
-  return { orderId: reqString(o, "order_id") };
+export function parseBatchCreateOrderResult(raw: unknown): BatchCreateOrderResult {
+  const o = asRecord(raw, "batch create order result");
+  const index = reqNumber(o, "index");
+  const orderId = optString(o, "order_id");
+  const error = optString(o, "error");
+  return {
+    index,
+    ...(orderId !== undefined ? { orderId } : {}),
+    ...(error !== undefined ? { error } : {}),
+  };
+}
+
+export function parseBatchCreateOrderResponse(raw: unknown): BatchCreateOrderResponse {
+  const o = asRecord(raw, "batch create order response");
+  return {
+    results: asArray(o["results"], "results").map(parseBatchCreateOrderResult),
+  };
+}
+
+export function parseBatchCancelOrderResult(raw: unknown): BatchCancelOrderResult {
+  const o = asRecord(raw, "batch cancel order result");
+  const base = { orderId: reqString(o, "order_id") };
+  const error = optString(o, "error");
+  return error !== undefined ? { ...base, error } : base;
+}
+
+export function parseBatchCancelOrderResponse(raw: unknown): BatchCancelOrderResponse {
+  const o = asRecord(raw, "batch cancel order response");
+  return {
+    results: asArray(o["results"], "results").map(parseBatchCancelOrderResult),
+  };
 }
 
 export function parseLoginToken(raw: unknown): string {

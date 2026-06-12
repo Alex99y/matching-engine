@@ -19,9 +19,12 @@ export {
 export { OrderSide, OrderType, TimeInForce } from "./types/index.js";
 export type {
   Balance,
+  BatchCancelOrderResponse,
+  BatchCancelOrderResult,
+  BatchCreateOrderResponse,
+  BatchCreateOrderResult,
   CancelledOrder,
   CreateOrderParams,
-  CreateOrderResult,
   GetOrdersFilter,
   Instrument,
   LoginParams,

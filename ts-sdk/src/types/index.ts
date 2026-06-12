@@ -76,8 +76,25 @@ export interface CreateOrderParams {
   readonly expiresAt?: number;
 }
 
-export interface CreateOrderResult {
+// ---- Batch order results ----
+
+export interface BatchCreateOrderResult {
+  readonly index: number;
+  readonly orderId?: string;
+  readonly error?: string;
+}
+
+export interface BatchCreateOrderResponse {
+  readonly results: readonly BatchCreateOrderResult[];
+}
+
+export interface BatchCancelOrderResult {
   readonly orderId: string;
+  readonly error?: string;
+}
+
+export interface BatchCancelOrderResponse {
+  readonly results: readonly BatchCancelOrderResult[];
 }
 
 export interface GetOrdersFilter {

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { ParseError } from "../errors/index.js";
 import {
-  parseCreateOrderResult,
+  parseBatchCancelOrderResponse,
+  parseBatchCreateOrderResponse,
   parseInstruments,
   parseLoginToken,
   parseMarkets,
@@ -147,13 +148,45 @@ describe("parseOrder", () => {
   });
 });
 
-describe("parseCreateOrderResult", () => {
-  it("maps order_id", () => {
-    expect(parseCreateOrderResult({ order_id: "abc" })).toEqual({ orderId: "abc" });
+describe("parseBatchCreateOrderResponse", () => {
+  it("maps successful and failed items", () => {
+    const resp = parseBatchCreateOrderResponse({
+      results: [
+        { index: 0, order_id: "abc" },
+        { index: 1, error: "market not found" },
+      ],
+    });
+    expect(resp.results[0]).toEqual({ index: 0, orderId: "abc" });
+    expect(resp.results[1]).toEqual({ index: 1, error: "market not found" });
   });
 
-  it("throws ParseError when order_id is missing", () => {
-    expect(() => parseCreateOrderResult({})).toThrow(ParseError);
+  it("throws ParseError when results is missing", () => {
+    expect(() => parseBatchCreateOrderResponse({})).toThrow(ParseError);
+  });
+
+  it("throws ParseError when index is missing from an item", () => {
+    expect(() =>
+      parseBatchCreateOrderResponse({ results: [{ order_id: "x" }] }),
+    ).toThrow(ParseError);
+  });
+});
+
+describe("parseBatchCancelOrderResponse", () => {
+  it("maps successful and failed items", () => {
+    const resp = parseBatchCancelOrderResponse({
+      results: [
+        { order_id: "o1" },
+        { order_id: "o2", error: "order not found" },
+      ],
+    });
+    expect(resp.results[0]).toEqual({ orderId: "o1" });
+    expect(resp.results[1]).toEqual({ orderId: "o2", error: "order not found" });
+  });
+
+  it("throws ParseError when order_id is missing from an item", () => {
+    expect(() =>
+      parseBatchCancelOrderResponse({ results: [{ error: "bad" }] }),
+    ).toThrow(ParseError);
   });
 });
 

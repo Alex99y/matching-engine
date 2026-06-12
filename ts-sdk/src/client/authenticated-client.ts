@@ -3,8 +3,9 @@ import * as orders from "../resources/orders.js";
 import * as users from "../resources/users.js";
 import type {
   Balance,
+  BatchCancelOrderResponse,
+  BatchCreateOrderResponse,
   CreateOrderParams,
-  CreateOrderResult,
   GetOrdersFilter,
   Order,
 } from "../types/index.js";
@@ -57,39 +58,54 @@ export class AuthenticatedClient {
   }
 
   /**
-   * Request cancellation of an open order. The API accepts the cancel
-   * asynchronously (HTTP 202); the order is removed from the book out of band.
+   * Submit one or more orders in a single request (max 500). The API accepts
+   * each item asynchronously (HTTP 202) and returns a per-item result; an item
+   * may succeed while another fails validation or references an unknown market.
+   * Check `result.error` on each item to detect partial failures.
    *
-   * @param orderId - UUID of the order to cancel.
-   * @throws {@link ValidationError} when `orderId` is empty.
-   * @throws {@link APIError} (404) when the order does not exist or does not
-   *   belong to the authenticated user.
+   * @param params - Array of order parameters (1–500 items). Each item accepts
+   *   `clientOrderId` for per-order idempotency.
+   * @throws {@link ValidationError} on an empty array, batch size > 500, or
+   *   invalid side/type/tif on any item.
+   * @throws {@link APIError} on server-side failures.
    * @example
-   * await session.cancelOrder("0190f...");
+   * const { results } = await session.createOrders([
+   *   {
+   *     market: "ETH-USDT",
+   *     side: OrderSide.Buy,
+   *     type: OrderType.Limit,
+   *     timeInForce: TimeInForce.GoodTillCancel,
+   *     price: 2_000_000n,
+   *     quantity: 5n,
+   *   },
+   * ]);
+   * for (const r of results) {
+   *   if (r.error) console.error(`index ${r.index}: ${r.error}`);
+   *   else console.log(`index ${r.index}: orderId=${r.orderId}`);
+   * }
    */
-  async cancelOrder(orderId: string): Promise<void> {
-    return orders.cancelOrder(this.transport, this.token, orderId);
+  async createOrders(params: CreateOrderParams[]): Promise<BatchCreateOrderResponse> {
+    return orders.createOrders(this.transport, this.token, params);
   }
 
   /**
-   * Submit a new order. The API accepts it asynchronously (HTTP 202) and
-   * returns the assigned order id; matching happens out of band.
+   * Request cancellation of one or more open orders in a single request
+   * (max 500). The API accepts each cancel asynchronously (HTTP 202); orders
+   * are removed from the book out of band. Partial failures are reported
+   * per-item — check `result.error` for items that could not be cancelled.
    *
-   * @param params - Order parameters; pass `clientOrderId` for idempotency.
-   * @throws {@link ValidationError} on invalid side/type/tif or bad clientOrderId length.
-   * @throws {@link APIError} (404 unknown market, 422 invalid order).
+   * @param orderIds - Array of order UUIDs to cancel (1–500 items).
+   * @throws {@link ValidationError} on an empty array, batch size > 500, or
+   *   an empty string in the array.
+   * @throws {@link APIError} on server-side failures.
    * @example
-   * const { orderId } = await session.createOrder({
-   *   market: "ETH-USDT",
-   *   side: OrderSide.Buy,
-   *   type: OrderType.Limit,
-   *   timeInForce: TimeInForce.GoodTillCancel,
-   *   price: 2_000_000n,
-   *   quantity: 5n,
-   * });
+   * const { results } = await session.cancelOrders(["0190f...", "0190g..."]);
+   * for (const r of results) {
+   *   if (r.error) console.error(`${r.orderId}: ${r.error}`);
+   * }
    */
-  async createOrder(params: CreateOrderParams): Promise<CreateOrderResult> {
-    return orders.createOrder(this.transport, this.token, params);
+  async cancelOrders(orderIds: string[]): Promise<BatchCancelOrderResponse> {
+    return orders.cancelOrders(this.transport, this.token, orderIds);
   }
 
   /**

@@ -13,6 +13,8 @@ import {
   type RegisterParams,
 } from "../types/index.js";
 
+const MAX_BATCH_SIZE = 500;
+
 const ORDER_SIDES = new Set<string>(Object.values(OrderSide));
 const ORDER_TYPES = new Set<string>(Object.values(OrderType));
 const TIME_IN_FORCES = new Set<string>(Object.values(TimeInForce));
@@ -79,6 +81,39 @@ export function validateCreateOrderParams(params: CreateOrderParams): void {
   }
   if (params.quoteQty !== undefined) {
     requireNonNegative(params.quoteQty, "quoteQty");
+  }
+}
+
+export function validateBatchCreateOrderParams(params: CreateOrderParams[]): void {
+  if (!Array.isArray(params) || params.length === 0) {
+    throw new ValidationError("params must be a non-empty array");
+  }
+  if (params.length > MAX_BATCH_SIZE) {
+    throw new ValidationError(`batch size exceeds maximum of ${MAX_BATCH_SIZE}`);
+  }
+  for (let i = 0; i < params.length; i++) {
+    try {
+      validateCreateOrderParams(params[i]!);
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        throw new ValidationError(`params[${i}]: ${e.message}`);
+      }
+      throw e;
+    }
+  }
+}
+
+export function validateBatchCancelOrderIds(orderIds: string[]): void {
+  if (!Array.isArray(orderIds) || orderIds.length === 0) {
+    throw new ValidationError("orderIds must be a non-empty array");
+  }
+  if (orderIds.length > MAX_BATCH_SIZE) {
+    throw new ValidationError(`batch size exceeds maximum of ${MAX_BATCH_SIZE}`);
+  }
+  for (let i = 0; i < orderIds.length; i++) {
+    if (typeof orderIds[i] !== "string" || orderIds[i]!.length === 0) {
+      throw new ValidationError(`orderIds[${i}] must be a non-empty string`);
+    }
   }
 }
 

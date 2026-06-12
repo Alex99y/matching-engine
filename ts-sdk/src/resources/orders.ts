@@ -1,19 +1,22 @@
 // Orders resource: read and create orders. All routes require a bearer token.
 
-import type { QueryParams, Transport } from "../http/transport.js";
+import type { Transport } from "../http/transport.js";
 import type {
+  BatchCancelOrderResponse,
+  BatchCreateOrderResponse,
   CreateOrderParams,
-  CreateOrderResult,
   GetOrdersFilter,
   Order,
 } from "../types/index.js";
 import {
-  parseCreateOrderResult,
+  parseBatchCancelOrderResponse,
+  parseBatchCreateOrderResponse,
   parseOrder,
   parseOrders,
 } from "../utils/parse.js";
 import {
-  validateCreateOrderParams,
+  validateBatchCancelOrderIds,
+  validateBatchCreateOrderParams,
   validateGetOrdersFilter,
   validateOrderId,
 } from "../utils/validation.js";
@@ -41,7 +44,7 @@ export async function getOrders(
 ): Promise<Order[]> {
   validateGetOrdersFilter(filter);
 
-  const query: QueryParams = {
+  const query: Record<string, string | number | boolean | undefined> = {
     client_order_id: filter.clientOrderId,
     market: filter.market,
     start_date: filter.startDate,
@@ -63,51 +66,45 @@ export async function getOrders(
   return parseOrders(raw);
 }
 
-export async function cancelOrder(
+export async function createOrders(
   transport: Transport,
   token: string,
-  orderId: string,
-): Promise<void> {
-  validateOrderId(orderId);
-  await transport.request<void>(
-    "DELETE",
-    `${ORDERS_BASE}/${encodeURIComponent(orderId)}`,
-    { token },
-  );
-}
+  params: CreateOrderParams[],
+): Promise<BatchCreateOrderResponse> {
+  validateBatchCreateOrderParams(params);
 
-export async function createOrder(
-  transport: Transport,
-  token: string,
-  params: CreateOrderParams,
-): Promise<CreateOrderResult> {
-  validateCreateOrderParams(params);
-
-  const body: Record<string, unknown> = {
-    order_side: params.side,
-    order_type: params.type,
-    order_tif: params.timeInForce,
-    market: params.market,
-  };
-  if (params.clientOrderId !== undefined) {
-    body["client_order_id"] = params.clientOrderId;
-  }
-  if (params.price !== undefined) {
-    body["price"] = params.price;
-  }
-  if (params.quantity !== undefined) {
-    body["quantity"] = params.quantity;
-  }
-  if (params.quoteQty !== undefined) {
-    body["quote_qty"] = params.quoteQty;
-  }
-  if (params.expiresAt !== undefined) {
-    body["expires_at"] = params.expiresAt;
-  }
+  const body = params.map((p) => {
+    const item: Record<string, unknown> = {
+      order_side: p.side,
+      order_type: p.type,
+      order_tif: p.timeInForce,
+      market: p.market,
+    };
+    if (p.clientOrderId !== undefined) item["client_order_id"] = p.clientOrderId;
+    if (p.price !== undefined) item["price"] = p.price;
+    if (p.quantity !== undefined) item["quantity"] = p.quantity;
+    if (p.quoteQty !== undefined) item["quote_qty"] = p.quoteQty;
+    if (p.expiresAt !== undefined) item["expires_at"] = p.expiresAt;
+    return item;
+  });
 
   const raw = await transport.request<unknown>("POST", `${ORDERS_BASE}/`, {
     body,
     token,
   });
-  return parseCreateOrderResult(raw);
+  return parseBatchCreateOrderResponse(raw);
+}
+
+export async function cancelOrders(
+  transport: Transport,
+  token: string,
+  orderIds: string[],
+): Promise<BatchCancelOrderResponse> {
+  validateBatchCancelOrderIds(orderIds);
+
+  const raw = await transport.request<unknown>("DELETE", `${ORDERS_BASE}/`, {
+    body: { order_ids: orderIds },
+    token,
+  });
+  return parseBatchCancelOrderResponse(raw);
 }

@@ -38,17 +38,19 @@ describe("AuthenticatedClient", () => {
     expect(orders[0]?.haveQuantity).toBe(1n);
   });
 
-  it("createOrder returns the new order id", async () => {
-    const { session } = client({ order_id: "abc" });
-    const result = await session.createOrder({
-      market: "ETH-USDT",
-      side: OrderSide.Buy,
-      type: OrderType.Limit,
-      timeInForce: TimeInForce.GoodTillCancel,
-      price: 1n,
-      quantity: 1n,
-    });
-    expect(result.orderId).toBe("abc");
+  it("createOrders returns batch results", async () => {
+    const { session } = client({ results: [{ index: 0, order_id: "abc" }] });
+    const resp = await session.createOrders([
+      {
+        market: "ETH-USDT",
+        side: OrderSide.Buy,
+        type: OrderType.Limit,
+        timeInForce: TimeInForce.GoodTillCancel,
+        price: 1n,
+        quantity: 1n,
+      },
+    ]);
+    expect(resp.results[0]?.orderId).toBe("abc");
   });
 
   it("getBalances returns parsed balances and forwards the token", async () => {
@@ -62,10 +64,13 @@ describe("AuthenticatedClient", () => {
     expect(request.mock.calls[0]?.[2]?.token).toBe("tok");
   });
 
-  it("cancelOrder sends DELETE and forwards the token", async () => {
-    const { session, request } = client(undefined);
-    await session.cancelOrder("o1");
-    expect(request).toHaveBeenCalledWith("DELETE", "/api/v1/order/o1", { token: "tok" });
+  it("cancelOrders sends DELETE with order_ids body and forwards the token", async () => {
+    const { session, request } = client({ results: [{ order_id: "o1" }] });
+    await session.cancelOrders(["o1"]);
+    expect(request).toHaveBeenCalledWith("DELETE", "/api/v1/order/", {
+      token: "tok",
+      body: { order_ids: ["o1"] },
+    });
   });
 
   it("logout resolves without touching the transport", async () => {
