@@ -3,3 +3,6 @@
 
 # Local environment — never commit secrets
 **/.env
+
+## Claude reviews
+reviews/*
