@@ -7,6 +7,7 @@ import (
 
 	"github.com/alex99y/matching-engine/api/internal/instruments"
 	"github.com/alex99y/matching-engine/api/internal/markets"
+	"github.com/alex99y/matching-engine/api/internal/metrics"
 	"github.com/alex99y/matching-engine/api/internal/orders"
 	"github.com/alex99y/matching-engine/api/internal/users"
 	"github.com/alex99y/matching-engine/api/pkg/middleware"
@@ -20,9 +21,9 @@ import (
 )
 
 type ServerDependencies struct {
-	Logger         *logger.Logger
-	AuthMiddleware middleware.AuthMiddleware
-	// Metrics       *metrics.ApiMetrics
+	Logger             *logger.Logger
+	AuthMiddleware     middleware.AuthMiddleware
+	Metrics            *metrics.ApiMetrics
 	UsersHandler       *users.UserHandler
 	InstrumentsHandler *instruments.InstrumentHandler
 	MarketsHandler     *markets.MarketHandler
@@ -64,7 +65,7 @@ func NewServer(dependencies ServerDependencies) *Server {
 	app := fiber.New(fiber.Config{
 		StructValidator: validations.NewStructValidator(),
 	})
-	app.Use(middleware.AccessLog(dependencies.Logger))
+	app.Use(middleware.AccessLog(dependencies.Logger, dependencies.Metrics))
 	app.Use(requestid.New(requestid.Config{
 		Generator: func() string {
 			return uuid.New().String()

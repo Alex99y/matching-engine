@@ -81,7 +81,12 @@ func (q *Queue) Name() string {
 	return q.queue.Name
 }
 
-func (q *Queue) Publish(ctx context.Context, message []byte, persistent bool) error {
+func (q *Queue) Publish(
+	ctx context.Context,
+	messageId string,
+	message []byte,
+	persistent bool,
+) error {
 	q.mu.RLock()
 	ch := q.channel
 	name := q.queue.Name
@@ -92,11 +97,11 @@ func (q *Queue) Publish(ctx context.Context, message []byte, persistent bool) er
 		name,
 		false,
 		false,
-		newJSONPublishing(message, persistent),
+		newJSONPublishing(messageId, message, persistent),
 	)
 }
 
-func newJSONPublishing(message []byte, persistent bool) amqp091.Publishing {
+func newJSONPublishing(messageId string, message []byte, persistent bool) amqp091.Publishing {
 	deliveryMode := amqp091.Transient
 	if persistent {
 		deliveryMode = amqp091.Persistent
@@ -104,6 +109,7 @@ func newJSONPublishing(message []byte, persistent bool) amqp091.Publishing {
 	return amqp091.Publishing{
 		ContentType:  "application/json",
 		DeliveryMode: deliveryMode,
+		MessageId:    messageId,
 		Body:         message,
 	}
 }

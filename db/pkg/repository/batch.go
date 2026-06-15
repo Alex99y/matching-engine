@@ -200,7 +200,8 @@ type MatchFunc func(fundedOrderIDs []uuid.UUID) (*BatchResult, error)
 // the batch) and the error is returned; because the match callback has, by then,
 // mutated the in-memory book, the caller MUST rebuild the book from the DB and requeue
 // the batch's messages.
-func (o *OrderRepository) ProcessBatch(ctx context.Context, incoming []IncomingOrder, match MatchFunc) error {
+func (o *OrderRepository) ProcessBatch(ctx context.Context, incoming []IncomingOrder, match MatchFunc) (outErr error) {
+	defer o.metrics.ObserveQuery("process_batch", time.Now(), &outErr)
 	tx, err := o.psql.BeginTx(ctx, nil)
 	if err != nil {
 		o.logger.Error("ProcessBatch: begin tx: " + err.Error())
@@ -547,7 +548,8 @@ type OpenOrderHydration struct {
 // LoadOpenOrders returns every resting order for a market, ordered by open_orders.id
 // (a BIGSERIAL), which reproduces insertion order and therefore per-price-level FIFO
 // priority when the caller reinserts them into the book.
-func (o *OrderRepository) LoadOpenOrders(ctx context.Context, marketID int) ([]OpenOrderHydration, error) {
+func (o *OrderRepository) LoadOpenOrders(ctx context.Context, marketID int) (_ []OpenOrderHydration, outErr error) {
+	defer o.metrics.ObserveQuery("load_open_orders", time.Now(), &outErr)
 	const q = `
 		SELECT oo.order_id, ord.user_id, ord.client_order_id, oo.side, oo.price,
 		       ord.type, ord.time_in_force, oo.remaining_have_amount, oo.remaining_want_amount,

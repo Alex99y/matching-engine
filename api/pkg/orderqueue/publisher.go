@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/alex99y/matching-engine/api/internal/metrics"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	"github.com/alex99y/matching-engine/common/pkg/observability"
 	"github.com/alex99y/matching-engine/common/pkg/rabbitmq"
 	"github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 )
@@ -13,18 +15,30 @@ import (
 var ErrMarketQueueNotFound = errors.New("no queue registered for market")
 
 type OrderCommandPublisher struct {
-	queues map[string]*order_events_queue.OrdersEventsQueue
-	logger *logger.Logger
+	queues  map[string]*order_events_queue.OrdersEventsQueue
+	logger  *logger.Logger
+	metrics *metrics.ApiMetrics
 }
 
-func (p *OrderCommandPublisher) Publish(ctx context.Context, marketRef string, event *order_events_queue.OrderEvent) error {
+func (p *OrderCommandPublisher) Publish(
+	ctx context.Context,
+	messageId string,
+	marketRef string,
+	event *order_events_queue.OrderEvent,
+) error {
+	stop := observability.StartTimer()
+
 	q, ok := p.queues[marketRef]
 	if !ok {
+		p.metrics.RecordOrderPublish(marketRef, metrics.ResultError, stop())
 		return fmt.Errorf("%w: %q", ErrMarketQueueNotFound, marketRef)
 	}
-	if err := q.EmitNewOrderToME(ctx, event); err != nil {
+
+	if err := q.EmitNewOrderToME(ctx, messageId, event); err != nil {
+		p.metrics.RecordOrderPublish(marketRef, metrics.ResultError, stop())
 		return fmt.Errorf("publish to market %q: %w", marketRef, err)
 	}
+	p.metrics.RecordOrderPublish(marketRef, metrics.ResultSuccess, stop())
 	return nil
 }
 
@@ -34,6 +48,7 @@ func NewOrderCommandPublisher(
 	log *logger.Logger,
 	rabbitMQClient *rabbitmq.RabbitMQClient,
 	marketRefs []string,
+	apiMetrics *metrics.ApiMetrics,
 ) *OrderCommandPublisher {
 	if log == nil {
 		panic("logger cannot be nil")
@@ -46,7 +61,8 @@ func NewOrderCommandPublisher(
 		queues[ref] = order_events_queue.NewOrdersQueue(log, ref, rabbitMQClient)
 	}
 	return &OrderCommandPublisher{
-		queues: queues,
-		logger: log,
+		queues:  queues,
+		logger:  log,
+		metrics: apiMetrics,
 	}
 }

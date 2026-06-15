@@ -1,0 +1,29 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # api and core run on the host (via `make run`), not inside compose, so they are reached
+  # through host.docker.internal (host-gateway is added in docker-compose.yml). Ports come
+  # from each module's METRICS_PORT: api=9091, core=9092.
+  - job_name: api
+    static_configs:
+      - targets: ["host.docker.internal:9091"]
+        labels:
+          service: api
+
+  - job_name: core
+    static_configs:
+      - targets: ["host.docker.internal:9092"]
+        labels:
+          service: core
+
+  # RabbitMQ runs in compose; the rabbitmq_prometheus plugin exposes :15692. Used for queue
+  # depth / consumer lag (rabbitmq_queue_messages_ready) instead of instrumenting core (D6).
+  - job_name: rabbitmq
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

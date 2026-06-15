@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	"github.com/alex99y/matching-engine/db/pkg/metrics"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
@@ -19,8 +20,9 @@ var (
 )
 
 type OrderRepository struct {
-	psql   *sql.DB
-	logger *logger.Logger
+	psql    *sql.DB
+	logger  *logger.Logger
+	metrics *metrics.DBMetrics
 }
 
 type OrderRow struct {
@@ -74,7 +76,8 @@ type InsertOpenOrderParams struct {
 
 // getOrder is an internal helper called only by GetOrderById and GetOrderByClientOrderID.
 // where must be a hardcoded SQL fragment (e.g. "WHERE orders.id = $1") — never user input.
-func (o *OrderRepository) getOrder(ctx context.Context, where string, args ...any) (*OrderRow, error) {
+func (o *OrderRepository) getOrder(ctx context.Context, where string, args ...any) (_ *OrderRow, outErr error) {
+	defer o.metrics.ObserveQuery("get_order", time.Now(), &outErr)
 	query := `
 		SELECT
 			orders.id,
@@ -169,7 +172,8 @@ func (o *OrderRepository) GetOrdersByUser(
 	baseInstrumentID, quoteInstrumentID *int,
 	startDate, endDate *time.Time,
 	limit int,
-) ([]OrderRow, error) {
+) (_ []OrderRow, outErr error) {
+	defer o.metrics.ObserveQuery("get_orders_by_user", time.Now(), &outErr)
 	// Base columns always selected from orders.
 	cols := []string{
 		"orders.id",
@@ -318,7 +322,8 @@ func (o *OrderRepository) GetOrdersByUser(
 	return result, nil
 }
 
-func (o *OrderRepository) GetOrdersByIDs(ctx context.Context, userID uuid.UUID, ids []uuid.UUID) ([]OrderRow, error) {
+func (o *OrderRepository) GetOrdersByIDs(ctx context.Context, userID uuid.UUID, ids []uuid.UUID) (_ []OrderRow, outErr error) {
+	defer o.metrics.ObserveQuery("get_orders_by_ids", time.Now(), &outErr)
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -410,7 +415,8 @@ func (o *OrderRepository) GetOrdersByIDs(ctx context.Context, userID uuid.UUID, 
 	return result, nil
 }
 
-func NewOrderRepository(logger *logger.Logger, psql *sql.DB) *OrderRepository {
+// dbMetrics may be nil, which disables query metric recording.
+func NewOrderRepository(logger *logger.Logger, psql *sql.DB, dbMetrics *metrics.DBMetrics) *OrderRepository {
 	if logger == nil {
 		panic("logger cannot be nil")
 	}
@@ -418,7 +424,8 @@ func NewOrderRepository(logger *logger.Logger, psql *sql.DB) *OrderRepository {
 		panic("psql cannot be nil")
 	}
 	return &OrderRepository{
-		psql:   psql,
-		logger: logger,
+		psql:    psql,
+		logger:  logger,
+		metrics: dbMetrics,
 	}
 }

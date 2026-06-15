@@ -255,6 +255,26 @@ func (counter *CounterMetric) CustomInc(value float64, labels Labels) error {
 	return nil
 }
 
+// IncValues and AddValues are the no-validation fast path: label values are passed
+// positionally in registration order, skipping the per-call map allocation, sort, and
+// label-set check that Inc(Labels) performs. Use on hot paths (e.g. the per-order matcher
+// loop). The number of values must match the registered label keys — a mismatch panics,
+// which is the intended programmer-error signal and is covered by tests.
+func (counter *CounterMetric) IncValues(values ...string) {
+	counter.vec.WithLabelValues(values...).Inc()
+}
+
+func (counter *CounterMetric) AddValues(value float64, values ...string) {
+	counter.vec.WithLabelValues(values...).Add(value)
+}
+
+// Bind resolves a fixed label set once and returns the concrete counter, so a hot caller
+// with a stable label set (e.g. one market per processor) can hold the handle and call
+// Inc()/Add() with zero per-call allocation. Same panic-on-mismatch contract as IncValues.
+func (counter *CounterMetric) Bind(values ...string) prometheus.Counter {
+	return counter.vec.WithLabelValues(values...)
+}
+
 func (gauge *GaugeMetric) Set(value float64, labels Labels) error {
 	labelValues, err := orderedLabelValues(gauge.labelKeys, labels)
 	if err != nil {
@@ -291,6 +311,29 @@ func (gauge *GaugeMetric) CustomAdd(value float64, labels Labels) error {
 	return nil
 }
 
+// SetValues / IncValues / DecValues / AddValues are the no-validation fast path for gauges:
+// label values are passed positionally in registration order. See CounterMetric.IncValues.
+func (gauge *GaugeMetric) SetValues(value float64, values ...string) {
+	gauge.vec.WithLabelValues(values...).Set(value)
+}
+
+func (gauge *GaugeMetric) IncValues(values ...string) {
+	gauge.vec.WithLabelValues(values...).Inc()
+}
+
+func (gauge *GaugeMetric) DecValues(values ...string) {
+	gauge.vec.WithLabelValues(values...).Dec()
+}
+
+func (gauge *GaugeMetric) AddValues(value float64, values ...string) {
+	gauge.vec.WithLabelValues(values...).Add(value)
+}
+
+// Bind resolves a fixed label set once and returns the concrete gauge. See CounterMetric.Bind.
+func (gauge *GaugeMetric) Bind(values ...string) prometheus.Gauge {
+	return gauge.vec.WithLabelValues(values...)
+}
+
 func (histogram *HistogramMetric) Observe(value float64, labels Labels) error {
 	labelValues, err := orderedLabelValues(histogram.labelKeys, labels)
 	if err != nil {
@@ -305,6 +348,17 @@ func (histogram *HistogramMetric) ObserveDuration(
 	labels Labels,
 ) error {
 	return histogram.Observe(duration.Seconds(), labels)
+}
+
+// ObserveValues is the no-validation fast path for histograms: label values are passed
+// positionally in registration order. See CounterMetric.IncValues.
+func (histogram *HistogramMetric) ObserveValues(value float64, values ...string) {
+	histogram.vec.WithLabelValues(values...).Observe(value)
+}
+
+// Bind resolves a fixed label set once and returns the concrete observer. See CounterMetric.Bind.
+func (histogram *HistogramMetric) Bind(values ...string) prometheus.Observer {
+	return histogram.vec.WithLabelValues(values...)
 }
 
 func orderedLabelValues(

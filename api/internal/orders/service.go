@@ -62,7 +62,7 @@ type BatchCancelResult struct {
 }
 
 type OrderCommandPublisher interface {
-	Publish(ctx context.Context, marketRef string, event *order_events_queue.OrderEvent) error
+	Publish(ctx context.Context, messageId string, marketRef string, event *order_events_queue.OrderEvent) error
 }
 
 type OrderService struct {
@@ -166,7 +166,7 @@ func (o *OrderService) PublishOrderToQueue(
 		return nil, fmt.Errorf("create open order event: %w", err)
 	}
 
-	if err := o.publisher.Publish(ctx, order.MarketID, event); err != nil {
+	if err := o.publisher.Publish(ctx, orderID.String(), order.MarketID, event); err != nil {
 		return nil, fmt.Errorf("publish order event: %w", err)
 	}
 
@@ -210,7 +210,7 @@ func (o *OrderService) CancelOrder(ctx context.Context, userID uuid.UUID, orderI
 		return fmt.Errorf("cancel order: create event: %w", err)
 	}
 
-	if err := o.publisher.Publish(ctx, marketRef, event); err != nil {
+	if err := o.publisher.Publish(ctx, orderID.String(), marketRef, event); err != nil {
 		return fmt.Errorf("cancel order: publish: %w", err)
 	}
 
@@ -266,7 +266,7 @@ func (o *OrderService) BatchCancelOrders(ctx context.Context, userID uuid.UUID, 
 			continue
 		}
 
-		if err := o.publisher.Publish(ctx, marketRef, event); err != nil {
+		if err := o.publisher.Publish(ctx, orderID.String(), marketRef, event); err != nil {
 			results[i] = BatchCancelResult{OrderID: orderID, Err: fmt.Errorf("batch cancel: publish: %w", err)}
 			continue
 		}
