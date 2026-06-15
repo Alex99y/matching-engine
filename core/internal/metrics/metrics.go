@@ -55,7 +55,7 @@ var (
 	marketOutcome    = []string{"market", "outcome"}
 	marketResult     = []string{"market", "result"}
 	marketSide       = []string{"market", "side"}
-	batchSizeBuckets = []float64{1, 2, 4, 8, 16, 24, 32}
+	batchSizeBuckets = []float64{1, 2, 4, 8, 16, 32, 64, 96, 128}
 	batchDurBuckets  = []float64{0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1}
 )
 

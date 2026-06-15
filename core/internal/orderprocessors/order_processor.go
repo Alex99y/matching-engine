@@ -33,7 +33,19 @@ const (
 	// maxOrderFailures is how many isolation failures an order survives before it is
 	// dead-lettered (rejected without requeue).
 	maxOrderFailures = 10
+	// snapshotInterval / heartbeatInterval drive the event-log stream (see docs/event-log.md §4,
+	// §7). Snapshots let a fresh/recovering API consumer sync its book cache (cold start ≤ this);
+	// heartbeats keep SSE connections warm and let an idle consumer detect a sequence gap. Both
+	// fire from the matcher's select loop so they reach the book without a second goroutine.
+	snapshotInterval  = 5 * time.Second
+	heartbeatInterval = 2 * time.Second
 )
+
+// eventPublisher is the subset of marketevents.Publisher the processor needs. Declared here (the
+// consumer) per the layer-architecture rule; a nil publisher disables event-log emission entirely.
+type eventPublisher interface {
+	Enqueue(routingKey, messageId string, body []byte) bool
+}
 
 // orderEventsQueue is the subset of order_events_queue.OrdersEventsQueue the processor needs.
 type orderEventsQueue interface {
@@ -65,6 +77,14 @@ type OrderProcessor struct {
 	ordersChannel chan *queuedEvent
 	metrics       *metrics.MarketMetrics // per-market pre-bound handles; nil disables recording
 	stopMatcher   atomic.Bool
+	// Event-log stream (docs/event-log.md). publisher is nil-able (disables emission). epoch is a
+	// fresh id per core start; seq is a per-market monotonic counter advanced once per book delta,
+	// so the API can detect a gap (missed delta) or restart (changed epoch). Touched only by the
+	// matcher goroutine, so no synchronisation.
+	publisher eventPublisher
+	marketRef string
+	epoch     string
+	seq       uint64
 	// failures counts consecutive isolation failures per order id; accessed only by the
 	// matcher goroutine. An order is dead-lettered once it reaches maxOrderFailures.
 	failures map[uuid.UUID]int
@@ -152,28 +172,38 @@ func (o *OrderProcessor) classify(d *oeq.OrderDelivery) (*queuedEvent, bool) {
 	}
 }
 
-// matcher is the single writer for this market. It drains micro-batches and processes
-// each in one transaction, acking after commit or rebuilding the book on failure.
+// matcher is the single writer for this market. It drains micro-batches and processes each in one
+// transaction, acking after commit or rebuilding the book on failure. The snapshot and heartbeat
+// tickers share this loop (rather than a second goroutine) so they can read/announce the book it
+// solely owns without a lock — see docs/event-log.md §7. The loop exits when the consumer closes
+// ordersChannel on shutdown.
 func (o *OrderProcessor) matcher(shutdownCtx, dbCtx context.Context) {
+	snapshotTicker := time.NewTicker(snapshotInterval)
+	heartbeatTicker := time.NewTicker(heartbeatInterval)
+	defer snapshotTicker.Stop()
+	defer heartbeatTicker.Stop()
+
 	for {
-		batch, open := o.drain()
-		if !open {
-			return // channel closed and drained
-		}
-		if !o.runBatch(shutdownCtx, dbCtx, batch) {
-			return // shutdown requested during recovery
+		select {
+		case first, ok := <-o.ordersChannel:
+			if !ok {
+				return // channel closed and drained
+			}
+			if !o.runBatch(shutdownCtx, dbCtx, o.collectBatch(first)) {
+				return // shutdown requested during recovery
+			}
+		case <-snapshotTicker.C:
+			o.emitSnapshot()
+		case <-heartbeatTicker.C:
+			o.emitHeartbeat()
 		}
 	}
 }
 
-// drain blocks for the first event, then collects more without blocking until the
-// batch is full or maxBatchWait elapses. Returns ok=false once the channel is closed
-// and empty, so the matcher can exit.
-func (o *OrderProcessor) drain() ([]*queuedEvent, bool) {
-	first, ok := <-o.ordersChannel
-	if !ok {
-		return nil, false
-	}
+// collectBatch extends the just-received first event into a micro-batch, collecting more without
+// blocking until the batch is full or maxBatchWait elapses. A closed channel mid-collect just ends
+// the batch early; the next matcher loop detects the closure and exits.
+func (o *OrderProcessor) collectBatch(first *queuedEvent) []*queuedEvent {
 	batch := make([]*queuedEvent, 0, maxBatchSize)
 	batch = append(batch, first)
 
@@ -183,14 +213,14 @@ func (o *OrderProcessor) drain() ([]*queuedEvent, bool) {
 		select {
 		case qe, ok := <-o.ordersChannel:
 			if !ok {
-				return batch, true // channel closed mid-drain; process what we have
+				return batch // channel closed mid-collect; process what we have
 			}
 			batch = append(batch, qe)
 		case <-timer.C:
-			return batch, true
+			return batch
 		}
 	}
-	return batch, true
+	return batch
 }
 
 // buildIncoming maps the batch's open orders to their persistence + reservation params.
@@ -229,6 +259,10 @@ func (o *OrderProcessor) buildMatch(batch []*queuedEvent) repository.MatchFunc {
 			case qe.open != nil:
 				if _, ok := funded[qe.open.OrderID]; ok {
 					o.book.MatchOrder(qe.open, result)
+				} else {
+					// Unfunded: rejected at reservation, never reaches the book. Notify its owner
+					// so the private stream still carries a lifecycle event for it.
+					o.book.RecordRejection(qe.open.UserID, qe.open.OrderID)
 				}
 			case qe.cancel != nil:
 				o.book.CancelOrder(qe.cancel, result)
@@ -247,7 +281,7 @@ func (o *OrderProcessor) runBatch(shutdownCtx, dbCtx context.Context, batch []*q
 	if err == nil {
 		o.metrics.ObserveBatch(len(batch), elapsed)
 		o.metrics.IncBatch(metrics.BatchCommitted)
-		o.recordCommitted(result, rejected)
+		o.afterCommit(result, rejected)
 		o.ackBatch(batch)
 		return true
 	}
@@ -313,6 +347,14 @@ func (o *OrderProcessor) updateBookGauges() {
 	o.metrics.SetBook(metrics.SideSell, s.AskOrders, s.BestAsk, s.HasAsk)
 }
 
+// afterCommit runs the post-commit side effects for a successfully persisted batch: it records the
+// metrics and publishes the live event-log deltas the batch produced (see stream.go). Both read the
+// matcher's own committed data, never block, and run on the matcher goroutine.
+func (o *OrderProcessor) afterCommit(result *repository.BatchResult, rejected int) {
+	o.recordCommitted(result, rejected)
+	o.publishStream()
+}
+
 // isolate reprocesses a data-error batch one order at a time so the healthy orders still
 // commit, then pinpoints the poison order. An order that keeps failing deterministically
 // is requeued until it exceeds maxOrderFailures, after which it is dead-lettered so it can
@@ -329,7 +371,7 @@ func (o *OrderProcessor) isolate(shutdownCtx, dbCtx context.Context, batch []*qu
 		if err == nil {
 			// A healthy order committed on its own; record its outcome (but not batch_size /
 			// batches_total — the drained batch was already counted as poison_isolated).
-			o.recordCommitted(result, rejected)
+			o.afterCommit(result, rejected)
 			o.ackBatch(single)
 			delete(o.failures, orderKey(qe))
 			continue
@@ -443,13 +485,16 @@ func reserveAmount(p *uint64) uint64 {
 	return *p
 }
 
-// coreMetrics may be nil, which disables per-market metric recording.
+// coreMetrics may be nil, which disables per-market metric recording. publisher may be nil, which
+// disables event-log emission; epoch identifies this core generation and is shared across markets.
 func NewOrderProcessor(
 	log *logger.Logger,
 	market *repository.Market,
 	queue orderEventsQueue,
 	repo orderRepository,
 	coreMetrics *metrics.CoreMetrics,
+	publisher eventPublisher,
+	epoch string,
 ) *OrderProcessor {
 	if log == nil {
 		panic("logger cannot be nil")
@@ -466,11 +511,14 @@ func NewOrderProcessor(
 
 	marketRef := utils.MergeMarketRef(market.BaseSymbol, market.QuoteSymbol)
 	return &OrderProcessor{
-		logger:  log,
-		market:  market,
-		queue:   queue,
-		repo:    repo,
-		metrics: coreMetrics.BindMarket(marketRef),
+		logger:    log,
+		market:    market,
+		queue:     queue,
+		repo:      repo,
+		metrics:   coreMetrics.BindMarket(marketRef),
+		publisher: publisher,
+		marketRef: marketRef,
+		epoch:     epoch,
 		constraints: oeq.MarketConstraints{
 			PriceQuantum:  market.PriceQuantum,
 			AmountQuantum: market.AmountQuantum,

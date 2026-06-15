@@ -91,6 +91,10 @@ type OrderBook struct {
 	bids   *btree.BTreeG[*PriceLevel]
 	asks   *btree.BTreeG[*PriceLevel]
 	index  map[uuid.UUID]orderLocator
+	// stream accumulates the live market-data events of the current batch (see stream.go). It is
+	// drained by the matcher after the batch commits. A rebuilt book starts with an empty stream,
+	// so events of a failed (rolled-back) batch are never emitted.
+	stream *streamEvents
 }
 
 func (o *OrderBook) baseInstr() int  { return o.market.BaseInstrumentID }
@@ -174,6 +178,7 @@ func (o *OrderBook) match(taker *Order, result *repository.BatchResult) {
 			taker.applyFill(qty, lvl.Price)
 			maker.Remaining -= qty
 			lvl.TotalQty -= qty
+			o.markLevel(oppositeSide(taker.OpenOrder.Side), lvl.Price)
 
 			o.emitTrade(taker, maker, qty, lvl.Price, result)
 
@@ -246,6 +251,7 @@ func (o *OrderBook) CancelOrder(event *oeq.CancelOrderEvent, result *repository.
 
 	loc.level.Orders.Remove(loc.el)
 	loc.level.TotalQty -= stored.Remaining
+	o.markLevel(loc.side, loc.level.Price)
 	delete(o.index, event.OrderID)
 	if loc.level.Orders.Len() == 0 {
 		o.sideTree(loc.side).Delete(loc.level)
@@ -278,6 +284,8 @@ func (o *OrderBook) CancelOrder(event *oeq.CancelOrderEvent, result *repository.
 		OrderID: event.OrderID,
 		Status:  status,
 	})
+	o.recordOrderUpdate(stored.OpenOrder.UserID, event.OrderID, status,
+		stored.OpenOrder.Quantity-stored.Remaining, stored.Remaining)
 }
 
 // emitTrade records one fill: settlement movements for both parties and the match row.
@@ -323,6 +331,9 @@ func (o *OrderBook) emitTrade(taker, maker *Order, qty, price uint64, result *re
 		IsBuyOrderFilled:  buyer.fullyFilled(),
 		IsSellOrderFilled: seller.fullyFilled(),
 	})
+
+	// Public tape event: base quantity at the maker's resting price, tagged with the taker's side.
+	o.recordTrade(price, qty, taker.OpenOrder.Side)
 }
 
 // feeOf returns amount × bps / 10000, floored. It uses a 128-bit intermediate so a
@@ -346,6 +357,8 @@ func (o *OrderBook) emitMakerFilled(maker *Order, result *repository.BatchResult
 		OrderID: maker.OpenOrder.OrderID,
 		Status:  repository.OrderStatusFilled,
 	})
+	o.recordOrderUpdate(maker.OpenOrder.UserID, maker.OpenOrder.OrderID,
+		repository.OrderStatusFilled, maker.OpenOrder.Quantity, 0)
 }
 
 func (o *OrderBook) emitMakerPartialFill(maker *Order, result *repository.BatchResult) {
@@ -355,6 +368,8 @@ func (o *OrderBook) emitMakerPartialFill(maker *Order, result *repository.BatchR
 		RemainingHaveAmount: have,
 		RemainingWantAmount: want,
 	})
+	o.recordOrderUpdate(maker.OpenOrder.UserID, maker.OpenOrder.OrderID,
+		repository.OrderStatusPartiallyFilled, maker.OpenOrder.Quantity-maker.Remaining, maker.Remaining)
 }
 
 // settleTakerCompletion releases any reserved funds the taker will not use: the price
@@ -388,11 +403,20 @@ func (o *OrderBook) settleTakerCompletion(t *Order, rests bool, result *reposito
 // it (GTC limit remainder) or records its cancelled remainder.
 func (o *OrderBook) emitTakerOutcome(t *Order, rests bool, result *repository.BatchResult) {
 	insert := DeriveInsertParams(t.OpenOrder, o.market)
-	insert.Status = takerStatus(t, rests)
+	status := takerStatus(t, rests)
+	insert.Status = status
 	result.NewOrders = append(result.NewOrders, insert)
+
+	// A quote-denominated market buy has no meaningful base remainder; report 0.
+	var remaining uint64
+	if !t.quoteDenom {
+		remaining = t.Remaining
+	}
+	o.recordOrderUpdate(t.OpenOrder.UserID, t.OpenOrder.OrderID, status, t.filledBase, remaining)
 
 	if rests {
 		o.rest(t)
+		o.markLevel(t.OpenOrder.Side, t.OpenOrder.Price)
 		have, want := restingRemaining(t)
 		result.OpenOrders = append(result.OpenOrders, repository.InsertOpenOrderParams{
 			OrderID:             t.OpenOrder.OrderID,
@@ -692,5 +716,6 @@ func NewOrderBook(
 		bids:   bids,
 		asks:   asks,
 		index:  make(map[uuid.UUID]orderLocator),
+		stream: newStreamEvents(),
 	}
 }

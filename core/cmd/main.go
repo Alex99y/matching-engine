@@ -12,11 +12,13 @@ import (
 	"github.com/alex99y/matching-engine/core/internal/config"
 	coremetrics "github.com/alex99y/matching-engine/core/internal/metrics"
 	"github.com/alex99y/matching-engine/core/internal/orderprocessors"
+	"github.com/alex99y/matching-engine/core/pkg/marketevents"
 	"github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 	"github.com/alex99y/matching-engine/db/pkg/cache"
 	dbmetrics "github.com/alex99y/matching-engine/db/pkg/metrics"
 	"github.com/alex99y/matching-engine/db/pkg/postgres"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
+	"github.com/google/uuid"
 )
 
 func main() {
@@ -66,6 +68,21 @@ func main() {
 	}
 	defer rabbitmqClient.Close()
 
+	// Live event-log fan-out (docs/event-log.md): one shared async publisher to the me.events topic
+	// exchange, and a fresh epoch per core start so an API can detect a restart and re-sync. Markets
+	// share the publisher; each processor sequences its own (epoch, seq) stream.
+	eventPublisher, err := marketevents.NewPublisher(rabbitmqClient, log)
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err := eventPublisher.Close(); err != nil {
+			log.Error(fmt.Sprintf("closing event publisher: %v", err))
+		}
+	}()
+	go eventPublisher.Run(ctx)
+	epoch := uuid.NewString()
+
 	instrumentRepository := repository.NewInstrumentRepository(log, postgresqlClient)
 	marketRepository := repository.NewMarketRepository(log, postgresqlClient)
 	orderRepository := repository.NewOrderRepository(log, postgresqlClient, dbMetrics)
@@ -93,7 +110,7 @@ func main() {
 	for _, market := range marketsToProcess {
 		marketRef := utils.MergeMarketRef(market.BaseSymbol, market.QuoteSymbol)
 		queue := order_events_queue.NewOrdersQueue(log, marketRef, rabbitmqClient)
-		p := orderprocessors.NewOrderProcessor(log, market, queue, orderRepository, coreMetrics)
+		p := orderprocessors.NewOrderProcessor(log, market, queue, orderRepository, coreMetrics, eventPublisher, epoch)
 		go p.Start(ctx)
 	}
 
