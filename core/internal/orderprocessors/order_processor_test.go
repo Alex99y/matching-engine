@@ -133,7 +133,7 @@ func TestMatcherAcksAfterCommit(t *testing.T) {
 	rec := &ackRecorder{}
 	q := &fakeQueue{deliveries: []*oeq.OrderDelivery{rec.delivery(limitBuy()), rec.delivery(limitBuy())}}
 	repo := &fakeRepo{}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo)
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)
@@ -157,7 +157,7 @@ func TestMatcherRebuildsOnFailure(t *testing.T) {
 	rec := &ackRecorder{}
 	q := &fakeQueue{deliveries: []*oeq.OrderDelivery{rec.delivery(limitBuy())}}
 	repo := &fakeRepo{failNext: 1}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo)
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)
@@ -180,7 +180,7 @@ func TestMatcherRejectionNoRebuild(t *testing.T) {
 	rec := &ackRecorder{}
 	q := &fakeQueue{deliveries: []*oeq.OrderDelivery{rec.delivery(limitBuy())}}
 	repo := &fakeRepo{fundNone: true}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo)
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)
@@ -279,7 +279,7 @@ func TestMatcherPoisonIsolation(t *testing.T) {
 	good1, poison, good2 := limitBuy(), limitBuy(), limitBuy()
 	b := newPoisonBroker(good1, poison, good2)
 	repo := &poisonRepo{poison: poison.OrderID}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), b, repo)
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), b, repo, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)

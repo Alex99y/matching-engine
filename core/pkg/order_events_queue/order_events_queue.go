@@ -14,12 +14,16 @@ type OrdersEventsQueue struct {
 	logger    *logger.Logger
 }
 
-func (o *OrdersEventsQueue) EmitNewOrderToME(ctx context.Context, order *OrderEvent) error {
+func (o *OrdersEventsQueue) EmitNewOrderToME(
+	ctx context.Context,
+	messageId string,
+	order *OrderEvent,
+) error {
 	raw, err := order.ToBytes()
 	if err != nil {
 		return fmt.Errorf("emit order: %w", err)
 	}
-	if err := o.queue.Publish(ctx, raw, true); err != nil {
+	if err := o.queue.Publish(ctx, messageId, raw, true); err != nil {
 		return fmt.Errorf("emit order: publish: %w", err)
 	}
 	return nil
@@ -97,7 +101,11 @@ func NewOrdersQueue(
 	queue, err := rabbitmq.NewQueue(
 		rabbitMqClient,
 		rabbitmq.ChannelArgs{
-			PrefetchCount: 16,
+			// Prefetch must be >= maxBatchSize (ideally ~2x for pipelining): with
+			// ack-after-commit the unacked messages are exactly the orders the matcher can
+			// assemble into a batch, so a low prefetch caps batch size regardless of
+			// maxBatchSize. See the order_processor batching constants.
+			PrefetchCount: 256,
 			PrefetchSize:  0,
 		},
 		rabbitmq.QueueArgs{

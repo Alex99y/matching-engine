@@ -96,6 +96,35 @@ type OrderBook struct {
 func (o *OrderBook) baseInstr() int  { return o.market.BaseInstrumentID }
 func (o *OrderBook) quoteInstr() int { return o.market.QuoteInstrumentID }
 
+// BookStats is a read-only snapshot of book depth, used to drive the observability gauges.
+type BookStats struct {
+	BidOrders, AskOrders int
+	BestBid, BestAsk     uint64
+	HasBid, HasAsk       bool
+}
+
+// Stats returns the current resting-order counts and best prices per side. It is a pure read
+// (no mutation, no I/O): bids are walked high→low and asks low→high, so the first level seen on
+// each side is the best. Cost is O(price levels) — list lengths are O(1) — not O(orders).
+func (o *OrderBook) Stats() BookStats {
+	var s BookStats
+	o.bids.Descend(func(lvl *PriceLevel) bool {
+		if !s.HasBid {
+			s.BestBid, s.HasBid = lvl.Price, true
+		}
+		s.BidOrders += lvl.Orders.Len()
+		return true
+	})
+	o.asks.Ascend(func(lvl *PriceLevel) bool {
+		if !s.HasAsk {
+			s.BestAsk, s.HasAsk = lvl.Price, true
+		}
+		s.AskOrders += lvl.Orders.Len()
+		return true
+	})
+	return s
+}
+
 // MatchOrder runs one taker order against the book, accumulating every fill, status
 // transition, resting/cancellation record and balance movement into result. The
 // order's funds have already been reserved (balance -> blocked) by the caller before
@@ -285,8 +314,8 @@ func (o *OrderBook) emitTrade(taker, maker *Order, qty, price uint64, result *re
 		MarketID:          o.market.ID,
 		BuyOrderID:        buyer.OpenOrder.OrderID,
 		SellOrderID:       seller.OpenOrder.OrderID,
-		MatchBuyAmount:    qty,       // base bought
-		MatchSellAmount:   quoteAmt,  // quote sold
+		MatchBuyAmount:    qty,      // base bought
+		MatchSellAmount:   quoteAmt, // quote sold
 		MatchPrice:        price,
 		MatchBuyFees:      buyerFee,  // buyer's fee, in base
 		MatchSellFees:     sellerFee, // seller's fee, in quote

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	"github.com/alex99y/matching-engine/common/pkg/utils"
+	"github.com/alex99y/matching-engine/core/internal/metrics"
 	"github.com/alex99y/matching-engine/core/internal/orderbook"
 	oeq "github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
@@ -15,8 +17,11 @@ import (
 )
 
 const (
-	orderChannelBuffer = 64
-	maxBatchSize       = 32
+	// orderChannelBuffer must be >= the RabbitMQ prefetch so the consumer can stage a full
+	// pipeline without blocking on the channel. maxBatchSize is the orders-per-transaction
+	// cap; prefetch (see order_events_queue) must be >= it for batches to actually fill.
+	orderChannelBuffer = 256
+	maxBatchSize       = 128
 	maxBatchWait       = 5 * time.Millisecond
 	rebuildBackoff     = 2 * time.Second
 	// transientBackoff paces retries of a batch that failed on infrastructure (DB down,
@@ -58,6 +63,7 @@ type OrderProcessor struct {
 	constraints   oeq.MarketConstraints
 	book          *orderbook.OrderBook // owned and mutated solely by the matcher goroutine
 	ordersChannel chan *queuedEvent
+	metrics       *metrics.MarketMetrics // per-market pre-bound handles; nil disables recording
 	stopMatcher   atomic.Bool
 	// failures counts consecutive isolation failures per order id; accessed only by the
 	// matcher goroutine. An order is dead-lettered once it reaches maxOrderFailures.
@@ -111,6 +117,9 @@ func (o *OrderProcessor) handleDelivery(d *oeq.OrderDelivery) {
 			o.logger.Error(fmt.Sprintf("order processor: nack while stopping failed: %s", err))
 		}
 		return
+	}
+	if qe.open != nil {
+		o.metrics.IncReceived()
 	}
 	o.ordersChannel <- qe
 }
@@ -234,8 +243,11 @@ func (o *OrderProcessor) buildMatch(batch []*queuedEvent) repository.MatchFunc {
 // isolates the poison order (committing the healthy ones). Returns false only when
 // shutdown is requested mid-recovery.
 func (o *OrderProcessor) runBatch(shutdownCtx, dbCtx context.Context, batch []*queuedEvent) bool {
-	err := o.repo.ProcessBatch(dbCtx, o.buildIncoming(batch), o.buildMatch(batch))
+	result, rejected, elapsed, err := o.processBatchCaptured(dbCtx, batch)
 	if err == nil {
+		o.metrics.ObserveBatch(len(batch), elapsed)
+		o.metrics.IncBatch(metrics.BatchCommitted)
+		o.recordCommitted(result, rejected)
 		o.ackBatch(batch)
 		return true
 	}
@@ -244,6 +256,7 @@ func (o *OrderProcessor) runBatch(shutdownCtx, dbCtx context.Context, batch []*q
 		o.market.BaseSymbol, o.market.QuoteSymbol, err))
 	// The match callback mutated the book before the rollback, so it is dirty: rebuild
 	// from the last committed DB state before deciding what to do with the messages.
+	o.metrics.IncRebuild()
 	if !o.loadBook(shutdownCtx, dbCtx) {
 		o.nackBatch(batch)
 		return false
@@ -251,13 +264,53 @@ func (o *OrderProcessor) runBatch(shutdownCtx, dbCtx context.Context, batch []*q
 
 	if errors.Is(err, repository.ErrPoison) {
 		// At least one order fails deterministically — isolate it so the rest commit.
+		o.metrics.IncBatch(metrics.BatchPoisonIsolated)
+		o.metrics.IncPoison()
 		return o.isolate(shutdownCtx, dbCtx, batch)
 	}
 
 	// Transient infrastructure failure: requeue the whole batch and back off so a sick
 	// dependency does not spin the matcher (the bug that let one batch retry ~48k times).
+	o.metrics.IncBatch(metrics.BatchTransientFail)
 	o.nackBatch(batch)
 	return o.backoff(shutdownCtx, transientBackoff)
+}
+
+// processBatchCaptured runs one batch through the repository while capturing the matching result
+// and the funded count, so the caller can emit per-batch metrics. rejected is the number of open
+// orders that failed reservation (incoming open orders minus funded).
+func (o *OrderProcessor) processBatchCaptured(dbCtx context.Context, batch []*queuedEvent) (result *repository.BatchResult, rejected int, elapsed time.Duration, err error) {
+	incoming := o.buildIncoming(batch)
+	mf := o.buildMatch(batch)
+	funded := 0
+	start := time.Now()
+	err = o.repo.ProcessBatch(dbCtx, incoming, func(fundedIDs []uuid.UUID) (*repository.BatchResult, error) {
+		funded = len(fundedIDs)
+		r, e := mf(fundedIDs)
+		result = r
+		return r, e
+	})
+	return result, len(incoming) - funded, time.Since(start), err
+}
+
+// recordCommitted emits the per-order outcome, trade, and book-depth metrics for a committed
+// batch. result is nil only if ProcessBatch committed without invoking the match callback.
+func (o *OrderProcessor) recordCommitted(result *repository.BatchResult, rejected int) {
+	if result != nil {
+		o.metrics.AddTrades(len(result.Matches))
+		for i := range result.NewOrders {
+			o.metrics.IncProcessed(result.NewOrders[i].Status)
+		}
+	}
+	o.metrics.AddRejected(rejected)
+	o.updateBookGauges()
+}
+
+// updateBookGauges snapshots the (post-commit) book depth into the gauges.
+func (o *OrderProcessor) updateBookGauges() {
+	s := o.book.Stats()
+	o.metrics.SetBook(metrics.SideBuy, s.BidOrders, s.BestBid, s.HasBid)
+	o.metrics.SetBook(metrics.SideSell, s.AskOrders, s.BestAsk, s.HasAsk)
 }
 
 // isolate reprocesses a data-error batch one order at a time so the healthy orders still
@@ -272,14 +325,18 @@ func (o *OrderProcessor) isolate(shutdownCtx, dbCtx context.Context, batch []*qu
 	for i := range batch {
 		qe := batch[i]
 		single := batch[i : i+1]
-		err := o.repo.ProcessBatch(dbCtx, o.buildIncoming(single), o.buildMatch(single))
+		result, rejected, _, err := o.processBatchCaptured(dbCtx, single)
 		if err == nil {
+			// A healthy order committed on its own; record its outcome (but not batch_size /
+			// batches_total — the drained batch was already counted as poison_isolated).
+			o.recordCommitted(result, rejected)
 			o.ackBatch(single)
 			delete(o.failures, orderKey(qe))
 			continue
 		}
 
 		// Single order failed; the book is dirty again.
+		o.metrics.IncRebuild()
 		if !o.loadBook(shutdownCtx, dbCtx) {
 			o.nackBatch(batch[i:])
 			return false
@@ -300,6 +357,7 @@ func (o *OrderProcessor) isolate(shutdownCtx, dbCtx context.Context, batch []*qu
 			o.logger.Error(fmt.Sprintf("order processor %s-%s: DEAD-LETTERING poison order %s after %d failures: %s",
 				o.market.BaseSymbol, o.market.QuoteSymbol, key, o.failures[key], err))
 			delete(o.failures, key)
+			o.metrics.IncDeadLetter()
 			if rerr := qe.delivery.Reject(); rerr != nil {
 				o.logger.Error(fmt.Sprintf("order processor: reject (dead-letter) failed id=%s: %s", qe.delivery.ID(), rerr))
 			}
@@ -385,11 +443,13 @@ func reserveAmount(p *uint64) uint64 {
 	return *p
 }
 
+// coreMetrics may be nil, which disables per-market metric recording.
 func NewOrderProcessor(
 	log *logger.Logger,
 	market *repository.Market,
 	queue orderEventsQueue,
 	repo orderRepository,
+	coreMetrics *metrics.CoreMetrics,
 ) *OrderProcessor {
 	if log == nil {
 		panic("logger cannot be nil")
@@ -404,11 +464,13 @@ func NewOrderProcessor(
 		panic("order repository cannot be nil")
 	}
 
+	marketRef := utils.MergeMarketRef(market.BaseSymbol, market.QuoteSymbol)
 	return &OrderProcessor{
-		logger: log,
-		market: market,
-		queue:  queue,
-		repo:   repo,
+		logger:  log,
+		market:  market,
+		queue:   queue,
+		repo:    repo,
+		metrics: coreMetrics.BindMarket(marketRef),
 		constraints: oeq.MarketConstraints{
 			PriceQuantum:  market.PriceQuantum,
 			AmountQuantum: market.AmountQuantum,
