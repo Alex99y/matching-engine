@@ -7,7 +7,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "refresh": "5s",
   "time": {
     "from": "now-15m",
@@ -28,7 +28,9 @@
         "current": {
           "text": "All",
           "value": "$__all"
-        }
+        },
+        "refresh": 2,
+        "allValue": ".*"
       }
     ]
   },
