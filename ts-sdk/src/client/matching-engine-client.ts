@@ -6,12 +6,15 @@ import {
 } from "../http/transport.js";
 import * as instrumentsResource from "../resources/instruments.js";
 import * as marketsResource from "../resources/markets.js";
+import * as streamResource from "../resources/stream.js";
 import * as usersResource from "../resources/users.js";
 import type {
   Instrument,
   LoginParams,
   Market,
+  MarketStreamOptions,
   RegisterParams,
+  StreamMessage,
 } from "../types/index.js";
 import { AuthenticatedClient } from "./authenticated-client.js";
 
@@ -127,5 +130,31 @@ export class MatchingEngineClient {
    */
   async getInstruments(): Promise<Instrument[]> {
     return instrumentsResource.getInstruments(this.transport);
+  }
+
+  /**
+   * Open a public SSE stream for one market. The first frame is always a full
+   * book snapshot, followed by incremental book deltas, trades, and heartbeats.
+   * Break out of the loop or abort `options.signal` to close the connection.
+   *
+   * The optional `group` param buckets the order book by a multiple of the
+   * market's `priceQuantum` (see {@link MarketStreamOptions}).
+   *
+   * @param market - Market ref, e.g. `"ETH-USDT"`.
+   * @param options - Optional grouping and cancellation signal.
+   * @throws {@link ValidationError} for an empty market or non-positive group.
+   * @throws {@link APIError} (404) for an unknown market.
+   * @throws {@link NetworkError} on connection failure.
+   * @example
+   * for await (const msg of client.streamMarket("ETH-USDT")) {
+   *   if (msg.type === "trade") console.log(msg.price, msg.quantity);
+   *   if (msg.type === "heartbeat") break; // stop after first heartbeat
+   * }
+   */
+  streamMarket(
+    market: string,
+    options: MarketStreamOptions = {},
+  ): AsyncGenerator<StreamMessage, void, undefined> {
+    return streamResource.streamMarket(this.transport, market, options);
   }
 }

@@ -1,5 +1,6 @@
 import type { Transport } from "../http/transport.js";
 import * as orders from "../resources/orders.js";
+import * as streamResource from "../resources/stream.js";
 import * as users from "../resources/users.js";
 import type {
   Balance,
@@ -8,6 +9,8 @@ import type {
   CreateOrderParams,
   GetOrdersFilter,
   Order,
+  StreamMessage,
+  UserStreamOptions,
 } from "../types/index.js";
 
 /**
@@ -118,6 +121,26 @@ export class AuthenticatedClient {
    */
   async getBalances(): Promise<Balance[]> {
     return users.getBalances(this.transport, this.token);
+  }
+
+  /**
+   * Open a private SSE stream for the authenticated user, yielding
+   * {@link OrderMessage} events for every order lifecycle change (fill,
+   * cancellation, rejection). Break out of the loop or abort
+   * `options.signal` to close the connection.
+   *
+   * @param options - Optional cancellation signal.
+   * @throws {@link AuthenticationError} on an invalid or expired token.
+   * @throws {@link NetworkError} on connection failure.
+   * @example
+   * for await (const msg of session.streamUser()) {
+   *   if (msg.type === "order") console.log(msg.orderId, msg.status);
+   * }
+   */
+  streamUser(
+    options: UserStreamOptions = {},
+  ): AsyncGenerator<StreamMessage, void, undefined> {
+    return streamResource.streamUser(this.transport, this.token, options);
   }
 
   /**

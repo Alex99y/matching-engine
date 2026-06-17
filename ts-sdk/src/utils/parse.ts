@@ -10,11 +10,18 @@ import type {
   BatchCancelOrderResult,
   BatchCreateOrderResponse,
   BatchCreateOrderResult,
+  BookLevel,
+  BookMessage,
   CancelledOrder,
+  HeartbeatMessage,
   Instrument,
   Market,
   OpenOrder,
   Order,
+  OrderMessage,
+  SnapshotMessage,
+  StreamMessage,
+  TradeMessage,
 } from "../types/index.js";
 
 function asRecord(value: unknown, what: string): Record<string, unknown> {
@@ -192,6 +199,101 @@ export function parseBatchCancelOrderResponse(raw: unknown): BatchCancelOrderRes
   return {
     results: asArray(o["results"], "results").map(parseBatchCancelOrderResult),
   };
+}
+
+// ---- Stream message parsers ----
+//
+// SSE amounts (price, quantity, filled, remaining) arrive as decimal strings —
+// the Go edge serialises uint64 with strconv.FormatUint. Parse with BigInt()
+// directly; the BIGINT_WIRE_FIELDS reviver is for REST JSON numbers only.
+
+const SIDES = new Set(["buy", "sell"]);
+
+function reqBigIntStr(obj: Record<string, unknown>, key: string): bigint {
+  const v = obj[key];
+  if (typeof v !== "string" || v === "") {
+    throw new ParseError(`expected field "${key}" to be a decimal string`);
+  }
+  try {
+    return BigInt(v);
+  } catch {
+    throw new ParseError(`expected field "${key}" to be a valid integer string`);
+  }
+}
+
+function reqSide(obj: Record<string, unknown>, key: string): "buy" | "sell" {
+  const v = reqString(obj, key);
+  if (!SIDES.has(v)) {
+    throw new ParseError(`expected field "${key}" to be "buy" or "sell", got "${v}"`);
+  }
+  return v as "buy" | "sell";
+}
+
+function parseBookLevel(raw: unknown): BookLevel {
+  const o = asRecord(raw, "book level");
+  return { price: reqBigIntStr(o, "price"), quantity: reqBigIntStr(o, "quantity") };
+}
+
+/**
+ * Parse one SSE `data:` payload string into a typed {@link StreamMessage}.
+ * @throws {@link ParseError} on malformed JSON or an unexpected shape.
+ */
+export function parseStreamMessage(data: string): StreamMessage {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(data);
+  } catch (err) {
+    throw new ParseError("invalid SSE message JSON", err);
+  }
+
+  const o = asRecord(raw, "stream message");
+  const type = reqString(o, "type");
+
+  switch (type) {
+    case "snapshot": {
+      const result: SnapshotMessage = {
+        type: "snapshot",
+        market: reqString(o, "market"),
+        bids: asArray(o["bids"], "bids").map(parseBookLevel),
+        asks: asArray(o["asks"], "asks").map(parseBookLevel),
+      };
+      return result;
+    }
+    case "book": {
+      const result: BookMessage = {
+        type: "book",
+        side: reqSide(o, "side"),
+        price: reqBigIntStr(o, "price"),
+        quantity: reqBigIntStr(o, "quantity"),
+      };
+      return result;
+    }
+    case "trade": {
+      const result: TradeMessage = {
+        type: "trade",
+        price: reqBigIntStr(o, "price"),
+        quantity: reqBigIntStr(o, "quantity"),
+        takerSide: reqSide(o, "taker_side"),
+      };
+      return result;
+    }
+    case "heartbeat": {
+      const result: HeartbeatMessage = { type: "heartbeat" };
+      return result;
+    }
+    case "order": {
+      const result: OrderMessage = {
+        type: "order",
+        orderId: reqString(o, "order_id"),
+        status: reqString(o, "status"),
+        filled: reqBigIntStr(o, "filled"),
+        remaining: reqBigIntStr(o, "remaining"),
+      };
+      return result;
+    }
+    default:
+      throw new ParseError(`unknown stream message type: "${type}"`);
+  }
 }
 
 export function parseLoginToken(raw: unknown): string {

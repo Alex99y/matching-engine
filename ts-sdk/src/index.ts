@@ -16,20 +16,29 @@ export {
   ParseError,
 } from "./errors/index.js";
 
-export { OrderSide, OrderType, TimeInForce } from "./types/index.js";
+export { OrderSide, OrderStatus, OrderType, TimeInForce } from "./types/index.js";
 export type {
   Balance,
   BatchCancelOrderResponse,
   BatchCancelOrderResult,
   BatchCreateOrderResponse,
   BatchCreateOrderResult,
+  BookLevel,
+  BookMessage,
   CancelledOrder,
   CreateOrderParams,
   GetOrdersFilter,
+  HeartbeatMessage,
   Instrument,
   LoginParams,
   Market,
+  MarketStreamOptions,
   OpenOrder,
   Order,
+  OrderMessage,
   RegisterParams,
+  SnapshotMessage,
+  StreamMessage,
+  TradeMessage,
+  UserStreamOptions,
 } from "./types/index.js";

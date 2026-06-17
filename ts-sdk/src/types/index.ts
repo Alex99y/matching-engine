@@ -123,6 +123,79 @@ export interface Balance {
   readonly blocked: bigint;
 }
 
+// ---- Stream event types ----
+
+export const OrderStatus = {
+  Open: "open",
+  Filled: "filled",
+  PartiallyFilled: "partially_filled",
+  Cancelled: "cancelled",
+  Rejected: "rejected",
+} as const;
+export type OrderStatus = (typeof OrderStatus)[keyof typeof OrderStatus];
+
+export interface BookLevel {
+  readonly price: bigint;
+  readonly quantity: bigint;
+}
+
+export interface SnapshotMessage {
+  readonly type: "snapshot";
+  readonly market: string;
+  readonly bids: readonly BookLevel[];
+  readonly asks: readonly BookLevel[];
+}
+
+export interface BookMessage {
+  readonly type: "book";
+  readonly side: "buy" | "sell";
+  /** Price bucket. `quantity === 0n` means the level was removed. */
+  readonly price: bigint;
+  readonly quantity: bigint;
+}
+
+export interface TradeMessage {
+  readonly type: "trade";
+  readonly price: bigint;
+  readonly quantity: bigint;
+  readonly takerSide: "buy" | "sell";
+}
+
+export interface HeartbeatMessage {
+  readonly type: "heartbeat";
+}
+
+export interface OrderMessage {
+  readonly type: "order";
+  readonly orderId: string;
+  readonly status: string;
+  readonly filled: bigint;
+  readonly remaining: bigint;
+}
+
+/** Discriminated union of every message the SSE stream can emit. */
+export type StreamMessage =
+  | SnapshotMessage
+  | BookMessage
+  | TradeMessage
+  | HeartbeatMessage
+  | OrderMessage;
+
+export interface MarketStreamOptions {
+  /**
+   * Price-bucket grouping size in price units. Must be a positive multiple of
+   * the market's `priceQuantum`. Defaults to native resolution when omitted.
+   */
+  readonly group?: bigint;
+  /** Cancellation signal. Abort it to close the stream. */
+  readonly signal?: AbortSignal;
+}
+
+export interface UserStreamOptions {
+  /** Cancellation signal. Abort it to close the stream. */
+  readonly signal?: AbortSignal;
+}
+
 // ---- Order responses ----
 
 export interface OpenOrder {

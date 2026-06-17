@@ -10,6 +10,7 @@ import {
   type CreateOrderParams,
   type GetOrdersFilter,
   type LoginParams,
+  type MarketStreamOptions,
   type RegisterParams,
 } from "../types/index.js";
 
@@ -114,6 +115,16 @@ export function validateBatchCancelOrderIds(orderIds: string[]): void {
     if (typeof orderIds[i] !== "string" || orderIds[i]!.length === 0) {
       throw new ValidationError(`orderIds[${i}] must be a non-empty string`);
     }
+  }
+}
+
+export function validateMarket(market: string): void {
+  requireNonEmpty(market, "market");
+}
+
+export function validateMarketStreamOptions(options: MarketStreamOptions): void {
+  if (options.group !== undefined && options.group <= 0n) {
+    throw new ValidationError("group must be a positive integer");
   }
 }
 

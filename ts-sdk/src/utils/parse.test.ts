@@ -8,6 +8,7 @@ import {
   parseMarkets,
   parseOrder,
   parseOrders,
+  parseStreamMessage,
 } from "./parse.js";
 
 describe("parseMarkets", () => {
@@ -197,5 +198,95 @@ describe("parseLoginToken", () => {
 
   it("throws ParseError when token is missing", () => {
     expect(() => parseLoginToken({})).toThrow(ParseError);
+  });
+});
+
+// ---- parseStreamMessage ----
+
+describe("parseStreamMessage", () => {
+  it("parses a heartbeat message", () => {
+    expect(parseStreamMessage(JSON.stringify({ type: "heartbeat" }))).toEqual({
+      type: "heartbeat",
+    });
+  });
+
+  it("parses a snapshot with bigint price and quantity from strings", () => {
+    const raw = JSON.stringify({
+      type: "snapshot",
+      market: "ETH-USDT",
+      bids: [{ price: "2000", quantity: "10" }],
+      asks: [{ price: "2001", quantity: "5" }],
+    });
+    expect(parseStreamMessage(raw)).toEqual({
+      type: "snapshot",
+      market: "ETH-USDT",
+      bids: [{ price: 2000n, quantity: 10n }],
+      asks: [{ price: 2001n, quantity: 5n }],
+    });
+  });
+
+  it("parses a book delta — preserves uint64 precision above 2^53", () => {
+    const price = "9007199254740993"; // 2^53 + 1, unrepresentable as number
+    const raw = JSON.stringify({ type: "book", side: "sell", price, quantity: "0" });
+    const msg = parseStreamMessage(raw);
+    expect(msg).toEqual({ type: "book", side: "sell", price: 9007199254740993n, quantity: 0n });
+  });
+
+  it("parses a trade message", () => {
+    const raw = JSON.stringify({
+      type: "trade",
+      price: "3000",
+      quantity: "7",
+      taker_side: "buy",
+    });
+    expect(parseStreamMessage(raw)).toEqual({
+      type: "trade",
+      price: 3000n,
+      quantity: 7n,
+      takerSide: "buy",
+    });
+  });
+
+  it("parses an order message with status and amounts", () => {
+    const raw = JSON.stringify({
+      type: "order",
+      order_id: "order-1",
+      status: "partially_filled",
+      filled: "3",
+      remaining: "7",
+    });
+    expect(parseStreamMessage(raw)).toEqual({
+      type: "order",
+      orderId: "order-1",
+      status: "partially_filled",
+      filled: 3n,
+      remaining: 7n,
+    });
+  });
+
+  it("throws ParseError on malformed JSON", () => {
+    expect(() => parseStreamMessage("{bad json")).toThrow(ParseError);
+  });
+
+  it("throws ParseError on an unknown type discriminant", () => {
+    expect(() => parseStreamMessage(JSON.stringify({ type: "unknown" }))).toThrow(ParseError);
+  });
+
+  it("throws ParseError when a required amount field is missing", () => {
+    expect(() =>
+      parseStreamMessage(JSON.stringify({ type: "book", side: "buy", price: "100" })),
+    ).toThrow(ParseError);
+  });
+
+  it("throws ParseError when an amount is not a valid integer string", () => {
+    expect(() =>
+      parseStreamMessage(JSON.stringify({ type: "book", side: "buy", price: "abc", quantity: "1" })),
+    ).toThrow(ParseError);
+  });
+
+  it("throws ParseError when side is not buy or sell", () => {
+    expect(() =>
+      parseStreamMessage(JSON.stringify({ type: "book", side: "invalid", price: "1", quantity: "1" })),
+    ).toThrow(ParseError);
   });
 });

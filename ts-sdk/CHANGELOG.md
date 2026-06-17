@@ -4,6 +4,26 @@
 
 ### Added
 
+- `MatchingEngineClient.streamMarket(market, options?)` — public SSE stream for
+  one market (`GET /api/v1/stream/:market`). Yields `StreamMessage` events:
+  `SnapshotMessage` (initial full book), `BookMessage` (incremental L2 delta),
+  `TradeMessage`, and `HeartbeatMessage`. The optional `group` parameter buckets
+  the order book by a multiple of the market's `priceQuantum`.
+- `AuthenticatedClient.streamUser(options?)` — private SSE stream for the
+  authenticated user (`GET /api/v1/stream/users`). Yields `OrderMessage` events
+  covering the full order lifecycle (open → filled/cancelled/rejected).
+- New exported types: `StreamMessage`, `SnapshotMessage`, `BookMessage`,
+  `TradeMessage`, `HeartbeatMessage`, `OrderMessage`, `BookLevel`,
+  `MarketStreamOptions`, `UserStreamOptions`.
+- `OrderStatus` const object (`Open`, `Filled`, `PartiallyFilled`, `Cancelled`,
+  `Rejected`) exported from the public surface.
+- `Transport.streamSSE()` internal method: async generator that handles SSE
+  frame parsing, authentication headers, and cancellation via `AbortSignal`.
+  Amounts in SSE frames arrive as decimal strings and are parsed losslessly to
+  `bigint` without going through `BIGINT_WIRE_FIELDS`.
+
+
+
 - `AuthenticatedClient.createOrders(params[])` — submit one or more orders in a
   single request (`POST /api/v1/order/`). Returns `BatchCreateOrderResponse`
   with a per-item result; an item may succeed while others fail validation or

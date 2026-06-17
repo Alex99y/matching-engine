@@ -13,6 +13,13 @@ import {
 } from "../errors/index.js";
 import { parseWithBigInts, stringifyWithBigInts } from "../utils/json.js";
 
+export interface SSEOptions {
+  readonly query?: QueryParams;
+  readonly token?: string;
+  /** Cancellation signal. Abort it to close the stream. */
+  readonly signal?: AbortSignal;
+}
+
 export type FetchLike = typeof fetch;
 
 export type QueryValue = string | number | boolean | undefined;
@@ -132,6 +139,96 @@ export class Transport {
       } catch (err) {
         throw new ParseError("failed to parse response body", err);
       }
+    }
+  }
+
+  /**
+   * Open an SSE connection and yield raw `data:` payloads as strings. The
+   * generator ends when the server closes the stream or the caller aborts it
+   * (via `options.signal` or by breaking out of the `for await` loop).
+   *
+   * All network / status errors are mapped into the SDK error hierarchy before
+   * surfacing, matching the behaviour of {@link request}.
+   *
+   * @throws {@link NetworkError} on connection failure.
+   * @throws {@link AuthenticationError} on 401/403.
+   * @throws {@link APIError} on any other non-2xx response.
+   */
+  async *streamSSE(
+    path: string,
+    options: SSEOptions = {},
+  ): AsyncGenerator<string, void, undefined> {
+    const url = this.buildUrl(path, options.query);
+    const headers: Record<string, string> = {
+      Accept: "text/event-stream",
+      "Cache-Control": "no-cache",
+    };
+    if (options.token) {
+      headers["Authorization"] = `Bearer ${options.token}`;
+    }
+
+    // Internal controller so we can abort on generator cleanup regardless of
+    // whether the caller provided their own signal.
+    const controller = new AbortController();
+    if (options.signal) {
+      if (options.signal.aborted) {
+        controller.abort();
+      } else {
+        options.signal.addEventListener("abort", () => { controller.abort(); }, { once: true });
+      }
+    }
+
+    let response: Response;
+    try {
+      response = await this.config.fetchFn(url, {
+        method: "GET",
+        headers,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      throw this.mapTransportError(err);
+    }
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw this.mapStatusError(response, text);
+    }
+
+    const body = response.body;
+    if (!body) {
+      throw new NetworkError("SSE response has no body");
+    }
+
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE messages are delimited by double newlines.
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() ?? "";
+
+        for (const block of parts) {
+          let data = "";
+          for (const line of block.split("\n")) {
+            if (line.startsWith("data: ")) {
+              data += (data ? "\n" : "") + line.slice(6);
+            }
+            // comment (": ping"), event:, id:, retry: lines are all ignored
+          }
+          if (data) {
+            yield data;
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+      controller.abort();
     }
   }
 

@@ -7,6 +7,7 @@ import {
   OrderSide,
   OrderType,
   TimeInForce,
+  type StreamMessage,
 } from "../src/index.js";
 
 // Captures the raw POST /order/ body so we can assert the bigint price arrived
@@ -39,9 +40,30 @@ function startServer(): Promise<Server> {
       // Private routes require the bearer token issued at login.
       const isPrivate =
         url.pathname.startsWith("/api/v1/order") ||
-        url.pathname === "/api/v1/users/balances";
+        url.pathname === "/api/v1/users/balances" ||
+        url.pathname === "/api/v1/stream/users";
       if (isPrivate && auth !== "Bearer e2e-token") {
         sendJson(401, '{"message":"missing or invalid authorization header"}');
+        return;
+      }
+
+      // SSE routes: handled before the switch because the path contains a
+      // variable market segment that can't be matched with a string literal.
+      if (req.method === "GET" && url.pathname.startsWith("/api/v1/stream/")) {
+        const segment = url.pathname.slice("/api/v1/stream/".length);
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+        });
+        if (segment === "users") {
+          res.write(
+            'data: {"type":"order","order_id":"o1","status":"filled","filled":"5","remaining":"0"}\n\n',
+          );
+        } else {
+          // public market stream: one heartbeat then done
+          res.write('data: {"type":"heartbeat"}\n\n');
+        }
+        res.end();
         return;
       }
 
@@ -160,5 +182,52 @@ describe("end-to-end flow against a mock server", () => {
     const err = await session.getOrder("does-not-exist").catch((e: unknown) => e);
     expect(err).toBeInstanceOf(APIError);
     expect((err as APIError).status).toBe(404);
+  });
+
+  it("streams public market heartbeat via streamMarket", async () => {
+    const msgs: StreamMessage[] = [];
+    for await (const msg of client.streamMarket("ETH-USDT")) {
+      msgs.push(msg);
+    }
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]).toEqual({ type: "heartbeat" });
+  });
+
+  it("streams private order event via streamUser", async () => {
+    const session = await client.login({ username: "bot", password: "supersecret" });
+    const msgs: StreamMessage[] = [];
+    for await (const msg of session.streamUser()) {
+      msgs.push(msg);
+    }
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]).toMatchObject({
+      type: "order",
+      orderId: "o1",
+      status: "filled",
+      filled: 5n,
+      remaining: 0n,
+    });
+  });
+
+  it("rejects streamUser with an invalid token as AuthenticationError", async () => {
+    // Forge an invalid token by constructing the client manually — skip login
+    // so the mock server returns 401 on the stream/users endpoint.
+    const { AuthenticatedClient } = await import("../src/client/authenticated-client.js");
+    const { Transport } = await import("../src/http/transport.js");
+    const { port } = server.address() as import("node:net").AddressInfo;
+    const transport = new Transport(`http://127.0.0.1:${port}`, {
+      timeoutMs: 5000,
+      maxRetries: 0,
+      baseRetryDelayMs: 0,
+      fetchFn: fetch,
+    });
+    const badClient = new AuthenticatedClient(transport, "bad-token");
+    const err = await (async () => {
+      for await (const _ of badClient.streamUser()) {
+        // should not reach here
+      }
+    })().catch((e: unknown) => e);
+    const { AuthenticationError } = await import("../src/errors/index.js");
+    expect(err).toBeInstanceOf(AuthenticationError);
   });
 });
