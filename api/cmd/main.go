@@ -121,7 +121,7 @@ func main() {
 
 	// Live market-data stream (docs/event-log.md, Phase C): one Hub subscribes to core's me.events
 	// exchange, keeps a per-market L2 book cache in sync, and fans events out to SSE clients. No DB.
-	streamHub, err := stream.NewHub(rabbitmqClient, marketRefs, log)
+	streamHub, err := stream.NewHub(rabbitmqClient, marketRefs, log, apiMetrics)
 	if err != nil {
 		panic(err)
 	}

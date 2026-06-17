@@ -7,6 +7,7 @@ package metrics
 import (
 	"time"
 
+	"github.com/alex99y/matching-engine/common/pkg/marketdata"
 	"github.com/alex99y/matching-engine/common/pkg/observability"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
 	"github.com/prometheus/client_golang/prometheus"
@@ -25,6 +26,11 @@ const (
 	metricBookRebuilds      = "book_rebuilds_total"
 	metricBookOrders        = "book_orders"
 	metricBookBestPrice     = "book_best_price"
+	// Event-log publisher (docs/event-log.md). published/dropped are per market; publish errors are
+	// global (the publisher goroutine knows only the routing key, not the market).
+	metricStreamPublished     = "stream_events_published_total"
+	metricStreamDropped       = "stream_events_dropped_total"
+	metricStreamPublishErrors = "stream_publish_errors_total"
 )
 
 // Outcome label values for orders_processed. The first four mirror the persisted order status so
@@ -55,8 +61,16 @@ var (
 	marketOutcome    = []string{"market", "outcome"}
 	marketResult     = []string{"market", "result"}
 	marketSide       = []string{"market", "side"}
+	marketType       = []string{"market", "type"}
 	batchSizeBuckets = []float64{1, 2, 4, 8, 16, 32, 64, 96, 128}
 	batchDurBuckets  = []float64{0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1}
+
+	// streamEventTypes are the per-market event-log event types (the routing-key trailing word and
+	// the published_total "type" label). Pre-bound per market so recording is allocation-free.
+	streamEventTypes = []string{
+		string(marketdata.EventTrade), string(marketdata.EventBook), string(marketdata.EventOrder),
+		string(marketdata.EventSnapshot), string(marketdata.EventHeartbeat),
+	}
 )
 
 // CoreMetrics holds the registered me_core_* instruments. Bind per market via BindMarket.
@@ -73,6 +87,9 @@ type CoreMetrics struct {
 	bookRebuilds      *observability.CounterMetric
 	bookOrders        *observability.GaugeMetric
 	bookBestPrice     *observability.GaugeMetric
+	streamPublished   *observability.CounterMetric
+	streamDropped     *observability.CounterMetric
+	streamPublishErr  *observability.CounterMetric
 }
 
 func NewCoreMetrics(pm *observability.PrometheusMetrics) (*CoreMetrics, error) {
@@ -138,7 +155,31 @@ func NewCoreMetrics(pm *observability.PrometheusMetrics) (*CoreMetrics, error) {
 	}); err != nil {
 		return nil, err
 	}
+	if c.streamPublished, err = pm.RegisterCounter(observability.CounterDefinition{
+		Name: metricStreamPublished, Help: "Event-log events handed to the publisher, by market and type.", LabelKeys: marketType,
+	}); err != nil {
+		return nil, err
+	}
+	if c.streamDropped, err = pm.RegisterCounter(observability.CounterDefinition{
+		Name: metricStreamDropped, Help: "Event-log events dropped on a full publisher buffer (consumers re-snapshot).", LabelKeys: marketLabel,
+	}); err != nil {
+		return nil, err
+	}
+	if c.streamPublishErr, err = pm.RegisterCounter(observability.CounterDefinition{
+		Name: metricStreamPublishErrors, Help: "Event-log broker publish failures (after the publisher's reopen-retry).",
+	}); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// IncPublishError records a broker publish failure. Called from the shared publisher goroutine,
+// which has no market context — so this counter is global. Nil-safe.
+func (c *CoreMetrics) IncPublishError() {
+	if c == nil {
+		return
+	}
+	c.streamPublishErr.IncValues()
 }
 
 // MarketMetrics is the per-market bundle of concrete, pre-bound handles. A nil *MarketMetrics is
@@ -156,6 +197,8 @@ type MarketMetrics struct {
 	batches    map[string]prometheus.Counter // result -> counter
 	bookOrders map[string]prometheus.Gauge   // side -> gauge
 	bookBest   map[string]prometheus.Gauge   // side -> gauge
+	published  map[string]prometheus.Counter // event type -> counter
+	dropped    prometheus.Counter
 }
 
 // BindMarket resolves every label set for one market once. Returns nil if c is nil.
@@ -192,7 +235,18 @@ func (c *CoreMetrics) BindMarket(market string) *MarketMetrics {
 			SideBuy:  c.bookBestPrice.Bind(market, SideBuy),
 			SideSell: c.bookBestPrice.Bind(market, SideSell),
 		},
+		published: bindStreamTypes(c.streamPublished, market),
+		dropped:   c.streamDropped.Bind(market),
 	}
+}
+
+// bindStreamTypes pre-binds the published counter for every event type of one market.
+func bindStreamTypes(counter *observability.CounterMetric, market string) map[string]prometheus.Counter {
+	m := make(map[string]prometheus.Counter, len(streamEventTypes))
+	for _, t := range streamEventTypes {
+		m[t] = counter.Bind(market, t)
+	}
+	return m
 }
 
 func (m *MarketMetrics) IncReceived() {
@@ -284,4 +338,22 @@ func (m *MarketMetrics) SetBook(side string, orders int, best uint64, hasBest bo
 			g.Set(0)
 		}
 	}
+}
+
+// IncStreamPublished counts one event-log event enqueued to the publisher, by type.
+func (m *MarketMetrics) IncStreamPublished(eventType string) {
+	if m == nil {
+		return
+	}
+	if c, ok := m.published[eventType]; ok {
+		c.Inc()
+	}
+}
+
+// IncStreamDropped counts one event dropped on a full publisher buffer.
+func (m *MarketMetrics) IncStreamDropped() {
+	if m == nil {
+		return
+	}
+	m.dropped.Inc()
 }

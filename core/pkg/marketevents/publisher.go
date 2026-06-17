@@ -27,17 +27,25 @@ type outbound struct {
 	body       []byte
 }
 
+// Metrics records publisher-side observability. It is the minimal surface the publisher needs
+// (interface in the consumer); a nil Metrics disables recording. Buffer-full drops are recorded by
+// the caller (which has the market context); broker publish failures are recorded here.
+type Metrics interface {
+	IncPublishError()
+}
+
 // Publisher owns the me.events exchange and the single goroutine that publishes to it. Because that
 // goroutine is the only thing that ever touches the underlying AMQP channel (which is not safe for
 // concurrent use), every market can enqueue concurrently without a lock.
 type Publisher struct {
 	exchange *rabbitmq.Exchange
 	logger   *logger.Logger
+	metrics  Metrics
 	ch       chan outbound
 	dropped  atomic.Uint64
 }
 
-func NewPublisher(client *rabbitmq.RabbitMQClient, log *logger.Logger) (*Publisher, error) {
+func NewPublisher(client *rabbitmq.RabbitMQClient, log *logger.Logger, metrics Metrics) (*Publisher, error) {
 	if log == nil {
 		panic("logger cannot be nil")
 	}
@@ -55,6 +63,7 @@ func NewPublisher(client *rabbitmq.RabbitMQClient, log *logger.Logger) (*Publish
 	return &Publisher{
 		exchange: exchange,
 		logger:   log,
+		metrics:  metrics,
 		ch:       make(chan outbound, outboundBuffer),
 	}, nil
 }
@@ -84,6 +93,9 @@ func (p *Publisher) Run(ctx context.Context) {
 			// the event dropped. Blocking matching on the broker is never acceptable here.
 			if err := p.exchange.Publish(ctx, o.routingKey, o.messageId, o.body); err != nil {
 				p.dropped.Add(1)
+				if p.metrics != nil {
+					p.metrics.IncPublishError()
+				}
 				p.logger.Error(fmt.Sprintf("market events publisher: dropped %q: %v", o.routingKey, err))
 			}
 		}

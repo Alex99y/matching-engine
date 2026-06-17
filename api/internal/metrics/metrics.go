@@ -7,8 +7,16 @@ package metrics
 import (
 	"time"
 
+	"github.com/alex99y/matching-engine/common/pkg/marketdata"
 	"github.com/alex99y/matching-engine/common/pkg/observability"
 )
+
+// streamEventTypes are the event-log event types (mirrors the publisher), used to pre-create the
+// consumer's per-type series at zero — see PrimeStream.
+var streamEventTypes = []string{
+	string(marketdata.EventTrade), string(marketdata.EventBook), string(marketdata.EventOrder),
+	string(marketdata.EventSnapshot), string(marketdata.EventHeartbeat),
+}
 
 const (
 	metricHTTPRequests    = "http_requests_total"
@@ -16,6 +24,12 @@ const (
 	metricHTTPInFlight    = "http_requests_in_flight"
 	metricOrderPublish    = "order_publish_total"
 	metricOrderPublishDur = "order_publish_duration_seconds"
+	// Event-log consumer (docs/event-log.md, Phase C).
+	metricStreamReceived       = "stream_events_received_total"
+	metricStreamResyncs        = "stream_resyncs_total"
+	metricStreamPublicClients  = "stream_public_clients"
+	metricStreamPrivateUsers   = "stream_private_users"
+	metricStreamClientsDropped = "stream_clients_dropped_total"
 )
 
 // Publish result label values.
@@ -24,12 +38,27 @@ const (
 	ResultError   = "error"
 )
 
+// Resync reason label values (why a market cache fell out of sync).
+const (
+	ResyncGap   = "gap"
+	ResyncEpoch = "epoch"
+)
+
+// Stream client kind label values.
+const (
+	KindPublic  = "public"
+	KindPrivate = "private"
+)
+
 // Label keys. Order is the contract for the positional fast-path methods below — values are
 // passed in exactly this order.
 var (
 	httpLabelKeys    = []string{"method", "route", "status"}
 	publishLabelKeys = []string{"market", "result"}
 	marketLabelKeys  = []string{"market"}
+	marketTypeKeys   = []string{"market", "type"}
+	marketReasonKeys = []string{"market", "reason"}
+	streamKindKeys   = []string{"kind"}
 )
 
 var (
@@ -45,6 +74,11 @@ type ApiMetrics struct {
 	httpInFlight    *observability.GaugeMetric
 	orderPublish    *observability.CounterMetric
 	orderPublishDur *observability.HistogramMetric
+	streamReceived  *observability.CounterMetric
+	streamResyncs   *observability.CounterMetric
+	streamPublicCli *observability.GaugeMetric
+	streamPrivUsers *observability.GaugeMetric
+	streamCliDrop   *observability.CounterMetric
 }
 
 // NewApiMetrics registers the me_api_* instruments on pm and returns the recorder.
@@ -79,6 +113,36 @@ func NewApiMetrics(pm *observability.PrometheusMetrics) (*ApiMetrics, error) {
 	if err != nil {
 		return nil, err
 	}
+	streamReceived, err := pm.RegisterCounter(observability.CounterDefinition{
+		Name: metricStreamReceived, Help: "Event-log events consumed from the exchange, by market and type.", LabelKeys: marketTypeKeys,
+	})
+	if err != nil {
+		return nil, err
+	}
+	streamResyncs, err := pm.RegisterCounter(observability.CounterDefinition{
+		Name: metricStreamResyncs, Help: "Market book caches that fell out of sync (and re-sync from the next snapshot), by reason.", LabelKeys: marketReasonKeys,
+	})
+	if err != nil {
+		return nil, err
+	}
+	streamPublicCli, err := pm.RegisterGauge(observability.GaugeDefinition{
+		Name: metricStreamPublicClients, Help: "Connected public SSE clients, by market.", LabelKeys: marketLabelKeys,
+	})
+	if err != nil {
+		return nil, err
+	}
+	streamPrivUsers, err := pm.RegisterGauge(observability.GaugeDefinition{
+		Name: metricStreamPrivateUsers, Help: "Distinct users with an active private stream binding on this instance.",
+	})
+	if err != nil {
+		return nil, err
+	}
+	streamCliDrop, err := pm.RegisterCounter(observability.CounterDefinition{
+		Name: metricStreamClientsDropped, Help: "SSE clients dropped for lagging (buffer full), by kind.", LabelKeys: streamKindKeys,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	return &ApiMetrics{
 		httpRequests:    httpRequests,
@@ -86,6 +150,11 @@ func NewApiMetrics(pm *observability.PrometheusMetrics) (*ApiMetrics, error) {
 		httpInFlight:    httpInFlight,
 		orderPublish:    orderPublish,
 		orderPublishDur: orderPublishDur,
+		streamReceived:  streamReceived,
+		streamResyncs:   streamResyncs,
+		streamPublicCli: streamPublicCli,
+		streamPrivUsers: streamPrivUsers,
+		streamCliDrop:   streamCliDrop,
 	}, nil
 }
 
@@ -120,4 +189,82 @@ func (m *ApiMetrics) RecordOrderPublish(market, result string, latency time.Dura
 	}
 	m.orderPublish.IncValues(market, result)
 	m.orderPublishDur.ObserveValues(latency.Seconds(), market)
+}
+
+// RecordStreamEvent counts one event-log envelope consumed from the exchange.
+func (m *ApiMetrics) RecordStreamEvent(market, eventType string) {
+	if m == nil {
+		return
+	}
+	m.streamReceived.IncValues(market, eventType)
+}
+
+// RecordResync counts one market cache falling out of sync (reason ResyncGap or ResyncEpoch).
+func (m *ApiMetrics) RecordResync(market, reason string) {
+	if m == nil {
+		return
+	}
+	m.streamResyncs.IncValues(market, reason)
+}
+
+// IncPublicClients / DecPublicClients track connected public SSE clients per market.
+func (m *ApiMetrics) IncPublicClients(market string) {
+	if m == nil {
+		return
+	}
+	m.streamPublicCli.IncValues(market)
+}
+
+func (m *ApiMetrics) DecPublicClients(market string) {
+	if m == nil {
+		return
+	}
+	m.streamPublicCli.DecValues(market)
+}
+
+// IncPrivateUsers / DecPrivateUsers track distinct users with an active private binding (bound on a
+// user's first connection, unbound on their last).
+func (m *ApiMetrics) IncPrivateUsers() {
+	if m == nil {
+		return
+	}
+	m.streamPrivUsers.IncValues()
+}
+
+func (m *ApiMetrics) DecPrivateUsers() {
+	if m == nil {
+		return
+	}
+	m.streamPrivUsers.DecValues()
+}
+
+// IncClientDropped counts one SSE client dropped for lagging (kind KindPublic or KindPrivate).
+func (m *ApiMetrics) IncClientDropped(kind string) {
+	if m == nil {
+		return
+	}
+	m.streamCliDrop.IncValues(kind)
+}
+
+// PrimeStream pre-creates every bounded event-log series at zero for the served markets, so the
+// dashboards show flat-zero lines from startup rather than "No data" until the first event (and a
+// healthy, never-resyncing system still renders a 0 line instead of a blank panel). Mirrors the core
+// publisher's pre-binding. Call once at startup; nil-safe.
+func (m *ApiMetrics) PrimeStream(markets []string) {
+	if m == nil {
+		return
+	}
+	m.streamPrivUsers.SetValues(0)
+	for _, kind := range []string{KindPublic, KindPrivate} {
+		m.streamCliDrop.AddValues(0, kind)
+	}
+	for _, market := range markets {
+		m.streamPublicCli.SetValues(0, market)
+		for _, t := range streamEventTypes {
+			m.streamReceived.AddValues(0, market, t)
+		}
+		for _, reason := range []string{ResyncGap, ResyncEpoch} {
+			m.streamResyncs.AddValues(0, market, reason)
+		}
+	}
 }

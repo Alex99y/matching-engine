@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/alex99y/matching-engine/api/internal/metrics"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/common/pkg/marketdata"
 	"github.com/alex99y/matching-engine/common/pkg/rabbitmq"
@@ -38,6 +39,7 @@ type event struct {
 type Hub struct {
 	logger       *logger.Logger
 	source       eventSource
+	metrics      *metrics.ApiMetrics
 	caches       map[string]*bookCache               // market -> canonical L2 cache
 	marketGroups map[string]map[uint64]*groupView    // market -> grouping -> bucketed view + clients
 	userClients  map[string]map[*userclient]struct{} // userID -> connected user clients
@@ -96,6 +98,7 @@ func (h *Hub) loop(ctx context.Context) {
 // warm). A re-sync (snapshot after an unsynced window) re-broadcasts the full book so clients reset.
 func (h *Hub) handleEvent(e event) {
 	env := e.envelope
+	h.metrics.RecordStreamEvent(env.Market, string(env.Type))
 
 	// Private order events route by user id (from the routing key), not by market — they must not
 	// be gated on a public book cache existing for env.Market.
@@ -135,7 +138,9 @@ func (h *Hub) handleEvent(e event) {
 			return
 		}
 		old := cache.qtyAt(b.Side, b.Price)
+		wasSynced, prevEpoch := cache.synced, cache.epoch
 		if !cache.applyDelta(env.Epoch, env.Seq, b) {
+			h.recordResync(env.Market, wasSynced, cache.synced, prevEpoch, env.Epoch)
 			return // gap or unsynced — dropped until the next snapshot re-syncs
 		}
 		delta := int64(b.Quantity) - int64(old)
@@ -158,9 +163,24 @@ func (h *Hub) handleEvent(e event) {
 		h.broadcastMarket(env.Market, tradeFrame(t))
 
 	case marketdata.EventHeartbeat:
+		wasSynced, prevEpoch := cache.synced, cache.epoch
 		cache.checkHeartbeat(env.Epoch, env.Seq)
+		h.recordResync(env.Market, wasSynced, cache.synced, prevEpoch, env.Epoch)
 		h.broadcastMarket(env.Market, heartbeatFrame())
 	}
+}
+
+// recordResync records a market cache transitioning from synced to unsynced, attributing it to an
+// epoch change (core restarted) or a sequence gap (missed events).
+func (h *Hub) recordResync(market string, wasSynced, synced bool, prevEpoch, eventEpoch string) {
+	if !wasSynced || synced {
+		return // no transition out of sync
+	}
+	reason := metrics.ResyncGap
+	if eventEpoch != prevEpoch {
+		reason = metrics.ResyncEpoch
+	}
+	h.metrics.RecordResync(market, reason)
 }
 
 // handleOrder routes a private order update to the owning user's connection(s) only. The user id
@@ -203,6 +223,7 @@ func (h *Hub) handleRegister(c client) {
 			groups[cl.group] = view
 		}
 		view.clients[cl] = struct{}{}
+		h.metrics.IncPublicClients(cl.market)
 		h.send(cl, groupSnapshotFrame(cl.market, view))
 	case *userclient:
 		uid := cl.userID.String()
@@ -221,6 +242,7 @@ func (h *Hub) handleRegister(c client) {
 				close(cl.ch)
 				return
 			}
+			h.metrics.IncPrivateUsers()
 		}
 		set[cl] = struct{}{}
 	}
@@ -245,6 +267,7 @@ func (h *Hub) removeClient(c client) {
 		}
 		delete(view.clients, cl)
 		close(cl.ch)
+		h.metrics.DecPublicClients(cl.market)
 		// Drop the aggregated view once no client uses this grouping ("one view per grouping in use").
 		if len(view.clients) == 0 {
 			delete(groups, cl.group)
@@ -265,6 +288,7 @@ func (h *Hub) removeClient(c client) {
 		// reconnect (handleRegister treats a missing entry as the first connection).
 		if len(set) == 0 {
 			delete(h.userClients, uid)
+			h.metrics.DecPrivateUsers()
 			if err := h.source.UnbindPattern(marketdata.UserBinding(uid)); err != nil {
 				h.logger.Error(fmt.Sprintf("couldn't unbind user id %s", uid))
 				h.logger.ErrorO(err)
@@ -304,6 +328,7 @@ func (h *Hub) send(c *marketclient, frame []byte) {
 	select {
 	case c.ch <- frame:
 	default:
+		h.metrics.IncClientDropped(metrics.KindPublic)
 		h.removeClient(c)
 	}
 }
@@ -316,6 +341,7 @@ func (h *Hub) broadcastUserEnv(userID string, frame []byte) {
 		select {
 		case c.ch <- frame:
 		default:
+			h.metrics.IncClientDropped(metrics.KindPrivate)
 			h.removeClient(c)
 		}
 	}
@@ -358,7 +384,7 @@ func (h *Hub) disconnect(c client) {
 
 // NewHub builds the subscriber (binding market.<m>.# for every served market at startup), the per
 // market caches, and the empty client registry. Call Run to start consuming and serving.
-func NewHub(rmqClient *rabbitmq.RabbitMQClient, markets []string, log *logger.Logger) (*Hub, error) {
+func NewHub(rmqClient *rabbitmq.RabbitMQClient, markets []string, log *logger.Logger, m *metrics.ApiMetrics) (*Hub, error) {
 	if log == nil {
 		panic("logger cannot be nil")
 	}
@@ -382,6 +408,7 @@ func NewHub(rmqClient *rabbitmq.RabbitMQClient, markets []string, log *logger.Lo
 	h := &Hub{
 		logger:       log,
 		source:       sub,
+		metrics:      m,
 		caches:       make(map[string]*bookCache, len(markets)),
 		marketGroups: make(map[string]map[uint64]*groupView, len(markets)),
 		userClients:  make(map[string]map[*userclient]struct{}),
@@ -390,9 +417,12 @@ func NewHub(rmqClient *rabbitmq.RabbitMQClient, markets []string, log *logger.Lo
 		unregister:   make(chan client),
 		done:         make(chan struct{}),
 	}
-	for _, m := range markets {
-		h.caches[m] = newBookCache()
-		h.marketGroups[m] = make(map[uint64]*groupView)
+	for _, market := range markets {
+		h.caches[market] = newBookCache()
+		h.marketGroups[market] = make(map[uint64]*groupView)
 	}
+	// Pre-create the bounded stream series at zero so dashboards render flat-zero from boot instead
+	// of "No data" (mirrors the core publisher's pre-binding).
+	m.PrimeStream(markets)
 	return h, nil
 }

@@ -78,5 +78,9 @@ func (o *OrderProcessor) publish(t marketdata.EventType, seq uint64, routingKey 
 		o.logger.Error(fmt.Sprintf("order processor %s: serialize %s envelope: %s", o.marketRef, t, err))
 		return
 	}
-	o.publisher.Enqueue(routingKey, uuid.NewString(), body)
+	if o.publisher.Enqueue(routingKey, uuid.NewString(), body) {
+		o.metrics.IncStreamPublished(string(t))
+	} else {
+		o.metrics.IncStreamDropped()
+	}
 }

@@ -41,9 +41,18 @@ Recorded by the HTTP `AccessLog` middleware and the order publisher (`api/intern
 | `me_api_http_requests_in_flight` | gauge | — | In-flight requests right now (saturation) |
 | `me_api_order_publish_total` | counter | `market, result` | Did the order reach RabbitMQ? `result` = `success` \| `error` |
 | `me_api_order_publish_duration_seconds` | histogram | `market` | Latency of the API→broker publish hop |
+| `me_api_stream_events_received_total` | counter | `market, type` | Event-log events consumed from the exchange (`type` = `trade`/`book`/`order`/`snapshot`/`heartbeat`) |
+| `me_api_stream_resyncs_total` | counter | `market, reason` | **Stream correctness SLI** — a market cache fell out of sync; `reason` = `gap` \| `epoch`. Should be ~0 |
+| `me_api_stream_public_clients` | gauge | `market` | Connected public SSE clients per market |
+| `me_api_stream_private_users` | gauge | — | Distinct users with an active private binding on this instance (binding-churn signal) |
+| `me_api_stream_clients_dropped_total` | counter | `kind` | SSE clients dropped for lagging; `kind` = `public` \| `private` |
 
 `route` is the **matched route template** (`/api/v1/order/:id`), never the concrete path. Requests
 that 404/405 are not counted (no bounded template).
+
+> ⚠️ **`stream_events_received` vs core's `stream_events_published`:** they reconcile only **per API
+> instance**. With N instances, each receives every public event via fan-out, so the *sum* across
+> instances is ≈ N× published — compare a single instance's `received` to core's `published` to spot loss.
 
 ---
 
@@ -94,6 +103,9 @@ path is allocation-free (`core/internal/metrics`). Metric values are derived fro
 | `me_core_book_rebuilds_total` | counter | `market` | Book hydrations triggered by a failed batch — **alert on rate** |
 | `me_core_book_orders` | gauge | `market, side` | Resting order count per side (book depth) |
 | `me_core_book_best_price` | gauge | `market, side` | Best bid / best ask (0 when that side is empty) |
+| `me_core_stream_events_published_total` | counter | `market, type` | Event-log events handed to the publisher (`type` = `trade`/`book`/`order`/`snapshot`/`heartbeat`) |
+| `me_core_stream_events_dropped_total` | counter | `market` | Events dropped on a full publisher buffer — **forces consumers to re-snapshot; alert on rate** |
+| `me_core_stream_publish_errors_total` | counter | — | Broker publish failures after the publisher's reopen-retry (global — no market context in the publish goroutine) |
 
 - `outcome` ∈ `open` · `filled` · `partially_filled` · `cancelled` · `rejected`
 - `result` ∈ `committed` · `transient_fail` · `poison_isolated`
@@ -166,18 +178,20 @@ series for this system:
 
 ---
 
-## Not yet emitted — event-log / outbox (ships with Queue 2)
+## Not yet emitted — durable outbox (separate future concern)
 
-The post-match event log (`orders.events`) is not built (`common/pkg/rabbitmq/exchange.go` is a
-stub), so these metrics **do not exist yet**. They are pre-designed here so the instrumentation lands
-with the queue. The intended implementation is a **transactional outbox** (events written inside the
-match tx, drained by a publisher) — only that makes the consistency-lag SLI measurable; fire-and-forget
-would lose events silently.
+The **live event-log** fan-out (`me.events`, `docs/event-log.md`) is now built and instrumented — see
+`me_core_stream_*` and `me_api_stream_*` above. It is **ephemeral and best-effort** by design: drops
+are visible (`stream_events_dropped_total`) and consumers re-snapshot, so there is no consistency-lag
+to measure.
+
+The metrics below belong to a **separate, not-yet-built** concern: a **durable transactional outbox**
+(events written inside the match tx, drained by a publisher) for an analytics/settlement pipeline that
+must never miss an event. Only that design makes a consistency-lag SLI meaningful. Pre-designed here so
+the instrumentation lands with it.
 
 | Metric (planned) | Type | Labels | Answers |
 |------------------|------|--------|---------|
 | `me_core_outbox_backlog_rows` | gauge | `market` | Committed-but-unpublished events (publisher falling behind) |
-| `me_core_outbox_oldest_unpublished_age_seconds` | gauge | `market` | **Consistency-lag SLI** — how stale the event stream is vs the ledger |
-| `me_core_events_published_total` | counter | `market, event_type` | Publish throughput by type (`trade`, `order_update`, …) |
-| `me_core_events_publish_errors_total` | counter | `market` | Publish failure rate |
-| `me_core_events_publish_duration_seconds` | histogram | `market` | Publish latency to the exchange |
+| `me_core_outbox_oldest_unpublished_age_seconds` | gauge | `market` | **Consistency-lag SLI** — how stale the outbox is vs the ledger |
+| `me_core_outbox_publish_errors_total` | counter | `market` | Outbox publish failure rate |

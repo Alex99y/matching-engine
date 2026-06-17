@@ -283,6 +283,156 @@
           "sort": "desc"
         }
       }
+    },
+    {
+      "type": "row",
+      "title": "Event-Log Stream (consumer)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Stream events received (per sec)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 27
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (market, type) (rate(me_api_stream_events_received_total[1m]))",
+          "legendFormat": "{{market}} {{type}}"
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Pairs with me_core_stream_events_published_total. NOTE: with N API instances each receives every public event via fan-out, so compare PER-INSTANCE received to core published, not the sum."
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache resyncs (per sec)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 27
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (market, reason) (rate(me_api_stream_resyncs_total[1m]))",
+          "legendFormat": "{{market}} {{reason}}"
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Headline correctness signal: how often a market cache fell out of sync (gap or core restart). Should be ~0."
+    },
+    {
+      "type": "timeseries",
+      "title": "Connected SSE clients",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 35
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (market) (me_api_stream_public_clients)",
+          "legendFormat": "public {{market}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(me_api_stream_private_users)",
+          "legendFormat": "private users"
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Clients dropped \u2014 lagging (per sec)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 35
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (kind) (rate(me_api_stream_clients_dropped_total[1m]))",
+          "legendFormat": "{{kind}}"
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Slow SSE consumers dropped (buffer full); they reconnect and re-snapshot."
     }
   ]
 }

@@ -552,6 +552,88 @@
           "sort": "desc"
         }
       }
+    },
+    {
+      "type": "row",
+      "title": "Event-Log Stream (publisher)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Stream events published (per sec)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 44
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (market, type) (rate(me_core_stream_events_published_total{market=~\"$market\"}[1m]))",
+          "legendFormat": "{{market}} {{type}}"
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Stream drops & publish errors (per sec)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (market) (rate(me_core_stream_events_dropped_total{market=~\"$market\"}[1m]))",
+          "legendFormat": "dropped {{market}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(me_core_stream_publish_errors_total[1m]))",
+          "legendFormat": "publish errors"
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Drops force consumers to re-snapshot. Should be ~0 in steady state."
     }
   ]
 }

@@ -71,7 +71,7 @@ func main() {
 	// Live event-log fan-out (docs/event-log.md): one shared async publisher to the me.events topic
 	// exchange, and a fresh epoch per core start so an API can detect a restart and re-sync. Markets
 	// share the publisher; each processor sequences its own (epoch, seq) stream.
-	eventPublisher, err := marketevents.NewPublisher(rabbitmqClient, log)
+	eventPublisher, err := marketevents.NewPublisher(rabbitmqClient, log, coreMetrics)
 	if err != nil {
 		panic(err)
 	}
