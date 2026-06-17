@@ -18,11 +18,13 @@ type client interface {
 	channel() chan []byte
 }
 
-// marketclient is one connected SSE subscriber. ch carries pre-serialized SSE frames: the Hub is the sole
-// writer and the sole closer of ch (always on the Hub goroutine); the stream writer is the sole
-// reader.
+// marketclient is one connected SSE subscriber to a public market stream. ch carries pre-serialized
+// SSE frames: the Hub is the sole writer and the sole closer of ch (always on the Hub goroutine);
+// the stream writer is the sole reader. group is the price-bucket size (in price units) the client
+// requested — clients at the same (market, group) share one aggregated view.
 type marketclient struct {
 	market string
+	group  uint64
 	ch     chan []byte
 }
 
@@ -79,8 +81,9 @@ type orderMsg struct {
 	Remaining string `json:"remaining"`
 }
 
-func snapshotFrame(market string, c *bookCache) []byte {
-	bids, asks := c.snapshotView()
+// groupSnapshotFrame is the full bucketed book sent as a client's first frame and on resync.
+func groupSnapshotFrame(market string, v *groupView) []byte {
+	bids, asks := v.snapshotView()
 	return marshalFrame(snapshotMsg{
 		Type:   "snapshot",
 		Market: market,

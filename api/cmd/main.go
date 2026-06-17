@@ -107,8 +107,11 @@ func main() {
 
 	activeMarkets := cacheService.GetMarkets()
 	marketRefs := make([]string, len(activeMarkets))
+	marketQuanta := make(map[string]uint64, len(activeMarkets))
 	for i, m := range activeMarkets {
-		marketRefs[i] = utils.MergeMarketRef(m.BaseSymbol, m.QuoteSymbol)
+		ref := utils.MergeMarketRef(m.BaseSymbol, m.QuoteSymbol)
+		marketRefs[i] = ref
+		marketQuanta[ref] = m.PriceQuantum
 	}
 	publisher := orderqueue.NewOrderCommandPublisher(log, rabbitmqClient, marketRefs, apiMetrics)
 
@@ -123,7 +126,7 @@ func main() {
 		panic(err)
 	}
 	go streamHub.Run(ctx)
-	streamHandler := stream.NewMarketsStreamHandler(log, streamHub, marketRefs)
+	streamHandler := stream.NewMarketsStreamHandler(log, streamHub, marketQuanta)
 
 	server := server.NewServer(server.ServerDependencies{
 		Logger:             log,

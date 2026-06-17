@@ -97,19 +97,3 @@ func TestCacheHeartbeatDetectsGap(t *testing.T) {
 		t.Fatal("heartbeat ahead of lastSeq must unsync")
 	}
 }
-
-// snapshotView returns bids high→low and asks low→high.
-func TestCacheSnapshotViewOrdering(t *testing.T) {
-	c := newBookCache()
-	c.applySnapshot(snap("e1", 1,
-		[]marketdata.BookLevel{{Price: 100, Quantity: 1}, {Price: 103, Quantity: 1}, {Price: 101, Quantity: 1}},
-		[]marketdata.BookLevel{{Price: 110, Quantity: 1}, {Price: 108, Quantity: 1}},
-	))
-	bids, asks := c.snapshotView()
-	if bids[0].price != 103 || bids[len(bids)-1].price != 100 {
-		t.Fatalf("bids not high→low: %+v", bids)
-	}
-	if asks[0].price != 108 || asks[len(asks)-1].price != 110 {
-		t.Fatalf("asks not low→high: %+v", asks)
-	}
-}

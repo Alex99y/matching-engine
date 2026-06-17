@@ -77,6 +77,12 @@ func (c *bookCache) checkHeartbeat(epoch string, seq uint64) {
 	}
 }
 
+// qtyAt returns the canonical aggregate quantity at one price level, or 0 if absent. The Hub reads
+// it just before applying a delta so it can derive the signed change for the bucketed views.
+func (c *bookCache) qtyAt(side string, price uint64) uint64 {
+	return c.sideMap(side)[price]
+}
+
 func (c *bookCache) sideMap(side string) map[uint64]uint64 {
 	if side == "buy" {
 		return c.bids
@@ -89,19 +95,18 @@ type bookLevel struct {
 	qty   uint64
 }
 
-// snapshotView returns the current book as sorted level slices (bids high→low, asks low→high) for
-// the initial frame sent to a connecting client.
-func (c *bookCache) snapshotView() (bids, asks []bookLevel) {
-	bids = make([]bookLevel, 0, len(c.bids))
-	for p, q := range c.bids {
-		bids = append(bids, bookLevel{price: p, qty: q})
+// sortedLevels returns a price→qty map as a slice ordered high→low (bids) or low→high (asks). Shared
+// by the bucketed snapshot frames.
+func sortedLevels(m map[uint64]uint64, highToLow bool) []bookLevel {
+	levels := make([]bookLevel, 0, len(m))
+	for p, q := range m {
+		levels = append(levels, bookLevel{price: p, qty: q})
 	}
-	sort.Slice(bids, func(i, j int) bool { return bids[i].price > bids[j].price })
-
-	asks = make([]bookLevel, 0, len(c.asks))
-	for p, q := range c.asks {
-		asks = append(asks, bookLevel{price: p, qty: q})
-	}
-	sort.Slice(asks, func(i, j int) bool { return asks[i].price < asks[j].price })
-	return bids, asks
+	sort.Slice(levels, func(i, j int) bool {
+		if highToLow {
+			return levels[i].price > levels[j].price
+		}
+		return levels[i].price < levels[j].price
+	})
+	return levels
 }

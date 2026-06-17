@@ -2,6 +2,8 @@ package stream
 
 import (
 	"bufio"
+	"errors"
+	"strconv"
 	"time"
 
 	"github.com/alex99y/matching-engine/api/pkg/middleware"
@@ -15,10 +17,12 @@ import (
 // comment frame still detects a vanished client.
 const clientPingInterval = 15 * time.Second
 
+var errInvalidGroup = errors.New("group must be a positive multiple of the market price quantum")
+
 type StreamHandler struct {
 	logger    *logger.Logger
 	marketHub *Hub
-	markets   map[string]struct{} // served market refs, for validating :market
+	markets   map[string]uint64 // served market ref -> price_quantum (validates :market and grouping)
 }
 
 // MarketStream is the SSE endpoint GET /api/v1/stream/:market. It authenticates the connection (so the
@@ -27,14 +31,20 @@ type StreamHandler struct {
 // live book deltas, trades, and heartbeats. The book cache is served from memory — no DB read.
 func (h *StreamHandler) MarketStream(c fiber.Ctx) error {
 	market := c.Params("market")
-	if _, ok := h.markets[market]; !ok {
+	priceQuantum, ok := h.markets[market]
+	if !ok {
 		return utils.NewErrorResponse(c, fiber.StatusNotFound, "unknown market")
+	}
+
+	group, err := parseGroup(c.Query("group"), priceQuantum)
+	if err != nil {
+		return utils.NewErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 
 	cl := &marketclient{
 		market: market,
-		// userID: middleware.UserIDFromContext(c),
-		ch: make(chan []byte, clientSendBuffer),
+		group:  group,
+		ch:     make(chan []byte, clientSendBuffer),
 	}
 	h.marketHub.connect(cl)
 
@@ -109,16 +119,31 @@ func flush(w *bufio.Writer, frame []byte) bool {
 	return w.Flush() == nil
 }
 
-func NewMarketsStreamHandler(log *logger.Logger, hub *Hub, markets []string) *StreamHandler {
+// parseGroup resolves the requested price-bucket size from the ?group query. Empty means native
+// resolution (the market's price_quantum). Otherwise it must be a positive multiple of price_quantum
+// — price_quantum is the tick, so you can only aggregate up from it (docs/event-log.md §5).
+func parseGroup(raw string, priceQuantum uint64) (uint64, error) {
+	if priceQuantum == 0 {
+		priceQuantum = 1 // defensive; markets always have a positive quantum
+	}
+	if raw == "" {
+		return priceQuantum, nil
+	}
+	g, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || g == 0 || g%priceQuantum != 0 {
+		return 0, errInvalidGroup
+	}
+	return g, nil
+}
+
+// NewMarketsStreamHandler builds the SSE handler. markets maps each served market ref to its
+// price_quantum, used to validate the :market param and the requested grouping.
+func NewMarketsStreamHandler(log *logger.Logger, hub *Hub, markets map[string]uint64) *StreamHandler {
 	if log == nil {
 		panic("logger cannot be nil")
 	}
 	if hub == nil {
 		panic("hub cannot be nil")
 	}
-	set := make(map[string]struct{}, len(markets))
-	for _, m := range markets {
-		set[m] = struct{}{}
-	}
-	return &StreamHandler{logger: log, marketHub: hub, markets: set}
+	return &StreamHandler{logger: log, marketHub: hub, markets: markets}
 }

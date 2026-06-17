@@ -41,25 +41,37 @@ func (f *fakeSource) UnbindPattern(p string) error { f.unbinds = append(f.unbind
 // at a time, on a single goroutine — so there is no concurrency to flake on.
 func newTestHub(source eventSource, markets ...string) *Hub {
 	h := &Hub{
-		logger:        logger.NewLogger(logger.Error),
-		source:        source,
-		caches:        map[string]*bookCache{},
-		marketClients: map[string]map[*marketclient]struct{}{},
-		userClients:   map[string]map[*userclient]struct{}{},
-		events:        make(chan event, eventBuffer),
-		register:      make(chan client),
-		unregister:    make(chan client),
-		done:          make(chan struct{}),
+		logger:       logger.NewLogger(logger.Error),
+		source:       source,
+		caches:       map[string]*bookCache{},
+		marketGroups: map[string]map[uint64]*groupView{},
+		userClients:  map[string]map[*userclient]struct{}{},
+		events:       make(chan event, eventBuffer),
+		register:     make(chan client),
+		unregister:   make(chan client),
+		done:         make(chan struct{}),
 	}
 	for _, m := range markets {
 		h.caches[m] = newBookCache()
-		h.marketClients[m] = map[*marketclient]struct{}{}
+		h.marketGroups[m] = map[uint64]*groupView{}
 	}
 	return h
 }
 
-func newMarketClient(market string) *marketclient {
-	return &marketclient{market: market, ch: make(chan []byte, clientSendBuffer)}
+// newMarketClient connects at native resolution (group 1) unless a grouping is given.
+func newMarketClient(market string, group uint64) *marketclient {
+	if group == 0 {
+		group = 1
+	}
+	return &marketclient{market: market, group: group, ch: make(chan []byte, clientSendBuffer)}
+}
+
+// marketClientsOf returns the connected clients at a market's native (group 1) view, for assertions.
+func marketClientsOf(h *Hub, market string) map[*marketclient]struct{} {
+	if v := h.marketGroups[market][1]; v != nil {
+		return v.clients
+	}
+	return nil
 }
 
 func newUserClient(uid uuid.UUID) *userclient {
@@ -125,7 +137,7 @@ func TestHubMarketRegisterSendsSnapshot(t *testing.T) {
 		Bids: []marketdata.BookLevel{{Price: 100, Quantity: 2}},
 	}))
 
-	c := newMarketClient(testMarket)
+	c := newMarketClient(testMarket, 1)
 	h.handleRegister(c)
 
 	if got := frameType(t, recv(t, c.ch)); got != "snapshot" {
@@ -137,7 +149,7 @@ func TestHubMarketRegisterSendsSnapshot(t *testing.T) {
 func TestHubMarketForwardsAndGaps(t *testing.T) {
 	h := newTestHub(&fakeSource{}, testMarket)
 	h.handleEvent(publicEvent(t, marketdata.EventSnapshot, "e1", 5, marketdata.Snapshot{Epoch: "e1", Seq: 5, Market: testMarket}))
-	c := newMarketClient(testMarket)
+	c := newMarketClient(testMarket, 1)
 	h.handleRegister(c)
 	recv(t, c.ch) // drop initial snapshot
 
@@ -156,19 +168,23 @@ func TestHubMarketForwardsAndGaps(t *testing.T) {
 // A market client whose buffer fills is dropped from the registry and its channel closed.
 func TestHubDropsSlowMarketClient(t *testing.T) {
 	h := newTestHub(&fakeSource{}, testMarket)
-	c := newMarketClient(testMarket)
+	c := newMarketClient(testMarket, 1)
 	h.handleRegister(c)
 	recv(t, c.ch) // drain snapshot so the buffer starts empty
 
 	for i := 0; i < clientSendBuffer; i++ {
 		h.send(c, bookFrame(marketdata.Book{Side: "buy", Price: 100, Quantity: 1}))
 	}
-	if _, ok := h.marketClients[testMarket][c]; !ok {
+	if _, ok := marketClientsOf(h, testMarket)[c]; !ok {
 		t.Fatal("client dropped too early")
 	}
 	h.send(c, bookFrame(marketdata.Book{Side: "buy", Price: 100, Quantity: 1})) // overflow
-	if _, ok := h.marketClients[testMarket][c]; ok {
+	// Dropping the only client also tears down its (now-empty) grouping view.
+	if _, ok := marketClientsOf(h, testMarket)[c]; ok {
 		t.Fatal("slow client should have been dropped")
+	}
+	if _, ok := h.marketGroups[testMarket][1]; ok {
+		t.Fatal("empty grouping view should have been removed")
 	}
 }
 

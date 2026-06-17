@@ -15,7 +15,7 @@ import (
 const eventBuffer = 4096
 
 // eventSource is the subset of rabbitmq.Subscriber the Hub needs (interface in the consumer, for
-// testability). C2 will extend it with BindPattern/UnbindPattern for private per-user bindings.
+// testability). Bind/UnbindPattern drive the dynamic per-user private bindings.
 type eventSource interface {
 	Subscribe(ctx context.Context, handler rabbitmq.ExchangeHandler) error
 	BindPattern(pattern string) error
@@ -36,15 +36,15 @@ type event struct {
 // loop means the cache and registry need no locks, and it removes the snapshot/delta join race:
 // a client is registered (and sent its initial snapshot) atomically with respect to delta delivery.
 type Hub struct {
-	logger        *logger.Logger
-	source        eventSource
-	caches        map[string]*bookCache                 // market -> cache
-	marketClients map[string]map[*marketclient]struct{} // market -> connected clients
-	userClients   map[string]map[*userclient]struct{}   // userID -> connected user clients
-	events        chan event
-	register      chan client
-	unregister    chan client
-	done          chan struct{}
+	logger       *logger.Logger
+	source       eventSource
+	caches       map[string]*bookCache               // market -> canonical L2 cache
+	marketGroups map[string]map[uint64]*groupView    // market -> grouping -> bucketed view + clients
+	userClients  map[string]map[*userclient]struct{} // userID -> connected user clients
+	events       chan event
+	register     chan client
+	unregister   chan client
+	done         chan struct{}
 }
 
 // Run starts the consume goroutine and the actor loop, returning when ctx is cancelled.
@@ -89,11 +89,11 @@ func (h *Hub) loop(ctx context.Context) {
 	}
 }
 
-// handleEvent applies a public event to the market's cache and fans the client-facing frame out.
-// Book deltas are forwarded only when they applied in order (the cache stays authoritative);
-// trades and heartbeats always forward (the tape is independent of book sync, heartbeats keep SSE
-// connections warm). A re-sync (snapshot after an unsynced window) re-broadcasts the full book so
-// clients reset. Private order events are handled in C2.
+// handleEvent dispatches one event. Private order events route by user id (handleOrder). Public
+// events apply to the market's canonical cache and fan out client frames: book deltas only when they
+// applied in order (the cache stays authoritative) and bucketed per active grouping; trades and
+// heartbeats always forward (the tape is independent of book sync, heartbeats keep SSE connections
+// warm). A re-sync (snapshot after an unsynced window) re-broadcasts the full book so clients reset.
 func (h *Hub) handleEvent(e event) {
 	env := e.envelope
 
@@ -118,9 +118,14 @@ func (h *Hub) handleEvent(e event) {
 		}
 		wasSynced := cache.synced
 		cache.applySnapshot(s)
-		if !wasSynced {
-			// First sync or recovery after a gap: push a fresh full book so clients reset.
-			h.broadcast(env.Market, snapshotFrame(env.Market, cache))
+		// Rebuild every grouping's bucketed view from the fresh canonical book (cheap, keeps views
+		// provably equal to canonical). Only re-broadcast on recovery — when already synced, clients
+		// are current via deltas and the snapshot matches what they hold.
+		for _, view := range h.marketGroups[env.Market] {
+			view.rebuild(cache)
+			if !wasSynced {
+				h.broadcastView(view, groupSnapshotFrame(env.Market, view))
+			}
 		}
 
 	case marketdata.EventBook:
@@ -129,8 +134,19 @@ func (h *Hub) handleEvent(e event) {
 			h.logger.Error(fmt.Sprintf("market stream: decode book %s: %v", env.Market, err))
 			return
 		}
-		if cache.applyDelta(env.Epoch, env.Seq, b) {
-			h.broadcast(env.Market, bookFrame(b))
+		old := cache.qtyAt(b.Side, b.Price)
+		if !cache.applyDelta(env.Epoch, env.Seq, b) {
+			return // gap or unsynced — dropped until the next snapshot re-syncs
+		}
+		delta := int64(b.Quantity) - int64(old)
+		if delta == 0 {
+			return // no real change; nothing to forward
+		}
+		// Fan the change into each active grouping's bucket and forward that bucket's new aggregate.
+		for _, view := range h.marketGroups[env.Market] {
+			bucket := bucketPrice(b.Side, b.Price, view.group)
+			newQty := view.applyDelta(b.Side, bucket, delta)
+			h.broadcastView(view, bookFrame(marketdata.Book{Side: b.Side, Price: bucket, Quantity: newQty}))
 		}
 
 	case marketdata.EventTrade:
@@ -139,11 +155,11 @@ func (h *Hub) handleEvent(e event) {
 			h.logger.Error(fmt.Sprintf("market stream: decode trade %s: %v", env.Market, err))
 			return
 		}
-		h.broadcast(env.Market, tradeFrame(t))
+		h.broadcastMarket(env.Market, tradeFrame(t))
 
 	case marketdata.EventHeartbeat:
 		cache.checkHeartbeat(env.Epoch, env.Seq)
-		h.broadcast(env.Market, heartbeatFrame())
+		h.broadcastMarket(env.Market, heartbeatFrame())
 	}
 }
 
@@ -173,14 +189,21 @@ func (h *Hub) handleOrder(e event) {
 func (h *Hub) handleRegister(c client) {
 	switch cl := c.(type) {
 	case *marketclient:
-		set := h.marketClients[cl.market]
-		if set == nil {
+		groups := h.marketGroups[cl.market]
+		if groups == nil {
 			// Unknown market: the handler validates first, so this is defensive. Close to end the stream.
 			close(cl.ch)
 			return
 		}
-		set[cl] = struct{}{}
-		h.send(cl, snapshotFrame(cl.market, h.caches[cl.market]))
+		// One aggregated view per distinct grouping in use; create it from the canonical cache on
+		// the first client at this grouping.
+		view := groups[cl.group]
+		if view == nil {
+			view = newGroupView(cl.group, h.caches[cl.market])
+			groups[cl.group] = view
+		}
+		view.clients[cl] = struct{}{}
+		h.send(cl, groupSnapshotFrame(cl.market, view))
 	case *userclient:
 		uid := cl.userID.String()
 		set := h.userClients[uid]
@@ -209,15 +232,23 @@ func (h *Hub) handleRegister(c client) {
 func (h *Hub) removeClient(c client) {
 	switch cl := c.(type) {
 	case *marketclient:
-		set := h.marketClients[cl.market]
-		if set == nil {
+		groups := h.marketGroups[cl.market]
+		if groups == nil {
 			return
 		}
-		if _, ok := set[cl]; !ok {
+		view := groups[cl.group]
+		if view == nil {
 			return
 		}
-		delete(set, cl)
+		if _, ok := view.clients[cl]; !ok {
+			return
+		}
+		delete(view.clients, cl)
 		close(cl.ch)
+		// Drop the aggregated view once no client uses this grouping ("one view per grouping in use").
+		if len(view.clients) == 0 {
+			delete(groups, cl.group)
+		}
 	case *userclient:
 		uid := cl.userID.String()
 		set := h.userClients[uid]
@@ -242,13 +273,24 @@ func (h *Hub) removeClient(c client) {
 	}
 }
 
-// broadcast fans a frame out to every client of a market. A nil frame (impossible marshal error) is
-// skipped. Deleting a slow client mid-range is safe in Go.
-func (h *Hub) broadcast(market string, frame []byte) {
+// broadcastMarket fans a frame out to every client of a market across all groupings (trades,
+// heartbeats — independent of book bucketing). A nil frame (impossible marshal error) is skipped.
+func (h *Hub) broadcastMarket(market string, frame []byte) {
 	if frame == nil {
 		return
 	}
-	for c := range h.marketClients[market] {
+	for _, view := range h.marketGroups[market] {
+		h.broadcastView(view, frame)
+	}
+}
+
+// broadcastView fans a frame out to the clients of one grouping. Deleting a slow client mid-range is
+// safe in Go.
+func (h *Hub) broadcastView(view *groupView, frame []byte) {
+	if frame == nil {
+		return
+	}
+	for c := range view.clients {
 		h.send(c, frame)
 	}
 }
@@ -281,10 +323,12 @@ func (h *Hub) broadcastUserEnv(userID string, frame []byte) {
 
 // closeAll tears down every client on shutdown so their stream writers return promptly.
 func (h *Hub) closeAll() {
-	for _, set := range h.marketClients {
-		for c := range set {
-			delete(set, c)
-			close(c.ch)
+	for _, groups := range h.marketGroups {
+		for _, view := range groups {
+			for c := range view.clients {
+				delete(view.clients, c)
+				close(c.ch)
+			}
 		}
 	}
 	for _, set := range h.userClients {
@@ -336,19 +380,19 @@ func NewHub(rmqClient *rabbitmq.RabbitMQClient, markets []string, log *logger.Lo
 	}
 
 	h := &Hub{
-		logger:        log,
-		source:        sub,
-		caches:        make(map[string]*bookCache, len(markets)),
-		marketClients: make(map[string]map[*marketclient]struct{}, len(markets)),
-		userClients:   make(map[string]map[*userclient]struct{}),
-		events:        make(chan event, eventBuffer),
-		register:      make(chan client),
-		unregister:    make(chan client),
-		done:          make(chan struct{}),
+		logger:       log,
+		source:       sub,
+		caches:       make(map[string]*bookCache, len(markets)),
+		marketGroups: make(map[string]map[uint64]*groupView, len(markets)),
+		userClients:  make(map[string]map[*userclient]struct{}),
+		events:       make(chan event, eventBuffer),
+		register:     make(chan client),
+		unregister:   make(chan client),
+		done:         make(chan struct{}),
 	}
 	for _, m := range markets {
 		h.caches[m] = newBookCache()
-		h.marketClients[m] = make(map[*marketclient]struct{})
+		h.marketGroups[m] = make(map[uint64]*groupView)
 	}
 	return h, nil
 }
