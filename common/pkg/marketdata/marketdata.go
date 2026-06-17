@@ -5,7 +5,10 @@
 // for client-facing payloads is the api edge's concern.
 package marketdata
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // ExchangeName is the topic exchange all market-data events flow through. Its kind is a transport
 // concern — construct with rabbitmq.ExchangeKindTopic.
@@ -101,6 +104,17 @@ func PrivateKey(userID string, t EventType) string { return "user." + userID + "
 func MarketBinding(market string) string { return "market." + market + ".#" }
 func UserBinding(userID string) string   { return "user." + userID + ".#" }
 func TypeBinding(t EventType) string     { return "market.*." + string(t) }
+
+// UserIDFromKey extracts the user id from a private routing key or binding ("user.<uid>.order",
+// "user.<uid>.#"). The uid is a UUID (no dots), so a split on "." always yields it as the second
+// segment. Returns ok=false for any non-private key.
+func UserIDFromKey(key string) (string, bool) {
+	parts := strings.Split(key, ".")
+	if len(parts) < 3 || parts[0] != "user" || parts[1] == "" {
+		return "", false
+	}
+	return parts[1], true
+}
 
 // --- envelope helpers ---
 

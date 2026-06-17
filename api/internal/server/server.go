@@ -9,6 +9,7 @@ import (
 	"github.com/alex99y/matching-engine/api/internal/markets"
 	"github.com/alex99y/matching-engine/api/internal/metrics"
 	"github.com/alex99y/matching-engine/api/internal/orders"
+	"github.com/alex99y/matching-engine/api/internal/stream"
 	"github.com/alex99y/matching-engine/api/internal/users"
 	"github.com/alex99y/matching-engine/api/pkg/middleware"
 	"github.com/alex99y/matching-engine/api/pkg/validations"
@@ -28,6 +29,7 @@ type ServerDependencies struct {
 	InstrumentsHandler *instruments.InstrumentHandler
 	MarketsHandler     *markets.MarketHandler
 	OrdersHandler      *orders.OrderHandler
+	StreamHandler      *stream.StreamHandler
 }
 
 type Server struct {
@@ -61,6 +63,9 @@ func NewServer(dependencies ServerDependencies) *Server {
 	if dependencies.OrdersHandler == nil {
 		panic("orders handler cannot be nil")
 	}
+	if dependencies.StreamHandler == nil {
+		panic("stream handler cannot be nil")
+	}
 
 	app := fiber.New(fiber.Config{
 		StructValidator: validations.NewStructValidator(),
@@ -84,6 +89,7 @@ func NewServer(dependencies ServerDependencies) *Server {
 	instruments.RegisterInstrumentRoutes(apiV1, dependencies.InstrumentsHandler)
 	markets.RegisterMarketRoutes(apiV1, dependencies.MarketsHandler)
 	orders.RegisterOrderRoutes(apiV1, dependencies.AuthMiddleware, dependencies.OrdersHandler)
+	stream.RegisterStreamRoutes(apiV1, dependencies.AuthMiddleware, dependencies.StreamHandler)
 
 	return &Server{httpServer: app}
 }

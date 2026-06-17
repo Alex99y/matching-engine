@@ -33,6 +33,28 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestUserIDFromKey(t *testing.T) {
+	uid := "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
+	cases := []struct {
+		key    string
+		want   string
+		wantOK bool
+	}{
+		{PrivateKey(uid, EventOrder), uid, true}, // user.<uid>.order
+		{UserBinding(uid), uid, true},            // user.<uid>.#
+		{PublicKey("BTC-USDT", EventTrade), "", false},
+		{"user.", "", false},
+		{"user", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		got, ok := UserIDFromKey(c.key)
+		if got != c.want || ok != c.wantOK {
+			t.Errorf("UserIDFromKey(%q) = (%q, %v), want (%q, %v)", c.key, got, ok, c.want, c.wantOK)
+		}
+	}
+}
+
 func TestRoutingKeys(t *testing.T) {
 	cases := []struct{ got, want string }{
 		{PublicKey("BTC-USDT", EventTrade), "market.BTC-USDT.trade"},

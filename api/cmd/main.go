@@ -11,6 +11,7 @@ import (
 	"github.com/alex99y/matching-engine/api/internal/metrics"
 	"github.com/alex99y/matching-engine/api/internal/orders"
 	"github.com/alex99y/matching-engine/api/internal/server"
+	"github.com/alex99y/matching-engine/api/internal/stream"
 	"github.com/alex99y/matching-engine/api/internal/users"
 	"github.com/alex99y/matching-engine/api/pkg/jwt"
 	"github.com/alex99y/matching-engine/api/pkg/middleware"
@@ -115,6 +116,15 @@ func main() {
 	orderService := orders.NewOrderService(log, orderRepository, cacheService, publisher)
 	orderHandler := orders.NewOrderHandler(log, orderService)
 
+	// Live market-data stream (docs/event-log.md, Phase C): one Hub subscribes to core's me.events
+	// exchange, keeps a per-market L2 book cache in sync, and fans events out to SSE clients. No DB.
+	streamHub, err := stream.NewHub(rabbitmqClient, marketRefs, log)
+	if err != nil {
+		panic(err)
+	}
+	go streamHub.Run(ctx)
+	streamHandler := stream.NewMarketsStreamHandler(log, streamHub, marketRefs)
+
 	server := server.NewServer(server.ServerDependencies{
 		Logger:             log,
 		AuthMiddleware:     authMiddleware,
@@ -123,6 +133,7 @@ func main() {
 		InstrumentsHandler: instrumentHandler,
 		MarketsHandler:     marketHandler,
 		OrdersHandler:      orderHandler,
+		StreamHandler:      streamHandler,
 	})
 
 	serverErrCh := make(chan error, 1)
