@@ -215,6 +215,14 @@ func (o *OrderBook) canFill(taker *Order) bool {
 			if !crosses(taker, lvl.Price) {
 				return false
 			}
+			remaining := budget - value
+			// Ceiling division avoids uint64 overflow in lvl.Price*lvl.TotalQty when the
+			// per-level notional is large. If this level's quantity alone covers the rest
+			// of the budget, saturate and stop — no need to keep accumulating.
+			if lvl.Price > 0 && lvl.TotalQty >= (remaining+lvl.Price-1)/lvl.Price {
+				value = budget
+				return false
+			}
 			value += lvl.Price * lvl.TotalQty
 			return value < budget
 		})
@@ -344,9 +352,6 @@ func feeOf(amount, bps uint64) uint64 {
 		return 0
 	}
 	hi, lo := bits.Mul64(amount, bps)
-	if hi >= 10000 {
-		return amount / 10000 * bps
-	}
 	fee, _ := bits.Div64(hi, lo, 10000)
 	return fee
 }

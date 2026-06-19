@@ -47,13 +47,16 @@ func main() {
 	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	postgresqlClient, err := postgres.Connect(ctx, coreConfig.PostgresURL, postgres.DefaultConfig())
 	if err != nil {
 		panic(err)
 	}
-	defer postgresqlClient.Close()
+	defer func() {
+		if err := postgresqlClient.Close(); err != nil {
+			log.Error(fmt.Sprintf("closing postgres: %v", err))
+		}
+	}()
 
 	// me_db_* metrics: query latency/errors recorder + a scrape-time pool collector for this
 	// process's pool, labeled service="core".
@@ -66,7 +69,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer rabbitmqClient.Close()
+	defer func() {
+		if err := rabbitmqClient.Close(); err != nil {
+			log.Error(fmt.Sprintf("closing rabbitmq: %v", err))
+		}
+	}()
 
 	// Live event-log fan-out (docs/event-log.md): one shared async publisher to the me.events topic
 	// exchange, and a fresh epoch per core start so an API can detect a restart and re-sync. Markets
@@ -76,6 +83,9 @@ func main() {
 		panic(err)
 	}
 	defer func() {
+		// cancel() stops the Run goroutine before closing the exchange so they don't
+		// race on the underlying AMQP channel (not safe for concurrent use).
+		cancel()
 		if err := eventPublisher.Close(); err != nil {
 			log.Error(fmt.Sprintf("closing event publisher: %v", err))
 		}
