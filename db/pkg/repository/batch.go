@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -208,7 +209,11 @@ func (o *OrderRepository) ProcessBatch(ctx context.Context, incoming []IncomingO
 		return fmt.Errorf("process batch: %w: %w", ErrBatchBegin, err)
 	}
 	// Safe no-op after a successful Commit; rolls back on any early return.
-	defer func() { _ = tx.Rollback() }()
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			o.logger.Error("ProcessBatch: rollback failed: " + rbErr.Error())
+		}
+	}()
 
 	// Phase 1a — idempotency. Orders already present were committed by a prior batch
 	// (e.g. redelivered after a commit-ambiguous failure); never match or persist them again.
@@ -287,6 +292,9 @@ func reserveBalance(ctx context.Context, tx *sql.Tx, userID uuid.UUID, instrumen
 	if amount == 0 {
 		// Defensive: validation guarantees a positive reservable amount. Nothing to lock.
 		return true, nil
+	}
+	if amount > math.MaxInt64 {
+		return false, fmt.Errorf("reserve balance: amount exceeds int64 max: %d", amount)
 	}
 	const q = `
 		UPDATE user_balances
@@ -415,13 +423,25 @@ func insertOpenOrders(ctx context.Context, tx *sql.Tx, open []InsertOpenOrderPar
 	const cols = 6
 	args := make([]any, 0, len(open)*cols)
 	for _, o := range open {
+		price, err := safeInt64(o.Price, "price")
+		if err != nil {
+			return fmt.Errorf("insert open orders: %w", err)
+		}
+		rha, err := safeInt64(o.RemainingHaveAmount, "remaining_have_amount")
+		if err != nil {
+			return fmt.Errorf("insert open orders: %w", err)
+		}
+		rwa, err := safeInt64(o.RemainingWantAmount, "remaining_want_amount")
+		if err != nil {
+			return fmt.Errorf("insert open orders: %w", err)
+		}
 		args = append(args,
 			o.OrderID,
-			int64(o.Price),
+			price,
 			o.MarketID,
 			o.Side,
-			int64(o.RemainingHaveAmount),
-			int64(o.RemainingWantAmount),
+			rha,
+			rwa,
 		)
 	}
 	q := `INSERT INTO open_orders
@@ -439,7 +459,15 @@ func updateOpenOrders(ctx context.Context, tx *sql.Tx, updates []OpenOrderRemain
 	}
 	args := make([]any, 0, len(updates)*3)
 	for _, u := range updates {
-		args = append(args, u.OrderID, int64(u.RemainingHaveAmount), int64(u.RemainingWantAmount))
+		rha, err := safeInt64(u.RemainingHaveAmount, "remaining_have_amount")
+		if err != nil {
+			return fmt.Errorf("update open orders: %w", err)
+		}
+		rwa, err := safeInt64(u.RemainingWantAmount, "remaining_want_amount")
+		if err != nil {
+			return fmt.Errorf("update open orders: %w", err)
+		}
+		args = append(args, u.OrderID, rha, rwa)
 	}
 	q := `UPDATE open_orders o
 		SET remaining_have_amount = v.rh, remaining_want_amount = v.rw
@@ -469,7 +497,15 @@ func insertCancelledOrders(ctx context.Context, tx *sql.Tx, cancelled []InsertCa
 	const cols = 3
 	args := make([]any, 0, len(cancelled)*cols)
 	for _, c := range cancelled {
-		args = append(args, c.OrderID, int64(c.RemainingHaveAmount), int64(c.RemainingWantAmount))
+		rha, err := safeInt64(c.RemainingHaveAmount, "remaining_have_amount")
+		if err != nil {
+			return fmt.Errorf("insert cancelled orders: %w", err)
+		}
+		rwa, err := safeInt64(c.RemainingWantAmount, "remaining_want_amount")
+		if err != nil {
+			return fmt.Errorf("insert cancelled orders: %w", err)
+		}
+		args = append(args, c.OrderID, rha, rwa)
 	}
 	q := `INSERT INTO cancelled_orders (order_id, remaining_have_amount, remaining_want_amount)
 		VALUES ` + valuesPlaceholders(len(cancelled), cols)
@@ -486,15 +522,35 @@ func insertMatches(ctx context.Context, tx *sql.Tx, matches []InsertMatchParams)
 	const cols = 11
 	args := make([]any, 0, len(matches)*cols)
 	for _, m := range matches {
+		buyAmt, err := safeInt64(m.MatchBuyAmount, "match_buy_amount")
+		if err != nil {
+			return fmt.Errorf("insert matches: %w", err)
+		}
+		sellAmt, err := safeInt64(m.MatchSellAmount, "match_sell_amount")
+		if err != nil {
+			return fmt.Errorf("insert matches: %w", err)
+		}
+		price, err := safeInt64(m.MatchPrice, "match_price")
+		if err != nil {
+			return fmt.Errorf("insert matches: %w", err)
+		}
+		sellFees, err := safeInt64(m.MatchSellFees, "match_sell_fees")
+		if err != nil {
+			return fmt.Errorf("insert matches: %w", err)
+		}
+		buyFees, err := safeInt64(m.MatchBuyFees, "match_buy_fees")
+		if err != nil {
+			return fmt.Errorf("insert matches: %w", err)
+		}
 		args = append(args,
 			m.MarketID,
 			m.BuyOrderID,
 			m.SellOrderID,
-			int64(m.MatchBuyAmount),
-			int64(m.MatchSellAmount),
-			int64(m.MatchPrice),
-			int64(m.MatchSellFees),
-			int64(m.MatchBuyFees),
+			buyAmt,
+			sellAmt,
+			price,
+			sellFees,
+			buyFees,
 			m.BuyOrderIsTaker,
 			m.IsBuyOrderFilled,
 			m.IsSellOrderFilled,
@@ -681,4 +737,11 @@ func derefU64(v *uint64) uint64 {
 		return 0
 	}
 	return *v
+}
+
+func safeInt64(v uint64, field string) (int64, error) {
+	if v > math.MaxInt64 {
+		return 0, fmt.Errorf("%s overflows int64: %d", field, v)
+	}
+	return int64(v), nil
 }

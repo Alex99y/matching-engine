@@ -42,8 +42,9 @@ type CacheService struct {
 	instrumentsBySymbol map[string]*repository.Instrument
 	instrumentsByID     map[int]*repository.Instrument
 
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	startOnce sync.Once
 }
 
 // refresh fetches fresh data from the DB and then swaps the cached state
@@ -110,14 +111,18 @@ func (c *CacheService) run(ctx context.Context) {
 // the background goroutine that refreshes the cache every ttl duration.
 // It must be called before any Get method.
 func (c *CacheService) Start(ctx context.Context) error {
-	if err := c.refresh(ctx); err != nil {
-		return err
-	}
-	runCtx, cancel := context.WithCancel(context.Background())
-	c.cancel = cancel
-	c.wg.Add(1)
-	go c.run(runCtx)
-	return nil
+	var startErr error
+	c.startOnce.Do(func() {
+		if err := c.refresh(ctx); err != nil {
+			startErr = err
+			return
+		}
+		runCtx, cancel := context.WithCancel(context.Background())
+		c.cancel = cancel
+		c.wg.Add(1)
+		go c.run(runCtx)
+	})
+	return startErr
 }
 
 // Stop signals the background goroutine to exit and blocks until it does.
@@ -205,7 +210,7 @@ func NewCacheService(
 	if instrumentRepo == nil {
 		panic("instrument repository cannot be nil")
 	}
-	if ttlSeconds <= 0 {
+	if ttlSeconds == 0 {
 		panic("ttl must be greater than 0")
 	}
 	return &CacheService{

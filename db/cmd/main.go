@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+
 	"github.com/alex99y/matching-engine/common/pkg/config"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 
@@ -22,7 +24,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if err := m.Up(); err != nil {
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		panic(err)
 	}
 }
