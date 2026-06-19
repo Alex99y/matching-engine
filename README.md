@@ -18,3 +18,29 @@ Matching Engine project is a proof of concept for a high-performance order match
 - Go (>= 1.25.7)
 - Postgresql (>= 18.4)
 - Rabbitmq (>= 4.2.4)
+
+## Build
+
+```sh
+make build
+```
+
+## Docker
+
+```sh
+# Vendor dependencies first (only needed once, or after dependency changes)
+go work vendor
+
+# Build images
+docker build -f api/Dockerfile  -t matching-engine/api  .
+docker build -f core/Dockerfile -t matching-engine/core .
+docker build -f db/Dockerfile   -t matching-engine/db   .
+```
+
+## Local Development
+
+Start infrastructure (Postgres, RabbitMQ, Prometheus, Grafana):
+
+```sh
+docker compose -f local-deploy/docker-compose.yml up -d
+```

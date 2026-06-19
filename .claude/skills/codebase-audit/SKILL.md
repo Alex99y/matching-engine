@@ -21,14 +21,22 @@ style, or add features. Every finding must be a real defect with a real blast ra
 
 ## Step 0 — Require a Scope Before Starting
 
-If the user has not specified a module or directory to audit, **stop and ask before reading
-anything**:
+**Always ask the user which module to audit before reading any file.** No exceptions.
+
+The only valid scope is a module or directory the user explicitly names in their message
+(e.g., "audit `core/`", "/codebase-audit api/"). Do NOT infer scope from:
+- Files open in the IDE
+- Recent conversation context
+- Git status or recent commits
+- Any other implicit signal
+
+Ask exactly this, then stop and wait for the answer:
 
 > "Which module should I audit? (e.g. `api/`, `core/`, `db/`) I'll read all `.go` files
 > inside that directory only."
 
-Do not attempt to infer the scope from the project structure. Do not audit multiple modules
-in one run unless the user explicitly lists them.
+Do not audit multiple modules in one run unless the user explicitly lists them.
+Do not proceed past Step 0 until the user has replied with a module name.
 
 ---
 
@@ -135,7 +143,7 @@ Maximum 5 entries. If none, omit this section entirely.
 **Always write the review to a file. Never output it only in the chat.**
 
 1. Create the `reviews/` directory at the project root if it does not exist.
-2. Name the file using the current UTC timestamp: `reviews/YYYY-MM-DD_HH-MM-SS_audit.md`
+2. Name the file using the current UTC timestamp and the module name: `reviews/YYYY-MM-DD_HH-MM-SS_audit_{MODULE_NAME_HERE}.md`
 3. Write the full review to that file.
 4. After writing, confirm in chat with exactly three lines:
    - File written to: `<path>`
