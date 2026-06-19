@@ -91,7 +91,8 @@ func orderRowToResponse(row *repository.OrderRow) OrderResponse {
 		ExpiresAt:     row.ExpiresAt,
 	}
 
-	if row.Price != nil {
+	if row.Price != nil && row.Side != nil &&
+		row.ORemainingHaveAmount != nil && row.ORemainingWantAmount != nil {
 		resp.OpenOrder = &OpenOrder{
 			Price:         *row.Price,
 			Side:          *row.Side,
@@ -100,7 +101,8 @@ func orderRowToResponse(row *repository.OrderRow) OrderResponse {
 		}
 	}
 
-	if row.CancelledAt != nil {
+	if row.CancelledAt != nil &&
+		row.CRemainingHaveAmount != nil && row.CRemainingWantAmount != nil {
 		resp.CancelledOrder = &CancelledOrder{
 			CancelledAt:   *row.CancelledAt,
 			RemainingHave: *row.CRemainingHaveAmount,

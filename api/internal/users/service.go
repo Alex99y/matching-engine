@@ -96,8 +96,11 @@ func (u *UserService) LoginUser(
 	}
 
 	isValidPassword, err := password.Verify(userPassword, storedUser.PasswordHash)
-
-	if !isValidPassword || err != nil {
+	if err != nil {
+		u.logger.ErrorO(err)
+		return "", ErrOnLogging
+	}
+	if !isValidPassword {
 		return "", ErrInvalidPassword
 	}
 
