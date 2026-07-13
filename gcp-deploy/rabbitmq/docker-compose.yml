@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  rabbitmq:
+    image: rabbitmq:4.2.4-management
+    container_name: rabbitmq
+    restart: always
+    ports:
+      - "5672:5672"   # AMQP protocol port
+      - "15672:15672" # Management UI dashboard
+      - "15692:15692" # Prometheus metrics exporter
+    environment:
+      - RABBITMQ_DEFAULT_USER=admin
+      # This variable will be read from the temporary .env file:
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}

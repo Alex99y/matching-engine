@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  core:
+    image: us-central1-docker.pkg.dev/project-e5d919ff-a78f-43b8-856/me-docker-registry/core:latest
+    container_name: core-app
+    restart: always
+    environment:
+      - MARKET_LIST=BTC-USDT
+      - METRICS_PORT=9091
+      - DEBUG_LEVEL=debug
+      # These variables will be read from the temporary .env file:
+      - POSTGRESQL_URL=${POSTGRESQL_URL}
+      - RABBITMQ_URL=${RABBITMQ_URL}
