@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ParseError, ValidationError } from "../errors/index.js";
 import type { Transport } from "../http/transport.js";
-import { getBalances, login, register } from "./users.js";
+import { getBalances, register } from "./users.js";
 
 function stubTransport(result: unknown = undefined) {
   const request = vi.fn().mockResolvedValue(result);
@@ -61,26 +61,3 @@ describe("users.getBalances", () => {
   });
 });
 
-describe("users.login", () => {
-  it("returns the token from the response", async () => {
-    const { transport } = stubTransport({ token: "jwt-123" });
-    await expect(login(transport, { username: "u", password: "pw" })).resolves.toBe(
-      "jwt-123",
-    );
-  });
-
-  it("throws ParseError when the response has no token", async () => {
-    const { transport } = stubTransport({});
-    await expect(login(transport, { username: "u", password: "pw" })).rejects.toBeInstanceOf(
-      ParseError,
-    );
-  });
-
-  it("validates credentials first", async () => {
-    const { transport, request } = stubTransport({ token: "x" });
-    await expect(login(transport, { username: "u", password: "" })).rejects.toBeInstanceOf(
-      ValidationError,
-    );
-    expect(request).not.toHaveBeenCalled();
-  });
-});

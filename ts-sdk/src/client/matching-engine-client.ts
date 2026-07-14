@@ -6,6 +6,7 @@ import {
 } from "../http/transport.js";
 import * as instrumentsResource from "../resources/instruments.js";
 import * as marketsResource from "../resources/markets.js";
+import * as sessionsResource from "../resources/sessions.js";
 import * as streamResource from "../resources/stream.js";
 import * as usersResource from "../resources/users.js";
 import type {
@@ -106,7 +107,7 @@ export class MatchingEngineClient {
    * const session = await client.login({ username: "bot1", password: "s3cr3t-pass" });
    */
   async login(params: LoginParams): Promise<AuthenticatedClient> {
-    const token = await usersResource.login(this.transport, params);
+    const token = await sessionsResource.login(this.transport, params);
     return new AuthenticatedClient(this.transport, token);
   }
 

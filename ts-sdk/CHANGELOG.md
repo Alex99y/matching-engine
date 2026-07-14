@@ -4,6 +4,17 @@
 
 ### Added
 
+- `AuthenticatedClient.logout()` is now implemented — calls `DELETE /api/v1/sessions`
+  to revoke the session server-side. Previously this was a documented no-op.
+
+### Changed
+
+- `MatchingEngineClient.login()` now calls `POST /api/v1/sessions` (was
+  `POST /api/v1/users/login`). No change to the method signature or return type;
+  the route move is fully hidden behind the SDK.
+
+### Added (previous)
+
 - `MatchingEngineClient.streamMarket(market, options?)` — public SSE stream for
   one market (`GET /api/v1/stream/:market`). Yields `StreamMessage` events:
   `SnapshotMessage` (initial full book), `BookMessage` (incremental L2 delta),

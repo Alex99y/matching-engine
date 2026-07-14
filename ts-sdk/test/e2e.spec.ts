@@ -71,7 +71,7 @@ function startServer(): Promise<Server> {
         case "POST /api/v1/users/register":
           res.writeHead(201).end();
           return;
-        case "POST /api/v1/users/login":
+        case "POST /api/v1/sessions":
           sendJson(200, '{"token":"e2e-token"}');
           return;
         case "GET /api/v1/markets/":
@@ -107,6 +107,9 @@ function startServer(): Promise<Server> {
             200,
             '[{"name":"Ether","symbol":"ETH","decimals":18,"balance":5000000000000000000,"blocked":1000000000000000000}]',
           );
+          return;
+        case "DELETE /api/v1/sessions":
+          res.writeHead(204).end();
           return;
         default:
           sendJson(404, '{"message":"not found"}');

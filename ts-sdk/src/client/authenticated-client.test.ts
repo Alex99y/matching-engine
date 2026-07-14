@@ -73,10 +73,10 @@ describe("AuthenticatedClient", () => {
     });
   });
 
-  it("logout resolves without touching the transport", async () => {
+  it("logout sends DELETE /api/v1/sessions and forwards the token", async () => {
     const { session, request } = client(undefined);
-    await expect(session.logout()).resolves.toBeUndefined();
-    expect(request).not.toHaveBeenCalled();
+    await session.logout();
+    expect(request).toHaveBeenCalledWith("DELETE", "/api/v1/sessions", { token: "tok" });
   });
 
   it("keeps two sessions independent", () => {

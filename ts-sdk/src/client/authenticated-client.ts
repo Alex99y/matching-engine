@@ -1,5 +1,6 @@
 import type { Transport } from "../http/transport.js";
 import * as orders from "../resources/orders.js";
+import * as sessionsResource from "../resources/sessions.js";
 import * as streamResource from "../resources/stream.js";
 import * as users from "../resources/users.js";
 import type {
@@ -144,11 +145,14 @@ export class AuthenticatedClient {
   }
 
   /**
-   * Invalidate the current session. Not yet implemented by the API, so this is
-   * currently a no-op kept for forward compatibility — adopt it now and it will
-   * start invalidating server-side once the endpoint ships.
+   * Invalidate the current session. After this call the bearer token is revoked
+   * server-side and any further authenticated request will return 401.
+   *
+   * @throws {@link AuthenticationError} (401) when the token is already expired or revoked.
+   * @example
+   * await session.logout();
    */
   async logout(): Promise<void> {
-    // Intentionally empty until the API exposes a logout endpoint.
+    await sessionsResource.logout(this.transport, this.token);
   }
 }

@@ -85,7 +85,7 @@ describe("MatchingEngineClient public methods", () => {
 
   it("login returns an AuthenticatedClient carrying the token", async () => {
     const { fetchFn } = routerFetch({
-      "POST /api/v1/users/login": () => jsonResponse('{"token":"jwt-xyz"}'),
+      "POST /api/v1/sessions": () => jsonResponse('{"token":"jwt-xyz"}'),
     });
     const session = await makeClient(fetchFn).login({ username: "u", password: "pw" });
     expect(session).toBeInstanceOf(AuthenticatedClient);
@@ -94,7 +94,7 @@ describe("MatchingEngineClient public methods", () => {
 
   it("login surfaces a 401 as AuthenticationError", async () => {
     const { fetchFn } = routerFetch({
-      "POST /api/v1/users/login": () =>
+      "POST /api/v1/sessions": () =>
         jsonResponse('{"message":"invalid username or password"}', 401),
     });
     await expect(
