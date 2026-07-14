@@ -1,48 +1,54 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"strings"
 
-	pkgjwt "github.com/alex99y/matching-engine/api/pkg/jwt"
 	"github.com/alex99y/matching-engine/api/pkg/utils"
+	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
-
-var ErrInvalidUserIDInToken = errors.New("invalid user_id in token")
 
 type AuthMiddleware fiber.Handler
 
 type contextKey string
 
-const (
-	contextKeyUserID    contextKey = "user_id"
-	contextKeySessionID contextKey = "session_id"
+const contextKeyUserID contextKey = "user_id"
+
+var (
+	// ErrInvalidSession is returned by TokenValidator when the token is missing, expired, or revoked.
+	// Defined here so both the sessions service and this middleware can reference it without cycles.
+	ErrInvalidSession = errors.New("invalid or expired session")
+
+	// ErrInvalidCredentials is returned by CredentialValidator when username or password is wrong.
+	// Defined here so both the users service and the sessions handler can reference it without cycles.
+	ErrInvalidCredentials = errors.New("invalid username or password")
 )
 
-func Auth(jwtManager *pkgjwt.Manager) AuthMiddleware {
+// TokenValidator is satisfied by sessions.SessionService without importing that package.
+type TokenValidator interface {
+	ValidateToken(ctx context.Context, rawToken string) (*uuid.UUID, error)
+}
+
+func Auth(log *logger.Logger, validator TokenValidator) AuthMiddleware {
 	return func(c fiber.Ctx) error {
 		authHeader := c.Get(fiber.HeaderAuthorization)
 		if !strings.HasPrefix(authHeader, "Bearer ") {
 			return utils.NewErrorResponse(c, fiber.StatusUnauthorized, "missing or invalid authorization header")
 		}
 
-		claims, err := jwtManager.Verify(strings.TrimPrefix(authHeader, "Bearer "))
+		rawToken := strings.TrimPrefix(authHeader, "Bearer ")
+		userID, err := validator.ValidateToken(c.Context(), rawToken)
 		if err != nil {
-			if errors.Is(err, pkgjwt.ErrExpiredToken) {
-				return utils.NewErrorResponse(c, fiber.StatusUnauthorized, "token has expired")
+			if errors.Is(err, ErrInvalidSession) {
+				return utils.NewErrorResponse(c, fiber.StatusUnauthorized, "invalid or expired session")
 			}
-			return utils.NewErrorResponse(c, fiber.StatusUnauthorized, "invalid token")
+			return utils.NewServerErrorResponse(c, log, err)
 		}
 
-		userID, err := uuid.Parse(claims.UserID)
-		if err != nil {
-			return utils.NewErrorResponse(c, fiber.StatusUnauthorized, "invalid token")
-		}
-
-		c.Locals(contextKeyUserID, userID)
-		c.Locals(contextKeySessionID, claims.SessionID)
+		c.Locals(contextKeyUserID, *userID)
 		return c.Next()
 	}
 }
@@ -50,11 +56,5 @@ func Auth(jwtManager *pkgjwt.Manager) AuthMiddleware {
 // UserIDFromContext returns the authenticated user's ID stored by the Auth middleware.
 func UserIDFromContext(c fiber.Ctx) uuid.UUID {
 	id, _ := c.Locals(contextKeyUserID).(uuid.UUID)
-	return id
-}
-
-// SessionIDFromContext returns the session ID stored by the Auth middleware.
-func SessionIDFromContext(c fiber.Ctx) string {
-	id, _ := c.Locals(contextKeySessionID).(string)
 	return id
 }

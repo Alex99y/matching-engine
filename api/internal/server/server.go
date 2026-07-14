@@ -9,6 +9,7 @@ import (
 	"github.com/alex99y/matching-engine/api/internal/markets"
 	"github.com/alex99y/matching-engine/api/internal/metrics"
 	"github.com/alex99y/matching-engine/api/internal/orders"
+	"github.com/alex99y/matching-engine/api/internal/sessions"
 	"github.com/alex99y/matching-engine/api/internal/stream"
 	"github.com/alex99y/matching-engine/api/internal/users"
 	"github.com/alex99y/matching-engine/api/pkg/middleware"
@@ -25,6 +26,7 @@ type ServerDependencies struct {
 	Logger             *logger.Logger
 	AuthMiddleware     middleware.AuthMiddleware
 	Metrics            *metrics.ApiMetrics
+	SessionsHandler    *sessions.SessionHandler
 	UsersHandler       *users.UserHandler
 	InstrumentsHandler *instruments.InstrumentHandler
 	MarketsHandler     *markets.MarketHandler
@@ -50,6 +52,9 @@ func NewServer(dependencies ServerDependencies) *Server {
 	}
 	if dependencies.AuthMiddleware == nil {
 		panic("auth middleware cannot be nil")
+	}
+	if dependencies.SessionsHandler == nil {
+		panic("sessions handler cannot be nil")
 	}
 	if dependencies.UsersHandler == nil {
 		panic("user handler cannot be nil")
@@ -85,6 +90,7 @@ func NewServer(dependencies ServerDependencies) *Server {
 
 	app.Get("/health", healthcheck.New())
 	apiV1 := app.Group("/api/v1")
+	sessions.RegisterSessionRoutes(apiV1, dependencies.AuthMiddleware, dependencies.SessionsHandler)
 	users.RegisterUserRoutes(apiV1, dependencies.AuthMiddleware, dependencies.UsersHandler)
 	instruments.RegisterInstrumentRoutes(apiV1, dependencies.InstrumentsHandler)
 	markets.RegisterMarketRoutes(apiV1, dependencies.MarketsHandler)

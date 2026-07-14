@@ -15,11 +15,6 @@ func RegisterUserRoutes(app fiber.Router, authMiddleware middleware.AuthMiddlewa
 		userHandler.CreateUser,
 	)
 	userGroup.Post(
-		"/login",
-		validations.ValidateContentType(validations.ContentTypeJSON),
-		userHandler.LoginUser,
-	)
-	userGroup.Post(
 		"/check-username",
 		validations.ValidateContentType(validations.ContentTypeJSON),
 		userHandler.IsUsernameAvailable,

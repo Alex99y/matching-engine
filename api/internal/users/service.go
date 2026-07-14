@@ -3,9 +3,8 @@ package users
 import (
 	"context"
 	"errors"
-	"time"
 
-	"github.com/alex99y/matching-engine/api/pkg/jwt"
+	"github.com/alex99y/matching-engine/api/pkg/middleware"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/common/pkg/password"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
@@ -17,10 +16,7 @@ var (
 	ErrCreatingUser     = errors.New("error creating user")
 	ErrUserAlreadyExist = repository.ErrUserAlreadyExists
 	ErrGettingUser      = repository.ErrUserGetFailed
-	ErrOnLogging        = errors.New("error logging in")
-	ErrInvalidPassword  = errors.New("invalid username or password")
-	ErrSessionExpired   = jwt.ErrExpiredToken
-	ErrInvalidSession   = jwt.ErrInvalidToken
+	ErrOnValidating     = errors.New("error validating credentials")
 	ErrGetBalances      = errors.New("error getting balances")
 )
 
@@ -30,14 +26,8 @@ type UserRepository interface {
 	GetUserBalances(ctx context.Context, userID uuid.UUID) ([]repository.UserBalance, error)
 }
 
-type JWTManager interface {
-	Verify(session string) (*jwt.Claims, error)
-	Sign(userId string, sessionId string, expiresOn time.Duration) (string, error)
-}
-
 type UserService struct {
 	logger         *logger.Logger
-	jwtManager     JWTManager
 	userRepository UserRepository
 }
 
@@ -49,7 +39,7 @@ func (u *UserService) IsUsernameAvailable(ctx context.Context, username string) 
 	if err != nil {
 		return false, ErrGettingUser
 	}
-	return false, nil // user exists
+	return false, nil
 }
 
 func (u *UserService) CreateNewUser(
@@ -58,21 +48,13 @@ func (u *UserService) CreateNewUser(
 	email string,
 	userPassword string,
 ) error {
-
 	hashedPassword, err := password.Hash(userPassword)
-
 	if err != nil {
 		u.logger.ErrorO(err)
 		return ErrHashingPassword
 	}
 
-	err = u.userRepository.InsertUser(
-		ctx,
-		username,
-		email,
-		hashedPassword,
-	)
-
+	err = u.userRepository.InsertUser(ctx, username, email, hashedPassword)
 	if err != nil {
 		if errors.Is(err, repository.ErrUserAlreadyExists) {
 			return ErrUserAlreadyExist
@@ -82,55 +64,32 @@ func (u *UserService) CreateNewUser(
 	return nil
 }
 
-func (u *UserService) LoginUser(
+// ValidateCredentials checks the username/password pair and returns the user's ID on success.
+// Returns middleware.ErrInvalidCredentials when the pair is wrong so the sessions handler
+// can map it to a 401 without importing this package.
+func (u *UserService) ValidateCredentials(
 	ctx context.Context,
 	username string,
 	userPassword string,
-) (string, error) {
+) (uuid.UUID, error) {
 	storedUser, err := u.userRepository.GetUserByUsername(ctx, username)
 	if err != nil {
 		if errors.Is(err, repository.ErrUserNotFound) {
-			return "", ErrInvalidPassword
+			return uuid.UUID{}, middleware.ErrInvalidCredentials
 		}
-		return "", ErrOnLogging
+		return uuid.UUID{}, ErrOnValidating
 	}
 
-	isValidPassword, err := password.Verify(userPassword, storedUser.PasswordHash)
+	isValid, err := password.Verify(userPassword, storedUser.PasswordHash)
 	if err != nil {
 		u.logger.ErrorO(err)
-		return "", ErrOnLogging
+		return uuid.UUID{}, ErrOnValidating
 	}
-	if !isValidPassword {
-		return "", ErrInvalidPassword
-	}
-
-	// @TODO: Persist login
-	sessionId := "TODO"
-	defaultTtl := time.Hour * 24 * 7
-	jwt, err := u.jwtManager.Sign(storedUser.ID.String(), sessionId, defaultTtl)
-
-	if err != nil {
-		u.logger.Error("error signing jwt")
-		u.logger.ErrorO(err)
-		return "", ErrOnLogging
+	if !isValid {
+		return uuid.UUID{}, middleware.ErrInvalidCredentials
 	}
 
-	return jwt, nil
-}
-
-func (u *UserService) IsLoggedIn(jwt string) (*uuid.UUID, string, error) {
-	session, err := u.jwtManager.Verify(jwt)
-	if err != nil {
-		return nil, "", err
-	}
-
-	id, err := uuid.Parse(session.UserID)
-
-	if err != nil {
-		return nil, "", ErrInvalidSession
-	}
-
-	return &id, session.SessionID, nil
+	return storedUser.ID, nil
 }
 
 func (u *UserService) GetUserBalances(ctx context.Context, userID uuid.UUID) ([]repository.UserBalance, error) {
@@ -143,21 +102,16 @@ func (u *UserService) GetUserBalances(ctx context.Context, userID uuid.UUID) ([]
 
 func NewUserService(
 	logger *logger.Logger,
-	jwtManager JWTManager,
 	userRepository UserRepository,
 ) *UserService {
 	if logger == nil {
 		panic("logger cannot be nil")
-	}
-	if jwtManager == nil {
-		panic("jwt manager cannot be nil")
 	}
 	if userRepository == nil {
 		panic("user repository cannot be nil")
 	}
 	return &UserService{
 		logger:         logger,
-		jwtManager:     jwtManager,
 		userRepository: userRepository,
 	}
 }

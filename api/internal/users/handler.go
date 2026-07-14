@@ -21,15 +21,6 @@ type CreateUserRequest struct {
 	Password string `json:"password" validate:"required,min=10"`
 }
 
-type LoginUserRequest struct {
-	Username string `json:"username" validate:"required"`
-	Password string `json:"password" validate:"required,min=10"`
-}
-
-type LoginUserResponse struct {
-	Token string `json:"token"`
-}
-
 type UsernameAvailableRequest struct {
 	Username string `json:"username" validate:"required"`
 }
@@ -53,24 +44,6 @@ func (u *UserHandler) CreateUser(c fiber.Ctx) error {
 	}
 
 	return c.SendStatus(fiber.StatusCreated)
-}
-
-func (u *UserHandler) LoginUser(c fiber.Ctx) error {
-	var req LoginUserRequest
-	if err := c.Bind().Body(&req); err != nil {
-		u.logger.Error("LoginUser: invalid body, request_id=" + requestid.FromContext(c))
-		return utils.NewErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
-	}
-
-	token, err := u.userService.LoginUser(c.Context(), req.Username, req.Password)
-	if err != nil {
-		if errors.Is(err, ErrInvalidPassword) {
-			return utils.NewErrorResponse(c, fiber.StatusUnauthorized, "invalid username or password")
-		}
-		return utils.NewServerErrorResponse(c, u.logger, err)
-	}
-
-	return c.Status(fiber.StatusOK).JSON(LoginUserResponse{Token: token})
 }
 
 func (u *UserHandler) IsUsernameAvailable(c fiber.Ctx) error {

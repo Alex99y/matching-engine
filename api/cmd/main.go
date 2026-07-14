@@ -11,9 +11,9 @@ import (
 	"github.com/alex99y/matching-engine/api/internal/metrics"
 	"github.com/alex99y/matching-engine/api/internal/orders"
 	"github.com/alex99y/matching-engine/api/internal/server"
+	"github.com/alex99y/matching-engine/api/internal/sessions"
 	"github.com/alex99y/matching-engine/api/internal/stream"
 	"github.com/alex99y/matching-engine/api/internal/users"
-	"github.com/alex99y/matching-engine/api/pkg/jwt"
 	"github.com/alex99y/matching-engine/api/pkg/middleware"
 	"github.com/alex99y/matching-engine/api/pkg/orderqueue"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
@@ -31,10 +31,6 @@ func main() {
 	apiConfig := config.NewApiConfig()
 	log := logger.NewLogger(apiConfig.DebugLevel)
 
-	// Observability: one dedicated registry (Go runtime + process collectors preloaded) and a
-	// single /metrics server on MetricsPort. apiMetrics (me_api_*) is populated by the HTTP
-	// middleware and publisher (see docs/observability.md); me_db_* is added with the repo over
-	// the same registry, so one server exposes everything regardless of which handle it holds.
 	metricsRegistry := observability.NewServiceRegistry()
 	apiSubsystem := observability.NewSubsystemMetrics(metricsRegistry, "me", "api")
 	apiMetrics, err := metrics.NewApiMetrics(apiSubsystem)
@@ -55,40 +51,33 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Instantiate clients
-
 	postgresqlClient, err := postgres.Connect(
 		ctx, apiConfig.PostgresURL, postgres.DefaultConfig(),
 	)
-
 	if err != nil {
 		panic(err)
 	}
-
 	defer postgresqlClient.Close()
 
-	// me_db_* metrics: query latency/errors recorder + a scrape-time pool collector for this
-	// process's pool, labeled service="api".
 	dbMetrics, err := dbmetrics.NewDBMetrics(dbSubsystem, postgresqlClient, "api")
 	if err != nil {
 		panic(err)
 	}
 
 	rabbitmqClient, err := rabbitmq.NewClient(log, apiConfig.RabbitMQURL, rabbitmq.DefaultConfig())
-
 	if err != nil {
 		panic(err)
 	}
-
 	defer rabbitmqClient.Close()
 
-	// Instantiate services and handlers
-	jwtManager := jwt.NewJWTManager(apiConfig.JWTSecret)
-	authMiddleware := middleware.Auth(jwtManager)
-
 	userRepository := repository.NewUserRepository(log, postgresqlClient)
-	userService := users.NewUserService(log, jwtManager, userRepository)
+	userService := users.NewUserService(log, userRepository)
 	userHandler := users.NewUserHandler(log, userService)
+
+	sessionRepository := repository.NewSessionRepository(log, postgresqlClient)
+	sessionService := sessions.NewSessionService(log, sessionRepository)
+	authMiddleware := middleware.Auth(log, sessionService)
+	sessionHandler := sessions.NewSessionHandler(log, sessionService, userService)
 
 	instrumentRepository := repository.NewInstrumentRepository(log, postgresqlClient)
 	instrumentService := instruments.NewInstrumentService(log, instrumentRepository)
@@ -98,7 +87,7 @@ func main() {
 	marketService := markets.NewMarketService(log, marketRepository)
 	marketHandler := markets.NewMarketHandler(log, marketService)
 
-	const cacheRefreshSeconds = 5 * 60 // or better: read from apiConfig
+	const cacheRefreshSeconds = 5 * 60
 	cacheService := cache.NewCacheService(log, marketRepository, instrumentRepository, cacheRefreshSeconds)
 	if err = cacheService.Start(ctx); err != nil {
 		panic(err)
@@ -119,8 +108,6 @@ func main() {
 	orderService := orders.NewOrderService(log, orderRepository, cacheService, publisher)
 	orderHandler := orders.NewOrderHandler(log, orderService)
 
-	// Live market-data stream (docs/event-log.md, Phase C): one Hub subscribes to core's me.events
-	// exchange, keeps a per-market L2 book cache in sync, and fans events out to SSE clients. No DB.
 	streamHub, err := stream.NewHub(rabbitmqClient, marketRefs, log, apiMetrics)
 	if err != nil {
 		panic(err)
@@ -128,10 +115,11 @@ func main() {
 	go streamHub.Run(ctx)
 	streamHandler := stream.NewMarketsStreamHandler(log, streamHub, marketQuanta)
 
-	server := server.NewServer(server.ServerDependencies{
+	srv := server.NewServer(server.ServerDependencies{
 		Logger:             log,
 		AuthMiddleware:     authMiddleware,
 		Metrics:            apiMetrics,
+		SessionsHandler:    sessionHandler,
 		UsersHandler:       userHandler,
 		InstrumentsHandler: instrumentHandler,
 		MarketsHandler:     marketHandler,
@@ -141,12 +129,8 @@ func main() {
 
 	serverErrCh := make(chan error, 1)
 	go func() {
-		log.Info(
-			fmt.Sprintf(
-				"starting server on %s:%d", apiConfig.ServerHost, apiConfig.ServerPort,
-			),
-		)
-		serverErrCh <- server.Start(apiConfig.ServerPort, apiConfig.ServerHost)
+		log.Info(fmt.Sprintf("starting server on %s:%d", apiConfig.ServerHost, apiConfig.ServerPort))
+		serverErrCh <- srv.Start(apiConfig.ServerPort, apiConfig.ServerHost)
 	}()
 
 	quit, onQuit := os.OnSigIntAndTerm()
@@ -159,12 +143,11 @@ func main() {
 		return
 	}
 
-	// Independent deadline — gives the HTTP server time to drain
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
 	log.Info("Shutting down API server...")
-	if err := server.Shutdown(shutdownCtx); err != nil {
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error(fmt.Sprintf("error shutting down server: %v", err))
 	}
 }
