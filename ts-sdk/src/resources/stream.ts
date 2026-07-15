@@ -5,9 +5,19 @@
 //   GET /api/v1/stream/users    — private per-user order update stream (auth required)
 
 import type { SSEOptions, Transport } from "../http/transport.js";
-import type { MarketStreamOptions, StreamMessage, UserStreamOptions } from "../types/index.js";
-import { parseStreamMessage } from "../utils/parse.js";
-import { validateMarket, validateMarketStreamOptions } from "../utils/validation.js";
+import type {
+  CandleStreamMessage,
+  CandleStreamOptions,
+  MarketStreamOptions,
+  StreamMessage,
+  UserStreamOptions,
+} from "../types/index.js";
+import { parseCandleStreamMessage, parseStreamMessage } from "../utils/parse.js";
+import {
+  validateCandleStreamInterval,
+  validateMarket,
+  validateMarketStreamOptions,
+} from "../utils/validation.js";
 
 const STREAM_BASE = "/api/v1/stream";
 
@@ -56,6 +66,51 @@ export async function* streamMarket(
  * @throws {@link AuthenticationError} on an invalid or expired token.
  * @throws {@link NetworkError} on connection failure.
  */
+/**
+ * Open a public SSE stream for candle updates on one market. The first frame
+ * is always a `candle.snapshot` seeded from the current forming bucket.
+ * Subsequent frames are `candle.trade` (one per match) and `candle.closed`
+ * when a bucket boundary is crossed.
+ *
+ * The client is responsible for maintaining OHLCV state: `open` comes from
+ * the snapshot and never changes within a bucket; `high`, `low`, `close`, and
+ * `volume` are updated on each `candle.trade`.
+ *
+ * Break out of the loop or abort `options.signal` to close the connection.
+ *
+ * @param transport - SDK transport instance.
+ * @param market - Market ref, e.g. `"ETH-USDT"`.
+ * @param interval - Bucket size in seconds. Use {@link CandleInterval} constants.
+ * @param options - Optional cancellation signal.
+ * @throws {@link ValidationError} for an empty market or an invalid interval.
+ * @throws {@link APIError} (404) for an unknown market.
+ * @throws {@link NetworkError} on connection failure.
+ * @example
+ * for await (const msg of streamCandles(transport, "ETH-USDT", 60)) {
+ *   if (msg.type === "candle.snapshot") console.log("open:", msg.open);
+ *   if (msg.type === "candle.trade")    console.log("trade price:", msg.price);
+ *   if (msg.type === "candle.closed")   console.log("bucket closed:", msg.bucketStart);
+ * }
+ */
+export async function* streamCandles(
+  transport: Transport,
+  market: string,
+  interval: number,
+  options: CandleStreamOptions = {},
+): AsyncGenerator<CandleStreamMessage, void, undefined> {
+  validateMarket(market);
+  validateCandleStreamInterval(interval);
+
+  const sseOpts: SSEOptions = {
+    query: { interval },
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+  };
+
+  for await (const data of transport.streamSSE(`${STREAM_BASE}/markets/${market}/candles`, sseOpts)) {
+    yield parseCandleStreamMessage(data);
+  }
+}
+
 export async function* streamUser(
   transport: Transport,
   token: string,

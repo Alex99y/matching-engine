@@ -8,6 +8,7 @@ import {
   OrderType,
   TimeInForce,
   type CreateOrderParams,
+  type GetCandlesParams,
   type GetOrdersFilter,
   type LoginParams,
   type MarketStreamOptions,
@@ -125,6 +126,33 @@ export function validateMarket(market: string): void {
 export function validateMarketStreamOptions(options: MarketStreamOptions): void {
   if (options.group !== undefined && options.group <= 0n) {
     throw new ValidationError("group must be a positive integer");
+  }
+}
+
+const VALID_CANDLE_INTERVALS = new Set<number>([60, 300, 900, 3600, 14400, 86400]);
+
+export function validateGetCandlesParams(market: string, params: GetCandlesParams): void {
+  requireNonEmpty(market, "market");
+  if (!VALID_CANDLE_INTERVALS.has(params.interval)) {
+    throw new ValidationError("interval must be one of: 60, 300, 900, 3600, 14400, 86400");
+  }
+  if (!Number.isInteger(params.from) || params.from < 0) {
+    throw new ValidationError("from must be a non-negative integer unix timestamp");
+  }
+  if (!Number.isInteger(params.to) || params.to < 0) {
+    throw new ValidationError("to must be a non-negative integer unix timestamp");
+  }
+  if (params.from >= params.to) {
+    throw new ValidationError("from must be before to");
+  }
+  if (params.to - params.from > params.interval * 1000) {
+    throw new ValidationError("range exceeds 1000 candles");
+  }
+}
+
+export function validateCandleStreamInterval(interval: number): void {
+  if (!VALID_CANDLE_INTERVALS.has(interval)) {
+    throw new ValidationError("interval must be one of: 60, 300, 900, 3600, 14400, 86400");
   }
 }
 

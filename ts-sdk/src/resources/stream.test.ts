@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { ParseError, ValidationError } from "../errors/index.js";
 import type { Transport } from "../http/transport.js";
-import type { StreamMessage } from "../types/index.js";
-import { streamMarket, streamUser } from "./stream.js";
+import type { CandleStreamMessage, StreamMessage } from "../types/index.js";
+import { streamCandles, streamMarket, streamUser } from "./stream.js";
 
 const TOKEN = "tok";
 
@@ -188,5 +188,146 @@ describe("streamUser", () => {
     expect(msgs).toHaveLength(2);
     expect((msgs[0] as { status: string }).status).toBe("open");
     expect((msgs[1] as { status: string }).status).toBe("filled");
+  });
+});
+
+// ---- streamCandles ----
+
+async function collectCandles(
+  gen: AsyncGenerator<CandleStreamMessage>,
+): Promise<CandleStreamMessage[]> {
+  const msgs: CandleStreamMessage[] = [];
+  for await (const msg of gen) msgs.push(msg);
+  return msgs;
+}
+
+describe("streamCandles", () => {
+  it("calls streamSSE with the correct path and interval query param", async () => {
+    const { transport, streamSSE } = stubTransport();
+    await collectCandles(streamCandles(transport, "ETH-USDT", 60));
+    expect(streamSSE).toHaveBeenCalledWith(
+      "/api/v1/stream/markets/ETH-USDT/candles",
+      expect.objectContaining({ query: { interval: 60 } }),
+    );
+  });
+
+  it("yields a parsed candle.snapshot with bigint OHLCV amounts", async () => {
+    const payload = JSON.stringify({
+      type: "candle.snapshot",
+      interval: 60,
+      bucket_start: 1_700_000_000,
+      open: "1000",
+      high: "1200",
+      low: "950",
+      close: "1100",
+      volume: "50",
+    });
+    const { transport } = stubTransport(payload);
+    const msgs = await collectCandles(streamCandles(transport, "ETH-USDT", 60));
+    expect(msgs[0]).toEqual({
+      type: "candle.snapshot",
+      interval: 60,
+      bucketStart: 1_700_000_000,
+      open: 1000n,
+      high: 1200n,
+      low: 950n,
+      close: 1100n,
+      volume: 50n,
+    });
+  });
+
+  it("yields a parsed candle.snapshot with zero amounts when market is idle", async () => {
+    const payload = JSON.stringify({
+      type: "candle.snapshot",
+      interval: 300,
+      bucket_start: 1_700_000_000,
+      open: "0",
+      high: "0",
+      low: "0",
+      close: "0",
+      volume: "0",
+    });
+    const { transport } = stubTransport(payload);
+    const msgs = await collectCandles(streamCandles(transport, "ETH-USDT", 300));
+    expect(msgs[0]).toMatchObject({ type: "candle.snapshot", open: 0n, volume: 0n });
+  });
+
+  it("yields a parsed candle.trade with bigint price and quantity", async () => {
+    const payload = JSON.stringify({
+      type: "candle.trade",
+      time: 1_700_000_001,
+      price: "2000",
+      quantity: "7",
+      taker_side: "buy",
+    });
+    const { transport } = stubTransport(payload);
+    const msgs = await collectCandles(streamCandles(transport, "ETH-USDT", 60));
+    expect(msgs[0]).toEqual({
+      type: "candle.trade",
+      time: 1_700_000_001,
+      price: 2000n,
+      quantity: 7n,
+      takerSide: "buy",
+    });
+  });
+
+  it("yields a parsed candle.closed", async () => {
+    const payload = JSON.stringify({
+      type: "candle.closed",
+      interval: 60,
+      bucket_start: 1_700_000_000,
+    });
+    const { transport } = stubTransport(payload);
+    const msgs = await collectCandles(streamCandles(transport, "ETH-USDT", 60));
+    expect(msgs[0]).toEqual({
+      type: "candle.closed",
+      interval: 60,
+      bucketStart: 1_700_000_000,
+    });
+  });
+
+  it("yields multiple messages in sequence", async () => {
+    const frames = [
+      JSON.stringify({ type: "candle.snapshot", interval: 60, bucket_start: 100, open: "1", high: "1", low: "1", close: "1", volume: "0" }),
+      JSON.stringify({ type: "candle.trade", time: 101, price: "1", quantity: "5", taker_side: "sell" }),
+      JSON.stringify({ type: "candle.closed", interval: 60, bucket_start: 100 }),
+    ];
+    const { transport } = stubTransport(...frames);
+    const msgs = await collectCandles(streamCandles(transport, "ETH-USDT", 60));
+    expect(msgs).toHaveLength(3);
+    expect(msgs[0]?.type).toBe("candle.snapshot");
+    expect(msgs[1]?.type).toBe("candle.trade");
+    expect(msgs[2]?.type).toBe("candle.closed");
+  });
+
+  it("passes the abort signal through to streamSSE", async () => {
+    const { transport, streamSSE } = stubTransport();
+    const controller = new AbortController();
+    await collectCandles(streamCandles(transport, "ETH-USDT", 60, { signal: controller.signal }));
+    expect(streamSSE).toHaveBeenCalledWith(
+      "/api/v1/stream/markets/ETH-USDT/candles",
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+
+  it("throws ValidationError for an empty market string", async () => {
+    const { transport } = stubTransport();
+    await expect(collectCandles(streamCandles(transport, "", 60))).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+  });
+
+  it("throws ValidationError for an invalid interval", async () => {
+    const { transport } = stubTransport();
+    await expect(
+      collectCandles(streamCandles(transport, "ETH-USDT", 45)),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("surfaces a ParseError for an unknown candle message type", async () => {
+    const { transport } = stubTransport(JSON.stringify({ type: "candle.unknown" }));
+    await expect(
+      collectCandles(streamCandles(transport, "ETH-USDT", 60)),
+    ).rejects.toBeInstanceOf(ParseError);
   });
 });

@@ -196,6 +196,81 @@ export interface UserStreamOptions {
   readonly signal?: AbortSignal;
 }
 
+// ---- Candle intervals ----
+
+export const CandleInterval = {
+  OneMinute:      60,
+  FiveMinutes:   300,
+  FifteenMinutes: 900,
+  OneHour:      3600,
+  FourHours:   14400,
+  OneDay:      86400,
+} as const;
+export type CandleInterval = (typeof CandleInterval)[keyof typeof CandleInterval];
+
+// ---- Candle REST types ----
+
+export interface Candle {
+  readonly bucketStart: number;
+  readonly open: bigint;
+  readonly high: bigint;
+  readonly low: bigint;
+  readonly close: bigint;
+  readonly volume: bigint;
+}
+
+export interface GetCandlesParams {
+  readonly interval: CandleInterval;
+  /** Unix seconds (inclusive lower bound). */
+  readonly from: number;
+  /** Unix seconds (exclusive upper bound). */
+  readonly to: number;
+}
+
+export interface GetCandlesResponse {
+  readonly interval: number;
+  readonly candles: readonly Candle[];
+}
+
+// ---- Candle SSE event types ----
+
+export interface CandleSnapshotMessage {
+  readonly type: "candle.snapshot";
+  readonly interval: number;
+  readonly bucketStart: number;
+  readonly open: bigint;
+  readonly high: bigint;
+  readonly low: bigint;
+  readonly close: bigint;
+  readonly volume: bigint;
+}
+
+export interface CandleTradeMessage {
+  readonly type: "candle.trade";
+  /** Unix seconds. */
+  readonly time: number;
+  readonly price: bigint;
+  readonly quantity: bigint;
+  readonly takerSide: "buy" | "sell";
+}
+
+export interface CandleClosedMessage {
+  readonly type: "candle.closed";
+  readonly interval: number;
+  readonly bucketStart: number;
+}
+
+/** Discriminated union of every message the candle SSE stream can emit. */
+export type CandleStreamMessage =
+  | CandleSnapshotMessage
+  | CandleTradeMessage
+  | CandleClosedMessage;
+
+export interface CandleStreamOptions {
+  /** Cancellation signal. Abort it to close the stream. */
+  readonly signal?: AbortSignal;
+}
+
 // ---- Order responses ----
 
 export interface OpenOrder {

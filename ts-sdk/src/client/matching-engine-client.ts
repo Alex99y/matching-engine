@@ -4,12 +4,17 @@ import {
   type FetchLike,
   type TransportConfig,
 } from "../http/transport.js";
+import * as candlesResource from "../resources/candles.js";
 import * as instrumentsResource from "../resources/instruments.js";
 import * as marketsResource from "../resources/markets.js";
 import * as sessionsResource from "../resources/sessions.js";
 import * as streamResource from "../resources/stream.js";
 import * as usersResource from "../resources/users.js";
 import type {
+  CandleStreamMessage,
+  CandleStreamOptions,
+  GetCandlesParams,
+  GetCandlesResponse,
   Instrument,
   LoginParams,
   Market,
@@ -157,5 +162,53 @@ export class MatchingEngineClient {
     options: MarketStreamOptions = {},
   ): AsyncGenerator<StreamMessage, void, undefined> {
     return streamResource.streamMarket(this.transport, market, options);
+  }
+
+  /**
+   * Fetch historical OHLCV candles for a market. The range `[from, to)` must
+   * span at most 1000 candles for the given interval. Use {@link CandleInterval}
+   * constants for the `interval` field.
+   *
+   * @param market - Market ref, e.g. `"ETH-USDT"`.
+   * @param params - Interval (seconds), `from` and `to` as unix seconds.
+   * @throws {@link ValidationError} for an empty market, invalid interval, bad timestamps, or a range exceeding 1000 candles.
+   * @throws {@link APIError} (404) for an unknown market.
+   * @example
+   * const now = Math.floor(Date.now() / 1000);
+   * const { candles } = await client.getCandles("ETH-USDT", {
+   *   interval: CandleInterval.OneMinute,
+   *   from: now - 3600,
+   *   to: now,
+   * });
+   */
+  async getCandles(market: string, params: GetCandlesParams): Promise<GetCandlesResponse> {
+    return candlesResource.getCandles(this.transport, market, params);
+  }
+
+  /**
+   * Open a public SSE stream for candle updates on one market. The first frame
+   * is always a `candle.snapshot`; subsequent frames are `candle.trade` and
+   * `candle.closed` at bucket boundaries. Use {@link CandleInterval} constants
+   * for the `interval` argument.
+   *
+   * @param market - Market ref, e.g. `"ETH-USDT"`.
+   * @param interval - Bucket size in seconds.
+   * @param options - Optional cancellation signal.
+   * @throws {@link ValidationError} for an empty market or an invalid interval.
+   * @throws {@link APIError} (404) for an unknown market.
+   * @throws {@link NetworkError} on connection failure.
+   * @example
+   * for await (const msg of client.streamCandles("ETH-USDT", CandleInterval.OneMinute)) {
+   *   if (msg.type === "candle.snapshot") console.log("open:", msg.open);
+   *   if (msg.type === "candle.trade")    console.log("trade price:", msg.price);
+   *   if (msg.type === "candle.closed")   console.log("bucket closed:", msg.bucketStart);
+   * }
+   */
+  streamCandles(
+    market: string,
+    interval: number,
+    options: CandleStreamOptions = {},
+  ): AsyncGenerator<CandleStreamMessage, void, undefined> {
+    return streamResource.streamCandles(this.transport, market, interval, options);
   }
 }

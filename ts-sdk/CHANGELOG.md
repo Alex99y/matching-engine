@@ -4,10 +4,30 @@
 
 ### Added
 
+- `MatchingEngineClient.getCandles(market, params)` — fetch historical OHLCV candles
+  (`GET /api/v1/markets/:market/candles`). Returns a `GetCandlesResponse` with an
+  array of `Candle` objects; OHLCV amounts are `bigint` (decoded from the API's
+  decimal-string wire format). The range `[from, to)` must span at most 1000 candles;
+  client-side `ValidationError` is thrown for out-of-range requests before they reach
+  the network.
+- `MatchingEngineClient.streamCandles(market, interval, options?)` — public SSE stream
+  for live candle updates (`GET /api/v1/stream/markets/:market/candles?interval=<sec>`).
+  Yields `CandleStreamMessage` events: `CandleSnapshotMessage` (initial forming-bucket
+  seed from DB), `CandleTradeMessage` (one per match), and `CandleClosedMessage` (emitted
+  when a bucket boundary is crossed).
+- New exported types: `Candle`, `GetCandlesParams`, `GetCandlesResponse`,
+  `CandleSnapshotMessage`, `CandleTradeMessage`, `CandleClosedMessage`,
+  `CandleStreamMessage`, `CandleStreamOptions`.
+- `CandleInterval` const object (`OneMinute`, `FiveMinutes`, `FifteenMinutes`,
+  `OneHour`, `FourHours`, `OneDay`) with the matching numeric-literal union type.
+  Valid values: `60 | 300 | 900 | 3600 | 14400 | 86400`.
+
+### Changed
+
 - `AuthenticatedClient.logout()` is now implemented — calls `DELETE /api/v1/sessions`
   to revoke the session server-side. Previously this was a documented no-op.
 
-### Changed
+### Changed (previous)
 
 - `MatchingEngineClient.login()` now calls `POST /api/v1/sessions` (was
   `POST /api/v1/users/login`). No change to the method signature or return type;

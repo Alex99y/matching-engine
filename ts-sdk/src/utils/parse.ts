@@ -12,7 +12,13 @@ import type {
   BatchCreateOrderResult,
   BookLevel,
   BookMessage,
+  Candle,
   CancelledOrder,
+  CandleClosedMessage,
+  CandleSnapshotMessage,
+  CandleStreamMessage,
+  CandleTradeMessage,
+  GetCandlesResponse,
   HeartbeatMessage,
   Instrument,
   Market,
@@ -314,4 +320,82 @@ function parseBalance(raw: unknown): Balance {
 
 export function parseBalances(raw: unknown): Balance[] {
   return asArray(raw, "balances").map(parseBalance);
+}
+
+// ---- Candle parsers ----
+//
+// OHLCV amounts arrive as decimal strings in both the REST and SSE candle
+// responses (serialized via FormatUint64 in Go). Parse with reqBigIntStr —
+// no BIGINT_WIRE_FIELDS entries needed.
+
+export function parseCandle(raw: unknown): Candle {
+  const o = asRecord(raw, "candle");
+  return {
+    bucketStart: reqNumber(o, "bucket_start"),
+    open: reqBigIntStr(o, "open"),
+    high: reqBigIntStr(o, "high"),
+    low: reqBigIntStr(o, "low"),
+    close: reqBigIntStr(o, "close"),
+    volume: reqBigIntStr(o, "volume"),
+  };
+}
+
+export function parseGetCandlesResponse(raw: unknown): GetCandlesResponse {
+  const o = asRecord(raw, "candles response");
+  return {
+    interval: reqNumber(o, "interval"),
+    candles: asArray(o["candles"], "candles").map(parseCandle),
+  };
+}
+
+/**
+ * Parse one SSE `data:` payload string into a typed {@link CandleStreamMessage}.
+ * @throws {@link ParseError} on malformed JSON or an unexpected shape.
+ */
+export function parseCandleStreamMessage(data: string): CandleStreamMessage {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(data);
+  } catch (err) {
+    throw new ParseError("invalid candle SSE message JSON", err);
+  }
+
+  const o = asRecord(raw, "candle stream message");
+  const type = reqString(o, "type");
+
+  switch (type) {
+    case "candle.snapshot": {
+      const result: CandleSnapshotMessage = {
+        type: "candle.snapshot",
+        interval: reqNumber(o, "interval"),
+        bucketStart: reqNumber(o, "bucket_start"),
+        open: reqBigIntStr(o, "open"),
+        high: reqBigIntStr(o, "high"),
+        low: reqBigIntStr(o, "low"),
+        close: reqBigIntStr(o, "close"),
+        volume: reqBigIntStr(o, "volume"),
+      };
+      return result;
+    }
+    case "candle.trade": {
+      const result: CandleTradeMessage = {
+        type: "candle.trade",
+        time: reqNumber(o, "time"),
+        price: reqBigIntStr(o, "price"),
+        quantity: reqBigIntStr(o, "quantity"),
+        takerSide: reqSide(o, "taker_side"),
+      };
+      return result;
+    }
+    case "candle.closed": {
+      const result: CandleClosedMessage = {
+        type: "candle.closed",
+        interval: reqNumber(o, "interval"),
+        bucketStart: reqNumber(o, "bucket_start"),
+      };
+      return result;
+    }
+    default:
+      throw new ParseError(`unknown candle stream message type: "${type}"`);
+  }
 }
