@@ -3,8 +3,8 @@ package server
 import (
 	"context"
 	"fmt"
-	"time"
 
+	"github.com/alex99y/matching-engine/api/internal/candles"
 	"github.com/alex99y/matching-engine/api/internal/instruments"
 	"github.com/alex99y/matching-engine/api/internal/markets"
 	"github.com/alex99y/matching-engine/api/internal/metrics"
@@ -17,7 +17,6 @@ import (
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/healthcheck"
-	"github.com/gofiber/fiber/v3/middleware/limiter"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/google/uuid"
 )
@@ -31,6 +30,7 @@ type ServerDependencies struct {
 	InstrumentsHandler *instruments.InstrumentHandler
 	MarketsHandler     *markets.MarketHandler
 	OrdersHandler      *orders.OrderHandler
+	CandleHandler      *candles.CandleHandler
 	StreamHandler      *stream.StreamHandler
 }
 
@@ -68,6 +68,9 @@ func NewServer(dependencies ServerDependencies) *Server {
 	if dependencies.OrdersHandler == nil {
 		panic("orders handler cannot be nil")
 	}
+	if dependencies.CandleHandler == nil {
+		panic("candle handler cannot be nil")
+	}
 	if dependencies.StreamHandler == nil {
 		panic("stream handler cannot be nil")
 	}
@@ -82,11 +85,11 @@ func NewServer(dependencies ServerDependencies) *Server {
 		},
 	}))
 
-	// TODO: Configure limiter
-	app.Use(limiter.New(limiter.Config{
-		Max:        60000,
-		Expiration: 1 * time.Minute,
-	}))
+	// // TODO: Configure limiter
+	// app.Use(limiter.New(limiter.Config{
+	// 	Max:        60000,
+	// 	Expiration: 1 * time.Minute,
+	// }))
 
 	app.Get("/health", healthcheck.New())
 	apiV1 := app.Group("/api/v1")
@@ -95,6 +98,7 @@ func NewServer(dependencies ServerDependencies) *Server {
 	instruments.RegisterInstrumentRoutes(apiV1, dependencies.InstrumentsHandler)
 	markets.RegisterMarketRoutes(apiV1, dependencies.MarketsHandler)
 	orders.RegisterOrderRoutes(apiV1, dependencies.AuthMiddleware, dependencies.OrdersHandler)
+	candles.RegisterCandleRoutes(apiV1, dependencies.CandleHandler)
 	stream.RegisterStreamRoutes(apiV1, dependencies.AuthMiddleware, dependencies.StreamHandler)
 
 	return &Server{httpServer: app}

@@ -17,12 +17,17 @@ import (
 // comment frame still detects a vanished client.
 const clientPingInterval = 15 * time.Second
 
-var errInvalidGroup = errors.New("group must be a positive multiple of the market price quantum")
+var (
+	errInvalidGroup    = errors.New("group must be a positive multiple of the market price quantum")
+	errInvalidInterval = errors.New("interval must be one of: 60, 300, 900, 3600, 14400, 86400")
+)
 
 type StreamHandler struct {
-	logger    *logger.Logger
-	marketHub *Hub
-	markets   map[string]uint64 // served market ref -> price_quantum (validates :market and grouping)
+	logger     *logger.Logger
+	marketHub  *Hub
+	candleHub  *CandleHub
+	markets    map[string]uint64 // served market ref -> price_quantum (validates :market and grouping)
+	intervals  map[int64]struct{} // allowed candle intervals
 }
 
 // MarketStream is the SSE endpoint GET /api/v1/stream/:market. It authenticates the connection (so the
@@ -136,14 +141,86 @@ func parseGroup(raw string, priceQuantum uint64) (uint64, error) {
 	return g, nil
 }
 
+// CandleStream is the SSE endpoint GET /api/v1/stream/markets/:market/candles.
+// On connect the client receives a candle.snapshot seeded from the DB (current forming bucket),
+// then candle.trade events for every trade and candle.closed when a bucket boundary is crossed.
+func (h *StreamHandler) CandleStream(c fiber.Ctx) error {
+	market := c.Params("market")
+	if _, ok := h.markets[market]; !ok {
+		return utils.NewErrorResponse(c, fiber.StatusNotFound, "unknown market")
+	}
+
+	interval, err := parseInterval(c.Query("interval"), h.intervals)
+	if err != nil {
+		return utils.NewErrorResponse(c, fiber.StatusBadRequest, err.Error())
+	}
+
+	cl := &candleClient{
+		market:   market,
+		interval: interval,
+		ch:       make(chan []byte, clientSendBuffer),
+	}
+	h.candleHub.connect(cl)
+
+	c.Set(fiber.HeaderContentType, "text/event-stream")
+	c.Set(fiber.HeaderCacheControl, "no-cache")
+	c.Set(fiber.HeaderConnection, "keep-alive")
+
+	return c.SendStreamWriter(func(w *bufio.Writer) {
+		defer h.candleHub.disconnect(cl)
+		ping := time.NewTicker(clientPingInterval)
+		defer ping.Stop()
+
+		for {
+			select {
+			case frame, ok := <-cl.ch:
+				if !ok {
+					return
+				}
+				if !flush(w, frame) {
+					return
+				}
+			case <-ping.C:
+				if !flush(w, []byte(": ping\n\n")) {
+					return
+				}
+			}
+		}
+	})
+}
+
+// parseInterval validates the ?interval query against the allowed set.
+func parseInterval(raw string, allowed map[int64]struct{}) (int64, error) {
+	if raw == "" {
+		return 0, errInvalidInterval
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, errInvalidInterval
+	}
+	if _, ok := allowed[v]; !ok {
+		return 0, errInvalidInterval
+	}
+	return v, nil
+}
+
 // NewMarketsStreamHandler builds the SSE handler. markets maps each served market ref to its
 // price_quantum, used to validate the :market param and the requested grouping.
-func NewMarketsStreamHandler(log *logger.Logger, hub *Hub, markets map[string]uint64) *StreamHandler {
+func NewMarketsStreamHandler(log *logger.Logger, hub *Hub, candleHub *CandleHub, markets map[string]uint64) *StreamHandler {
 	if log == nil {
 		panic("logger cannot be nil")
 	}
 	if hub == nil {
 		panic("hub cannot be nil")
 	}
-	return &StreamHandler{logger: log, marketHub: hub, markets: markets}
+	if candleHub == nil {
+		panic("candleHub cannot be nil")
+	}
+	return &StreamHandler{
+		logger:    log,
+		marketHub: hub,
+		candleHub: candleHub,
+		markets:   markets,
+		intervals: map[int64]struct{}{60: {}, 300: {}, 900: {}, 3600: {}, 14400: {}, 86400: {}},
+	}
 }

@@ -15,5 +15,6 @@ func RegisterStreamRoutes(
 	// Register the static route before the :market param route so "users" is not captured as a market.
 	auth := fiber.Handler(authMiddleware)
 	app.Get("/stream/users", auth, handler.UserStream)
+	app.Get("/stream/markets/:market/candles", handler.CandleStream)
 	app.Get("/stream/:market", handler.MarketStream)
 }

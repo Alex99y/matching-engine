@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/alex99y/matching-engine/api/internal/candles"
 	"github.com/alex99y/matching-engine/api/internal/config"
 	"github.com/alex99y/matching-engine/api/internal/instruments"
 	"github.com/alex99y/matching-engine/api/internal/markets"
@@ -97,10 +98,12 @@ func main() {
 	activeMarkets := cacheService.GetMarkets()
 	marketRefs := make([]string, len(activeMarkets))
 	marketQuanta := make(map[string]uint64, len(activeMarkets))
+	marketIDs := make(map[string]int, len(activeMarkets))
 	for i, m := range activeMarkets {
 		ref := utils.MergeMarketRef(m.BaseSymbol, m.QuoteSymbol)
 		marketRefs[i] = ref
 		marketQuanta[ref] = m.PriceQuantum
+		marketIDs[ref] = m.ID
 	}
 	publisher := orderqueue.NewOrderCommandPublisher(log, rabbitmqClient, marketRefs, apiMetrics)
 
@@ -108,12 +111,23 @@ func main() {
 	orderService := orders.NewOrderService(log, orderRepository, cacheService, publisher)
 	orderHandler := orders.NewOrderHandler(log, orderService)
 
+	candleRepository := repository.NewCandleRepository(log, postgresqlClient)
+	candleService := candles.NewCandleService(log, candleRepository)
+	candleHandler := candles.NewCandleHandler(log, candleService, marketIDs)
+
 	streamHub, err := stream.NewHub(rabbitmqClient, marketRefs, log, apiMetrics)
 	if err != nil {
 		panic(err)
 	}
 	go streamHub.Run(ctx)
-	streamHandler := stream.NewMarketsStreamHandler(log, streamHub, marketQuanta)
+
+	candleHub, err := stream.NewCandleHub(rabbitmqClient, marketRefs, marketIDs, candleRepository, log)
+	if err != nil {
+		panic(err)
+	}
+	go candleHub.Run(ctx)
+
+	streamHandler := stream.NewMarketsStreamHandler(log, streamHub, candleHub, marketQuanta)
 
 	srv := server.NewServer(server.ServerDependencies{
 		Logger:             log,
@@ -124,6 +138,7 @@ func main() {
 		InstrumentsHandler: instrumentHandler,
 		MarketsHandler:     marketHandler,
 		OrdersHandler:      orderHandler,
+		CandleHandler:      candleHandler,
 		StreamHandler:      streamHandler,
 	})
 
