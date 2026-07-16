@@ -231,7 +231,8 @@ func (o *OrderHandler) CreateOrder(c fiber.Ctx) error {
 			case errors.Is(err, ErrMarketNotFound):
 				errStr = "market not found"
 			case errors.Is(err, ErrInvalidOrder):
-				errStr = "invalid order"
+				// err.Error() = "invalid order: <validation detail>" — safe to expose
+				errStr = err.Error()
 			default:
 				o.logger.Error(fmt.Sprintf("CreateOrder: index %d: %v, request_id=%s", i, err, requestid.FromContext(c)))
 				errStr = "internal error"
@@ -242,7 +243,24 @@ func (o *OrderHandler) CreateOrder(c fiber.Ctx) error {
 		}
 	}
 
-	return c.Status(fiber.StatusAccepted).JSON(BatchCreateOrderResponse{Results: results})
+	failures := 0
+	for _, r := range results {
+		if r.Error != nil {
+			failures++
+		}
+	}
+
+	var status int
+	switch {
+	case failures == 0:
+		status = fiber.StatusAccepted // 202 — all queued
+	case failures == len(results):
+		status = fiber.StatusUnprocessableEntity // 422 — all rejected
+	default:
+		status = fiber.StatusMultiStatus // 207 — partial success
+	}
+
+	return c.Status(status).JSON(BatchCreateOrderResponse{Results: results})
 }
 
 func (o *OrderHandler) CancelOrder(c fiber.Ctx) error {

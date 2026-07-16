@@ -71,7 +71,7 @@ export class Transport {
 
   constructor(origin: string, config: TransportConfig) {
     this.origin = origin.replace(/\/+$/, "");
-    this.config = config;
+    this.config = { ...config, fetchFn: config.fetchFn.bind(globalThis) };
   }
 
   /**
@@ -205,7 +205,15 @@ export class Transport {
 
     try {
       for (;;) {
-        const { value, done } = await reader.read();
+        let value: Uint8Array | undefined;
+        let done = false;
+        try {
+          ({ value, done } = await reader.read());
+        } catch {
+          // Stream interrupted by abort (Firefox raises TypeError here instead
+          // of AbortError). Treat any read failure as a clean end-of-stream.
+          break;
+        }
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 

@@ -78,6 +78,19 @@ func NewServer(dependencies ServerDependencies) *Server {
 	app := fiber.New(fiber.Config{
 		StructValidator: validations.NewStructValidator(),
 	})
+
+	// Allow browser clients (Vite dev server, hosted UI) to call the API.
+	// Bearer-token auth means we don't need credentials mode, so wildcard origin is safe.
+	app.Use(func(c fiber.Ctx) error {
+		c.Set("Access-Control-Allow-Origin", "*")
+		c.Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
+		c.Set("Access-Control-Allow-Headers", "Content-Type,Authorization,Cache-Control")
+		if c.Method() == fiber.MethodOptions {
+			return c.SendStatus(fiber.StatusNoContent)
+		}
+		return c.Next()
+	})
+
 	app.Use(middleware.AccessLog(dependencies.Logger, dependencies.Metrics))
 	app.Use(requestid.New(requestid.Config{
 		Generator: func() string {
