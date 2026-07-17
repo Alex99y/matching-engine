@@ -1,11 +1,21 @@
 {
-  "name": "bots",
+  "name": "me-liquidity-bot",
   "version": "1.0.0",
-  "description": "Services that will interact with the ME project",
-  "main": "build/index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
+  "private": true,
+  "description": "Market-making bot that mirrors Binance order book depth into the ME",
   "author": "Alexander Yammine",
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ts-sdk": "file:../ts-sdk"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^6.0.3"
+  }
 }

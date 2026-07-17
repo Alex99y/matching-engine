@@ -1,0 +1,51 @@
+name: Bots
+
+on:
+  push:
+    branches: ["master"]
+    paths:
+      - "bots/**"
+      - "ts-sdk/src/**"
+  pull_request:
+    branches: ["master"]
+    paths:
+      - "bots/**"
+      - "ts-sdk/src/**"
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: npm
+          cache-dependency-path: |
+            ts-sdk/package-lock.json
+            bots/package-lock.json
+
+      # bots depends on ts-sdk as a `file:../ts-sdk` package resolved through
+      # its compiled build/ output (unlike ui, which aliases straight to
+      # ts-sdk's source) — it has to exist before `npm ci` in bots/ links it.
+      - name: Build ts-sdk
+        working-directory: ts-sdk
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install dependencies
+        working-directory: bots
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: bots
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: bots
+        run: npm run build
