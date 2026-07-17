@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	"github.com/alex99y/matching-engine/common/pkg/utils"
 	"github.com/alex99y/matching-engine/db/pkg/postgres"
 )
 
@@ -36,7 +37,14 @@ type Market struct {
 	QuoteInstrumentID int
 	TakerFeeBps       uint64
 	MakerFeeBps       uint64
+	// BaseScale is 10^baseDecimals. It normalises price×qty back to quote-quanta:
+	//   notional_in_quote_quanta = price × qty / BaseScale
+	// Price is in quote-quanta per whole base coin (e.g. nano-USDT per BTC);
+	// qty is in base-quanta (e.g. nano-BTC). Without this division the product is
+	// 10^baseDecimals times larger than a real quote amount.
+	BaseScale uint64
 }
+
 
 type MarketRepository struct {
 	psql   *sql.DB
@@ -86,7 +94,8 @@ func (r *MarketRepository) GetMarket(ctx context.Context, baseSymbol, quoteSymbo
 		SELECT m.id, bi.symbol, qi.symbol,
 		       m.price_quantum, m.amount_quantum, m.min_order_size, m.max_order_size,
 		       m.base_instrument_id, m.quote_instrument_id,
-		       m.taker_fee_bps, m.maker_fee_bps
+		       m.taker_fee_bps, m.maker_fee_bps,
+		       bi.decimals AS base_decimals
 		FROM markets m
 		JOIN instruments bi ON m.base_instrument_id = bi.id
 		JOIN instruments qi ON m.quote_instrument_id = qi.id
@@ -94,8 +103,9 @@ func (r *MarketRepository) GetMarket(ctx context.Context, baseSymbol, quoteSymbo
 	`
 	row := r.psql.QueryRowContext(ctx, query, baseSymbol, quoteSymbol)
 	m := &Market{}
+	var baseDecimals int
 
-	err := row.Scan(&m.ID, &m.BaseSymbol, &m.QuoteSymbol, &m.PriceQuantum, &m.AmountQuantum, &m.MinOrderSize, &m.MaxOrderSize, &m.BaseInstrumentID, &m.QuoteInstrumentID, &m.TakerFeeBps, &m.MakerFeeBps)
+	err := row.Scan(&m.ID, &m.BaseSymbol, &m.QuoteSymbol, &m.PriceQuantum, &m.AmountQuantum, &m.MinOrderSize, &m.MaxOrderSize, &m.BaseInstrumentID, &m.QuoteInstrumentID, &m.TakerFeeBps, &m.MakerFeeBps, &baseDecimals)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("%s %w", marketErrPrefix, ErrMarketNotFound)
@@ -104,6 +114,7 @@ func (r *MarketRepository) GetMarket(ctx context.Context, baseSymbol, quoteSymbo
 		r.logger.ErrorO(err)
 		return nil, fmt.Errorf("%s %w", marketErrPrefix, ErrMarketGetFailed)
 	}
+	m.BaseScale = utils.Pow10Uint64(baseDecimals)
 
 	return m, nil
 }
@@ -113,7 +124,8 @@ func (r *MarketRepository) GetMarkets(ctx context.Context) ([]Market, error) {
 		SELECT m.id, bi.symbol, qi.symbol,
 		       m.price_quantum, m.amount_quantum, m.min_order_size, m.max_order_size,
 		       m.base_instrument_id, m.quote_instrument_id,
-		       m.taker_fee_bps, m.maker_fee_bps
+		       m.taker_fee_bps, m.maker_fee_bps,
+		       bi.decimals AS base_decimals
 		FROM markets m
 		JOIN instruments bi ON m.base_instrument_id = bi.id
 		JOIN instruments qi ON m.quote_instrument_id = qi.id
@@ -130,11 +142,13 @@ func (r *MarketRepository) GetMarkets(ctx context.Context) ([]Market, error) {
 	markets := []Market{}
 	for rows.Next() {
 		var m Market
-		if err := rows.Scan(&m.ID, &m.BaseSymbol, &m.QuoteSymbol, &m.PriceQuantum, &m.AmountQuantum, &m.MinOrderSize, &m.MaxOrderSize, &m.BaseInstrumentID, &m.QuoteInstrumentID, &m.TakerFeeBps, &m.MakerFeeBps); err != nil {
+		var baseDecimals int
+		if err := rows.Scan(&m.ID, &m.BaseSymbol, &m.QuoteSymbol, &m.PriceQuantum, &m.AmountQuantum, &m.MinOrderSize, &m.MaxOrderSize, &m.BaseInstrumentID, &m.QuoteInstrumentID, &m.TakerFeeBps, &m.MakerFeeBps, &baseDecimals); err != nil {
 			r.logger.Error("error scanning market row")
 			r.logger.ErrorO(err)
 			return nil, fmt.Errorf("%s %w", marketErrPrefix, ErrMarketGetFailed)
 		}
+		m.BaseScale = utils.Pow10Uint64(baseDecimals)
 		markets = append(markets, m)
 	}
 	if err := rows.Err(); err != nil {

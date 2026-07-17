@@ -260,6 +260,7 @@ func (o *OrderProcessor) buildMatch(batch []*queuedEvent) repository.MatchFunc {
 				if _, ok := funded[qe.open.OrderID]; ok {
 					o.book.MatchOrder(qe.open, result)
 				} else {
+					o.logger.Debug(fmt.Sprintf("Rejected order %s unsufficient balance", qe.open.OrderID))
 					// Unfunded: rejected at reservation, never reaches the book. Notify its owner
 					// so the private stream still carries a lifecycle event for it.
 					o.book.RecordRejection(qe.open.UserID, qe.open.OrderID)

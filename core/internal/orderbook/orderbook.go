@@ -34,7 +34,7 @@ type Order struct {
 
 	// Running taker totals across the fills of one MatchOrder call.
 	filledBase uint64 // total base traded
-	spentQuote uint64 // total quote traded (= sum of price*qty)
+	spentQuote uint64 // total quote traded
 }
 
 func (ord *Order) canTrade(price uint64) bool {
@@ -51,11 +51,12 @@ func (ord *Order) stillActive() bool {
 	return ord.Remaining > 0
 }
 
-func (ord *Order) applyFill(qty, price uint64) {
+func (ord *Order) applyFill(qty, price, baseScale uint64) {
 	ord.filledBase += qty
-	ord.spentQuote += qty * price
+	qAmt := quoteAmount(price, qty, baseScale)
+	ord.spentQuote += qAmt
 	if ord.quoteDenom {
-		ord.RemainingQuote -= qty * price
+		ord.RemainingQuote -= qAmt
 	} else {
 		ord.Remaining -= qty
 	}
@@ -100,7 +101,7 @@ type OrderBook struct {
 func (o *OrderBook) baseInstr() int  { return o.market.BaseInstrumentID }
 func (o *OrderBook) quoteInstr() int { return o.market.QuoteInstrumentID }
 
-// BookStats is a read-only snapshot of book depth, used to drive the observability gauges.
+// BookStats is a read-only snapshot of book depth.
 type BookStats struct {
 	BidOrders, AskOrders int
 	BestBid, BestAsk     uint64
@@ -134,7 +135,7 @@ func (o *OrderBook) Stats() BookStats {
 // order's funds have already been reserved (balance -> blocked) by the caller before
 // this is invoked.
 func (o *OrderBook) MatchOrder(event *oeq.OpenOrderEvent, result *repository.BatchResult) {
-	taker := newOrder(event)
+	taker := newOrder(event, o.market.BaseScale)
 
 	switch {
 	case !guardsOK(taker):
@@ -175,7 +176,7 @@ func (o *OrderBook) match(taker *Order, result *repository.BatchResult) {
 				break
 			}
 
-			taker.applyFill(qty, lvl.Price)
+			taker.applyFill(qty, lvl.Price, o.market.BaseScale)
 			maker.Remaining -= qty
 			lvl.TotalQty -= qty
 			o.markLevel(oppositeSide(taker.OpenOrder.Side), lvl.Price)
@@ -265,9 +266,8 @@ func (o *OrderBook) CancelOrder(event *oeq.CancelOrderEvent, result *repository.
 		o.sideTree(loc.side).Delete(loc.level)
 	}
 
-	have, want := restingRemaining(stored)
+	have, want := restingRemaining(stored, o.market.BaseScale)
 
-	// Release the still-blocked remainder back to available balance.
 	if stored.OpenOrder.Side == oeq.BuyOrder {
 		result.AddBalanceDelta(stored.OpenOrder.UserID, o.quoteInstr(), int64(have), -int64(have))
 	} else {
@@ -299,7 +299,7 @@ func (o *OrderBook) CancelOrder(event *oeq.CancelOrderEvent, result *repository.
 // emitTrade records one fill: settlement movements for both parties and the match row.
 // Called after the fill has been applied to both orders.
 func (o *OrderBook) emitTrade(taker, maker *Order, qty, price uint64, result *repository.BatchResult) {
-	quoteAmt := price * qty
+	quoteAmt := quoteAmount(price, qty, o.market.BaseScale)
 
 	var buyer, seller *Order
 	buyerIsTaker := taker.OpenOrder.Side == oeq.BuyOrder
@@ -319,8 +319,6 @@ func (o *OrderBook) emitTrade(taker, maker *Order, qty, price uint64, result *re
 	buyerFee := feeOf(qty, buyerFeeBps)        // in base
 	sellerFee := feeOf(quoteAmt, sellerFeeBps) // in quote
 
-	// Buyer pays quote from blocked and receives base (minus fee); seller pays base
-	// from blocked and receives quote (minus fee). Price is the maker's resting price.
 	result.AddBalanceDelta(buyer.OpenOrder.UserID, o.quoteInstr(), 0, -int64(quoteAmt))
 	result.AddBalanceDelta(buyer.OpenOrder.UserID, o.baseInstr(), int64(qty-buyerFee), 0)
 	result.AddBalanceDelta(seller.OpenOrder.UserID, o.baseInstr(), 0, -int64(qty))
@@ -340,7 +338,6 @@ func (o *OrderBook) emitTrade(taker, maker *Order, qty, price uint64, result *re
 		IsSellOrderFilled: seller.fullyFilled(),
 	})
 
-	// Public tape event: base quantity at the maker's resting price, tagged with the taker's side.
 	o.recordTrade(price, qty, taker.OpenOrder.Side)
 }
 
@@ -367,7 +364,7 @@ func (o *OrderBook) emitMakerFilled(maker *Order, result *repository.BatchResult
 }
 
 func (o *OrderBook) emitMakerPartialFill(maker *Order, result *repository.BatchResult) {
-	have, want := restingRemaining(maker)
+	have, want := restingRemaining(maker, o.market.BaseScale)
 	result.OpenOrderUpdates = append(result.OpenOrderUpdates, repository.OpenOrderRemainingUpdate{
 		OrderID:             maker.OpenOrder.OrderID,
 		RemainingHaveAmount: have,
@@ -386,7 +383,7 @@ func (o *OrderBook) settleTakerCompletion(t *Order, rests bool, result *reposito
 		held := t.reserve - t.spentQuote // quote still blocked after fills
 		var keep uint64
 		if rests {
-			keep = t.OpenOrder.Price * t.Remaining
+			keep = quoteAmount(t.OpenOrder.Price, t.Remaining, o.market.BaseScale)
 		}
 		if release := held - keep; release > 0 {
 			result.AddBalanceDelta(t.OpenOrder.UserID, o.quoteInstr(), int64(release), -int64(release))
@@ -422,7 +419,7 @@ func (o *OrderBook) emitTakerOutcome(t *Order, rests bool, result *repository.Ba
 	if rests {
 		o.rest(t)
 		o.markLevel(t.OpenOrder.Side, t.OpenOrder.Price)
-		have, want := restingRemaining(t)
+		have, want := restingRemaining(t, o.market.BaseScale)
 		result.OpenOrders = append(result.OpenOrders, repository.InsertOpenOrderParams{
 			OrderID:             t.OpenOrder.OrderID,
 			Price:               t.OpenOrder.Price,
@@ -435,7 +432,7 @@ func (o *OrderBook) emitTakerOutcome(t *Order, rests bool, result *repository.Ba
 	}
 
 	if !t.fullyFilled() {
-		have, want := canceledRemaining(t)
+		have, want := canceledRemaining(t, o.market.BaseScale)
 		result.CancelledOrders = append(result.CancelledOrders, repository.InsertCancelledOrderParams{
 			OrderID:             t.OpenOrder.OrderID,
 			RemainingHaveAmount: have,
@@ -524,7 +521,26 @@ func (o *OrderBook) Hydrate(rows []repository.OpenOrderHydration) {
 
 // --- pure helpers ---
 
-func newOrder(event *oeq.OpenOrderEvent) *Order {
+// quoteAmount converts a fill or reservation into quote-quanta.
+// Price is in quote-quanta per whole base coin; qty is in base-quanta;
+// dividing by baseScale (= 10^baseDecimals) normalises the product.
+func quoteAmount(price, qty, baseScale uint64) uint64 {
+	return price * qty / baseScale
+}
+
+// limitHaveWant maps a limit order's notional and remaining base quantity to the
+// (have, want) convention used in open_orders / cancelled_orders rows:
+//
+//	buy:  have = quote (notional), want = base (remaining)
+//	sell: have = base  (remaining), want = quote (notional)
+func limitHaveWant(side oeq.OrderSide, notional, remaining uint64) (have, want uint64) {
+	if side == oeq.BuyOrder {
+		return notional, remaining
+	}
+	return remaining, notional
+}
+
+func newOrder(event *oeq.OpenOrderEvent, baseScale uint64) *Order {
 	ord := &Order{OpenOrder: event}
 	if event.Type == oeq.MarketOrder && event.Side == oeq.BuyOrder {
 		// Quote-denominated: the order carries a spend budget, not a base quantity.
@@ -538,7 +554,7 @@ func newOrder(event *oeq.OpenOrderEvent) *Order {
 
 	ord.Remaining = event.Quantity
 	if event.Side == oeq.BuyOrder {
-		ord.reserve = event.Price * event.Quantity // limit buy: blocks quote notional
+		ord.reserve = quoteAmount(event.Price, event.Quantity, baseScale)
 	} else {
 		ord.reserve = event.Quantity // sell (limit or market): blocks base
 	}
@@ -579,25 +595,17 @@ func takerStatus(t *Order, rests bool) string {
 }
 
 // restingRemaining returns the (have, want) amounts still owed for a resting limit order.
-func restingRemaining(t *Order) (have, want uint64) {
-	notional := t.OpenOrder.Price * t.Remaining
-	if t.OpenOrder.Side == oeq.BuyOrder {
-		return notional, t.Remaining // have = quote, want = base
-	}
-	return t.Remaining, notional // have = base, want = quote
+func restingRemaining(t *Order, baseScale uint64) (have, want uint64) {
+	return limitHaveWant(t.OpenOrder.Side, quoteAmount(t.OpenOrder.Price, t.Remaining, baseScale), t.Remaining)
 }
 
 // canceledRemaining returns the (have, want) amounts of the unfilled portion recorded
 // for a killed order. For a market buy only the leftover quote budget is known.
-func canceledRemaining(t *Order) (have, want uint64) {
+func canceledRemaining(t *Order, baseScale uint64) (have, want uint64) {
 	if t.quoteDenom {
 		return t.RemainingQuote, 0
 	}
-	notional := t.OpenOrder.Price * t.Remaining
-	if t.OpenOrder.Side == oeq.BuyOrder {
-		return notional, t.Remaining
-	}
-	return t.Remaining, notional
+	return limitHaveWant(t.OpenOrder.Side, quoteAmount(t.OpenOrder.Price, t.Remaining, baseScale), t.Remaining)
 }
 
 func hydrateBase(r repository.OpenOrderHydration) uint64 {
@@ -650,7 +658,7 @@ func DeriveInsertParams(event *oeq.OpenOrderEvent, market *repository.Market) re
 
 	switch event.Type {
 	case oeq.LimitOrder:
-		notional := event.Price * event.Quantity
+		notional := quoteAmount(event.Price, event.Quantity, market.BaseScale)
 		qty := event.Quantity
 		if event.Side == oeq.BuyOrder {
 			p.HaveQuantity = &notional
