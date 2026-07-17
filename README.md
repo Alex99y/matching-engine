@@ -11,6 +11,7 @@ Matching Engine project is a proof of concept for a high-performance order match
 - `common` - shared utilities and types used across Go services
 - `bots` - Node.js bots for testing and simulating order flow against the engine
 - `ts-sdk` - TypeScript SDK for the API, used by trading bots to interact with the engine
+- `ui` - React web frontend for visualizing the matching engine's order book and candle charts live
 - `local-deploy` - Docker and local deployment scripts
 
 ## Software Requirements
