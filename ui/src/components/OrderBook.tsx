@@ -1,6 +1,7 @@
 import type { BookLevel } from "ts-sdk";
 import type { MatchingEngineClient } from "ts-sdk";
 import { useMarketStream } from "../hooks/useMarketStream.ts";
+import { fmtUnits } from "../utils/format.ts";
 import { Skeleton, SkeletonRows } from "./Skeleton.tsx";
 
 // ── Sub-components ────────────────────────────────────────────────────────
@@ -9,10 +10,14 @@ function BookRow({
   level,
   side,
   maxQty,
+  quoteDecimals,
+  baseDecimals,
 }: {
   level: BookLevel;
   side: "bid" | "ask";
   maxQty: bigint;
+  quoteDecimals: number;
+  baseDecimals: number;
 }) {
   const pct = maxQty > 0n ? Number((level.quantity * 100n) / maxQty) : 0;
   const color = side === "bid" ? "var(--green)" : "var(--red)";
@@ -33,22 +38,30 @@ function BookRow({
         }}
       />
       <span style={{ ...s.cell, color, zIndex: 1 }}>
-        {level.price.toLocaleString()}
+        {fmtUnits(level.price, quoteDecimals)}
       </span>
       <span style={{ ...s.cell, textAlign: "right", zIndex: 1 }}>
-        {level.quantity.toLocaleString()}
+        {fmtUnits(level.quantity, baseDecimals)}
       </span>
     </div>
   );
 }
 
-function Spread({ bestBid, bestAsk }: { bestBid: bigint | null; bestAsk: bigint | null }) {
+function Spread({
+  bestBid,
+  bestAsk,
+  quoteDecimals,
+}: {
+  bestBid: bigint | null;
+  bestAsk: bigint | null;
+  quoteDecimals: number;
+}) {
   if (!bestBid || !bestAsk || bestAsk <= bestBid) return null;
   const spread = bestAsk - bestBid;
   return (
     <div style={s.spread}>
       <span style={{ color: "var(--text-muted)", fontSize: 11 }}>
-        Spread: {spread.toLocaleString()}
+        Spread: {fmtUnits(spread, quoteDecimals)}
       </span>
     </div>
   );
@@ -59,9 +72,11 @@ function Spread({ bestBid, bestAsk }: { bestBid: bigint | null; bestAsk: bigint 
 interface Props {
   client: MatchingEngineClient;
   market: string;
+  quoteDecimals: number;
+  baseDecimals: number;
 }
 
-export function OrderBook({ client, market }: Props) {
+export function OrderBook({ client, market, quoteDecimals, baseDecimals }: Props) {
   const book = useMarketStream(client, market);
 
   const maxBidQty =
@@ -95,14 +110,14 @@ export function OrderBook({ client, market }: Props) {
           <SkeletonRows count={8} gap={2} />
         ) : (
           [...book.asks].reverse().map((l) => (
-            <BookRow key={String(l.price)} level={l} side="ask" maxQty={maxAskQty} />
+            <BookRow key={String(l.price)} level={l} side="ask" maxQty={maxAskQty} quoteDecimals={quoteDecimals} baseDecimals={baseDecimals} />
           ))
         )}
       </div>
 
       {/* Spread */}
       {book.status === "live" && (
-        <Spread bestBid={bestBid} bestAsk={bestAsk} />
+        <Spread bestBid={bestBid} bestAsk={bestAsk} quoteDecimals={quoteDecimals} />
       )}
 
       {/* Last trade price */}
@@ -114,7 +129,7 @@ export function OrderBook({ client, market }: Props) {
               book.lastTradeSide === "buy" ? "var(--green)" : "var(--red)",
           }}
         >
-          {book.lastTradePrice.toLocaleString()}
+          {fmtUnits(book.lastTradePrice, quoteDecimals)}
         </div>
       )}
 
@@ -124,7 +139,7 @@ export function OrderBook({ client, market }: Props) {
           <SkeletonRows count={8} gap={2} />
         ) : (
           book.bids.map((l) => (
-            <BookRow key={String(l.price)} level={l} side="bid" maxQty={maxBidQty} />
+            <BookRow key={String(l.price)} level={l} side="bid" maxQty={maxBidQty} quoteDecimals={quoteDecimals} baseDecimals={baseDecimals} />
           ))
         )}
       </div>

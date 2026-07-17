@@ -24,6 +24,11 @@ export interface CandleStreamState {
 
 // ── Helper ────────────────────────────────────────────────────────────────
 
+// Prices travel everywhere else as raw bigint quantum units (see fmtUnits
+// in utils/format.ts). This hook keeps that same raw magnitude — scaling by
+// the market's quote decimals is a display concern, done by the chart
+// component, so this subscription doesn't need to know about decimals at
+// all (mirrors useMarketStream, which is likewise decimals-agnostic).
 function toNum(n: bigint): number {
   return Number(n);
 }
@@ -120,11 +125,20 @@ export function useCandleStream(
               const closed = ref.bar;
               ref.bar = null;
               if (closed) {
-                setState((prev) => ({
-                  ...prev,
-                  bars: [...prev.bars, closed],
-                  formingBar: null,
-                }));
+                setState((prev) => {
+                  // The bucket that was forming at subscribe time may already
+                  // be the last row of the initial REST history fetch (or a
+                  // reconnect may replay a bucket we already have). Replace
+                  // rather than append when the timestamp already matches the
+                  // last bar, or lightweight-charts' setData() rejects the
+                  // resulting non-strictly-ascending series.
+                  const last = prev.bars[prev.bars.length - 1];
+                  const bars =
+                    last && last.time === closed.time
+                      ? [...prev.bars.slice(0, -1), closed]
+                      : [...prev.bars, closed];
+                  return { ...prev, bars, formingBar: null };
+                });
               }
               break;
             }

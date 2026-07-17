@@ -36,6 +36,21 @@ export function shortId(id: string): string {
   return id.slice(0, 8) + "…";
 }
 
+// Convert a raw ME quantum bigint to a human-readable decimal string.
+// e.g. fmtUnits(63_448_000_000n, 6) → "63,448" (USDT with 6 decimals)
+//      fmtUnits(169_000_000n, 9)     → "0.169"  (BTC with 9 decimals)
+export function fmtUnits(raw: bigint, decimals: number): string {
+  if (decimals === 0) return raw.toLocaleString("en-US");
+  const scale = 10n ** BigInt(decimals);
+  const whole = raw / scale;
+  const frac  = raw % scale;
+  const fracStr  = frac.toString().padStart(decimals, "0");
+  const trimmed  = fracStr.replace(/0+$/, ""); // drop trailing zeros
+  return trimmed
+    ? `${whole.toLocaleString("en-US")}.${trimmed}`
+    : whole.toLocaleString("en-US");
+}
+
 // Market ref from base/quote symbols.
 export function marketRef(baseSymbol: string, quoteSymbol: string): string {
   return `${baseSymbol}-${quoteSymbol}`;

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { Market } from "ts-sdk";
+import { useEffect, useState } from "react";
+import type { Instrument, Market } from "ts-sdk";
 import { MatchingEngineClient } from "ts-sdk";
 import { useAuth } from "../contexts/AuthContext.tsx";
 import { useToast } from "../contexts/ToastContext.tsx";
@@ -193,9 +193,25 @@ export function TradingPage() {
   const { client, session, username, logout, disconnect } = useAuth();
   const { showToast } = useToast();
   const [market, setMarket] = useState("");
+  const [selectedMarket, setSelectedMarket] = useState<Market | null>(null);
+  const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [orderRefresh, setOrderRefresh] = useState(0);
 
   if (!(client instanceof MatchingEngineClient)) return null;
+
+  const baseDecimals =
+    instruments.find((i) => i.symbol === selectedMarket?.baseSymbol)?.decimals ?? 0;
+  const quoteDecimals =
+    instruments.find((i) => i.symbol === selectedMarket?.quoteSymbol)?.decimals ?? 0;
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  useEffect(() => {
+    let active = true;
+    client.getInstruments().then((list) => {
+      if (active) setInstruments(list);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [client]);
 
   async function handleLogout() {
     try {
@@ -213,7 +229,7 @@ export function TradingPage() {
       <header style={s.header}>
         <div style={s.headerLeft}>
           <span style={s.logo}>⬡ ME</span>
-          <MarketSelector value={market} onChange={(ref: string, _m: Market) => setMarket(ref)} />
+          <MarketSelector value={market} onChange={(ref: string, m: Market) => { setMarket(ref); setSelectedMarket(m); }} />
         </div>
 
         <div style={s.headerRight}>
@@ -239,12 +255,12 @@ export function TradingPage() {
         <div style={s.body}>
           {/* Left: order book */}
           <div style={s.leftPanel}>
-            <OrderBook client={client} market={market} />
+            <OrderBook client={client} market={market} quoteDecimals={quoteDecimals} baseDecimals={baseDecimals} />
           </div>
 
           {/* Centre: chart */}
           <div style={s.centre}>
-            <CandleChart client={client} market={market} />
+            <CandleChart client={client} market={market} quoteDecimals={quoteDecimals} />
           </div>
 
           {/* Right: order panel or login prompt */}

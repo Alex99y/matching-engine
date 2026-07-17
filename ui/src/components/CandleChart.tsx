@@ -23,13 +23,17 @@ const INTERVALS: { label: string; value: number }[] = [
   { label: "1d",  value: CandleInterval.OneDay },
 ];
 
-function toChartBar(b: OHLCBar): CandlestickData {
+// OHLCBar values are raw quantum units (see useCandleStream) — scale down
+// by the market's quote decimals here, at display time, same as fmtUnits
+// does for every other price shown in the UI.
+function toChartBar(b: OHLCBar, quoteDecimals: number): CandlestickData {
+  const scale = 10 ** quoteDecimals;
   return {
     time: b.time as UTCTimestamp,
-    open: b.open,
-    high: b.high,
-    low: b.low,
-    close: b.close,
+    open: b.open / scale,
+    high: b.high / scale,
+    low: b.low / scale,
+    close: b.close / scale,
   };
 }
 
@@ -38,9 +42,10 @@ function toChartBar(b: OHLCBar): CandlestickData {
 interface Props {
   client: MatchingEngineClient;
   market: string;
+  quoteDecimals: number;
 }
 
-export function CandleChart({ client, market }: Props) {
+export function CandleChart({ client, market, quoteDecimals }: Props) {
   const [interval, setInterval] = useState<number>(CandleInterval.OneMinute);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -80,6 +85,11 @@ export function CandleChart({ client, market }: Props) {
       borderDownColor: "#ff5353",
       wickUpColor: "#00c076",
       wickDownColor: "#ff5353",
+      priceFormat: {
+        type: "price",
+        precision: quoteDecimals,
+        minMove: 1 / 10 ** quoteDecimals,
+      },
     });
 
     chartRef.current = chart;
@@ -99,8 +109,24 @@ export function CandleChart({ client, market }: Props) {
     };
   }, []);
 
-  // When the market or interval changes, reset the series.
+  // Keep the Y-axis precision in sync when switching to a market quoted in
+  // a different asset (e.g. USDT with 6 decimals vs. BTC with 9).
   useEffect(() => {
+    seriesRef.current?.applyOptions({
+      priceFormat: {
+        type: "price",
+        precision: quoteDecimals,
+        minMove: 1 / 10 ** quoteDecimals,
+      },
+    });
+  }, [quoteDecimals]);
+
+  // When the market or interval changes, clear the series immediately so
+  // stale data from the previous interval (a different time granularity)
+  // can never linger and violate lightweight-charts' monotonic-time
+  // requirement once the new interval's live formingBar starts updating.
+  useEffect(() => {
+    seriesRef.current?.setData([]);
     prevBarsLen.current = 0;
   }, [market, interval]);
 
@@ -110,18 +136,18 @@ export function CandleChart({ client, market }: Props) {
     if (!series || bars.length === 0) return;
 
     if (bars.length !== prevBarsLen.current) {
-      series.setData(bars.map(toChartBar));
+      series.setData(bars.map((b) => toChartBar(b, quoteDecimals)));
       prevBarsLen.current = bars.length;
       chartRef.current?.timeScale().fitContent();
     }
-  }, [bars]);
+  }, [bars, quoteDecimals]);
 
   // Update the forming (live) bar without resetting the whole series.
   useEffect(() => {
     const series = seriesRef.current;
     if (!series || !formingBar) return;
-    series.update(toChartBar(formingBar));
-  }, [formingBar]);
+    series.update(toChartBar(formingBar, quoteDecimals));
+  }, [formingBar, quoteDecimals]);
 
   return (
     <div style={s.wrapper}>
