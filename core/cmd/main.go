@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/common/pkg/observability"
@@ -24,6 +25,8 @@ import (
 func main() {
 	coreConfig := config.NewCoreConfig()
 	log := logger.NewLogger(coreConfig.DebugLevel)
+
+	var wg sync.WaitGroup
 
 	// Observability: dedicated registry (Go runtime + process collectors preloaded) and a single
 	// /metrics server on MetricsPort. coreMetrics (me_core_*) is populated by the order processors
@@ -83,15 +86,14 @@ func main() {
 		panic(err)
 	}
 	defer func() {
-		// cancel() signals the Run goroutine to stop; Close() itself waits for it to actually
-		// exit before closing the exchange (see Publisher.done), so shutdown never reopens or
-		// discards a channel Run is still mid-publish on.
-		cancel()
+		// Close() waits for the Run goroutine to actually exit (see Publisher.done) before
+		// closing the exchange. By the time defers run, cancel()+wg.Wait() below have already
+		// guaranteed Run has returned, so this is a formality, not what makes it safe.
 		if err := eventPublisher.Close(); err != nil {
 			log.Error(fmt.Sprintf("closing event publisher: %v", err))
 		}
 	}()
-	go eventPublisher.Run(ctx)
+	wg.Go(func() { eventPublisher.Run(ctx) })
 	epoch := uuid.NewString()
 
 	instrumentRepository := repository.NewInstrumentRepository(log, postgresqlClient)
@@ -122,7 +124,7 @@ func main() {
 		marketRef := utils.MergeMarketRef(market.BaseSymbol, market.QuoteSymbol)
 		queue := order_events_queue.NewOrdersQueue(log, marketRef, rabbitmqClient)
 		p := orderprocessors.NewOrderProcessor(log, market, queue, orderRepository, coreMetrics, eventPublisher, epoch)
-		go p.Start(ctx)
+		wg.Go(func() { p.Start(ctx) })
 	}
 
 	quit, onQuit := cmos.OnSigIntAndTerm()
@@ -131,4 +133,5 @@ func main() {
 	sig := <-quit
 	log.Info(fmt.Sprintf("shutting down ... signal=%s", sig))
 	cancel()
+	wg.Wait()
 }
