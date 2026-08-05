@@ -1,6 +1,9 @@
 package orderbook
 
 import (
+	"cmp"
+	"slices"
+
 	"github.com/alex99y/matching-engine/common/pkg/marketdata"
 	oeq "github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 	"github.com/google/uuid"
@@ -90,13 +93,29 @@ func (o *OrderBook) RecordRejection(userID, orderID uuid.UUID) {
 // DrainStream returns the events accumulated since the last drain and resets the accumulator. The
 // book is read here (post-commit, still on the matcher goroutine) to resolve each touched level to
 // its current aggregate quantity. Must be called only after the batch has committed.
+//
+// Touched levels are sorted (side, then price) before being resolved, rather than ranged over
+// directly: o.stream.touched is a map, and Go deliberately randomizes map iteration order, which
+// would otherwise make the emitted Book order — and the seq numbers publishStream assigns to it —
+// non-deterministic across identical replays of the same batch.
 func (o *OrderBook) DrainStream() StreamSnapshot {
 	out := StreamSnapshot{Trades: o.stream.trades}
 
 	for _, e := range o.stream.orders {
 		out.Orders = append(out.Orders, StreamOrderUpdate{UserID: e.userID, Update: e.update})
 	}
+
+	keys := make([]levelKey, 0, len(o.stream.touched))
 	for k := range o.stream.touched {
+		keys = append(keys, k)
+	}
+	slices.SortFunc(keys, func(a, b levelKey) int {
+		if a.side != b.side {
+			return cmp.Compare(a.side, b.side)
+		}
+		return cmp.Compare(a.price, b.price)
+	})
+	for _, k := range keys {
 		out.Book = append(out.Book, marketdata.Book{
 			Side:     string(k.side),
 			Price:    k.price,

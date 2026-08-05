@@ -123,3 +123,42 @@ func TestStreamCancelEmitsDelta(t *testing.T) {
 		t.Fatalf("cancel update = %+v ok=%v (want cancelled)", u, ok)
 	}
 }
+
+// DrainStream must resolve touched levels in a stable, deterministic order (sorted by side then
+// price) rather than Go's randomized map iteration order — otherwise the emitted Book order (and
+// the seq numbers publishStream assigns to it) would vary across identical replays of the same
+// batch, even though the final book state converges the same way regardless of order.
+func TestDrainStreamOrdersBookDeterministically(t *testing.T) {
+	o := testBook()
+	restSell(o, uuid.New(), 100, 10)
+	restSell(o, uuid.New(), 102, 8)
+	o.Hydrate([]repository.OpenOrderHydration{{
+		OrderID: uuid.New(), UserID: uuid.New(), Side: "buy", Price: 105, Type: "limit",
+		TimeInForce: "GTC", RemainingHaveAmount: 525, RemainingWantAmount: 5,
+	}})
+	o.DrainStream() // discard hydration deltas (hydration must emit nothing — see TestStreamHydrationEmitsNothing)
+
+	want := []marketdata.Book{
+		{Side: "buy", Price: 105, Quantity: 5},
+		{Side: "sell", Price: 100, Quantity: 10},
+		{Side: "sell", Price: 102, Quantity: 8},
+	}
+	for run := 0; run < 5; run++ {
+		// Mark the same three levels touched in a different insertion order each run, plus a
+		// duplicate, to prove neither insertion order nor a repeat touch changes the result.
+		o.markLevel(oeq.SellOrder, 102)
+		o.markLevel(oeq.BuyOrder, 105)
+		o.markLevel(oeq.SellOrder, 100)
+		o.markLevel(oeq.SellOrder, 100) // duplicate — must still dedupe to one entry
+
+		s := o.DrainStream()
+		if len(s.Book) != len(want) {
+			t.Fatalf("run %d: Book has %d entries, want %d: %+v", run, len(s.Book), len(want), s.Book)
+		}
+		for i := range want {
+			if s.Book[i] != want[i] {
+				t.Fatalf("run %d: Book[%d] = %+v, want %+v (order must be stable across drains)", run, i, s.Book[i], want[i])
+			}
+		}
+	}
+}
