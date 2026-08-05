@@ -1,6 +1,7 @@
 package orderbook
 
 import (
+	"math"
 	"testing"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
@@ -238,4 +239,26 @@ func TestTakerMakerFees(t *testing.T) {
 		t.Fatalf("seller quote credit=%d (want 999500)", sq.BalanceDelta)
 	}
 	assertConserved(t, r) // now holds with net == -fees
+}
+
+// feeOf must never panic, even if bps somehow exceeds the DB CHECK's 10000 cap (a raw DB edit or
+// a bad migration bypasses that constraint) — bits.Div64 panics once the quotient overflows 64
+// bits, which happens for any bps >= 10000. It should clamp to a 100% fee instead of crashing the
+// matcher goroutine (and, with it, every market sharing the process).
+func TestFeeOfClampsOutOfRangeBps(t *testing.T) {
+	cases := []struct {
+		name        string
+		amount, bps uint64
+	}{
+		{"bps double the cap", 1_000_000, 20_000},
+		{"bps at uint64 max", 1_000_000, math.MaxUint64},
+		{"amount at uint64 max, bps over cap", math.MaxUint64, 20_000},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := feeOf(c.amount, c.bps); got != c.amount {
+				t.Fatalf("feeOf(%d, %d) = %d, want %d (clamped to 100%%)", c.amount, c.bps, got, c.amount)
+			}
+		})
+	}
 }

@@ -93,6 +93,8 @@ type OrderProcessor struct {
 // Start hydrates the book from the DB, launches the matcher goroutine, then blocks on
 // the RabbitMQ consumer until ctx is cancelled. Call it in its own goroutine from main.
 // When the consumer exits it closes ordersChannel so the matcher drains and exits cleanly.
+// Start itself does not return until the matcher has actually exited, so a caller that waits
+// for Start (e.g. via a WaitGroup) can safely tear down shared resources (DB, AMQP) once it does.
 func (o *OrderProcessor) Start(ctx context.Context) {
 	// DB work must outlive ctx cancellation so an in-flight batch can still commit
 	// during shutdown; a stranded commit is harmless thanks to idempotent reprocessing.
@@ -104,13 +106,18 @@ func (o *OrderProcessor) Start(ctx context.Context) {
 		return
 	}
 
-	go o.matcher(ctx, dbCtx)
+	matcherDone := make(chan struct{})
+	go func() {
+		defer close(matcherDone)
+		o.matcher(ctx, dbCtx)
+	}()
 
 	if err := o.queue.WatchForOrderEvents(ctx, o.handleDelivery); err != nil {
 		o.logger.Error(fmt.Sprintf("order processor %s-%s: consumer error: %s",
 			o.market.BaseSymbol, o.market.QuoteSymbol, err))
 	}
 	close(o.ordersChannel)
+	<-matcherDone
 }
 
 // Stop prevents the consumer from queueing further events to the matcher; in-flight

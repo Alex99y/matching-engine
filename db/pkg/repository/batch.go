@@ -745,3 +745,17 @@ func safeInt64(v uint64, field string) (int64, error) {
 	}
 	return int64(v), nil
 }
+
+// safeUint64 converts a nullable BIGINT column (have_quantity / want_quantity, unset for one side
+// of a market order) into a uint64: NULL becomes 0, matching the pre-existing behavior of a bare
+// uint64(NullInt64.Int64) cast on a NULL field. A negative value is rejected instead of silently
+// wrapping into a huge unsigned quantity.
+func safeUint64(v sql.NullInt64, field string) (uint64, error) {
+	if !v.Valid {
+		return 0, nil
+	}
+	if v.Int64 < 0 {
+		return 0, fmt.Errorf("%s is negative: %d", field, v.Int64)
+	}
+	return uint64(v.Int64), nil
+}

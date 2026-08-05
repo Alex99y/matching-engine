@@ -142,8 +142,14 @@ func (o *OrderRepository) getOrder(ctx context.Context, where string, args ...an
 
 	row.CreatedAt = createdAt.Unix()
 	row.ClientOrderID = clientOrderID.String
-	row.HaveQuantity = uint64(haveQty.Int64)
-	row.WantQuantity = uint64(wantQty.Int64)
+	if row.HaveQuantity, err = safeUint64(haveQty, "have_quantity"); err != nil {
+		o.logger.Error("getOrder: " + err.Error())
+		return nil, fmt.Errorf("get order: %w", err)
+	}
+	if row.WantQuantity, err = safeUint64(wantQty, "want_quantity"); err != nil {
+		o.logger.Error("getOrder: " + err.Error())
+		return nil, fmt.Errorf("get order: %w", err)
+	}
 	if expiresAt.Valid {
 		v := expiresAt.Time.Unix()
 		row.ExpiresAt = &v
@@ -301,8 +307,14 @@ func (o *OrderRepository) GetOrdersByUser(
 
 		row.CreatedAt = createdAt.Unix()
 		row.ClientOrderID = clientOrderID.String
-		row.HaveQuantity = uint64(haveQty.Int64)
-		row.WantQuantity = uint64(wantQty.Int64)
+		if row.HaveQuantity, err = safeUint64(haveQty, "have_quantity"); err != nil {
+			o.logger.Error("GetOrdersByUser: " + err.Error())
+			return nil, fmt.Errorf("get orders by user: %w", err)
+		}
+		if row.WantQuantity, err = safeUint64(wantQty, "want_quantity"); err != nil {
+			o.logger.Error("GetOrdersByUser: " + err.Error())
+			return nil, fmt.Errorf("get orders by user: %w", err)
+		}
 		if expiresAt.Valid {
 			v := expiresAt.Time.Unix()
 			row.ExpiresAt = &v
@@ -396,8 +408,14 @@ func (o *OrderRepository) GetOrdersByIDs(ctx context.Context, userID uuid.UUID, 
 
 		row.CreatedAt = createdAt.Unix()
 		row.ClientOrderID = clientOrderID.String
-		row.HaveQuantity = uint64(haveQty.Int64)
-		row.WantQuantity = uint64(wantQty.Int64)
+		if row.HaveQuantity, err = safeUint64(haveQty, "have_quantity"); err != nil {
+			o.logger.Error("GetOrdersByIDs: " + err.Error())
+			return nil, fmt.Errorf("get orders by ids: %w", err)
+		}
+		if row.WantQuantity, err = safeUint64(wantQty, "want_quantity"); err != nil {
+			o.logger.Error("GetOrdersByIDs: " + err.Error())
+			return nil, fmt.Errorf("get orders by ids: %w", err)
+		}
 		if expiresAt.Valid {
 			v := expiresAt.Time.Unix()
 			row.ExpiresAt = &v

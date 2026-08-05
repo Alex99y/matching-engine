@@ -342,11 +342,17 @@ func (o *OrderBook) emitTrade(taker, maker *Order, qty, price uint64, result *re
 }
 
 // feeOf returns amount × bps / 10000, floored. It uses a 128-bit intermediate so a
-// large amount (quote notional can be huge) cannot overflow; bps is capped at 10000
-// by the DB CHECK, but the guard keeps a misconfiguration from panicking Div64.
+// large amount (quote notional can be huge) cannot overflow. bps is capped at 10000 by
+// the DB CHECK, but that constraint lives outside this process (a raw DB edit or a bad
+// migration bypasses it) and bits.Div64 panics if the quotient overflows 64 bits — which
+// happens whenever bps >= 10000. Clamping here means a misconfigured market charges (at
+// most) a 100% fee instead of crashing every market's matcher goroutine.
 func feeOf(amount, bps uint64) uint64 {
 	if bps == 0 {
 		return 0
+	}
+	if bps > 10000 {
+		bps = 10000
 	}
 	hi, lo := bits.Mul64(amount, bps)
 	fee, _ := bits.Div64(hi, lo, 10000)
