@@ -83,8 +83,9 @@ func main() {
 		panic(err)
 	}
 	defer func() {
-		// cancel() stops the Run goroutine before closing the exchange so they don't
-		// race on the underlying AMQP channel (not safe for concurrent use).
+		// cancel() signals the Run goroutine to stop; Close() itself waits for it to actually
+		// exit before closing the exchange (see Publisher.done), so shutdown never reopens or
+		// discards a channel Run is still mid-publish on.
 		cancel()
 		if err := eventPublisher.Close(); err != nil {
 			log.Error(fmt.Sprintf("closing event publisher: %v", err))

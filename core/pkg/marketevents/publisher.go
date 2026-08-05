@@ -35,14 +35,18 @@ type Metrics interface {
 }
 
 // Publisher owns the me.events exchange and the single goroutine that publishes to it. Because that
-// goroutine is the only thing that ever touches the underlying AMQP channel (which is not safe for
-// concurrent use), every market can enqueue concurrently without a lock.
+// goroutine is the only thing that ever touches the underlying AMQP channel, every market can enqueue
+// concurrently without a lock.
 type Publisher struct {
 	exchange *rabbitmq.Exchange
 	logger   *logger.Logger
 	metrics  Metrics
 	ch       chan outbound
 	dropped  atomic.Uint64
+	// done is closed when Run returns. Close() waits on it before closing the exchange, so a
+	// shutdown never reopens (on a failed in-flight publish) or discards a channel Run is still
+	// using. See core/cmd/main.go's shutdown sequence.
+	done chan struct{}
 }
 
 func NewPublisher(client *rabbitmq.RabbitMQClient, log *logger.Logger, metrics Metrics) (*Publisher, error) {
@@ -65,6 +69,7 @@ func NewPublisher(client *rabbitmq.RabbitMQClient, log *logger.Logger, metrics M
 		logger:   log,
 		metrics:  metrics,
 		ch:       make(chan outbound, outboundBuffer),
+		done:     make(chan struct{}),
 	}, nil
 }
 
@@ -83,7 +88,10 @@ func (p *Publisher) Enqueue(routingKey, messageId string, body []byte) bool {
 }
 
 // Run drains the buffer and publishes until ctx is cancelled. Run as a single goroutine from main.
+// Signals done on return so Close() can wait for the last in-flight publish before it closes the
+// exchange.
 func (p *Publisher) Run(ctx context.Context) {
+	defer close(p.done)
 	for {
 		select {
 		case <-ctx.Done():
@@ -102,7 +110,12 @@ func (p *Publisher) Run(ctx context.Context) {
 	}
 }
 
-func (p *Publisher) Close() error { return p.exchange.Close() }
+// Close waits for Run to return (see done) and then closes the exchange. Safe to call any time
+// after Run has been started, regardless of exactly when the caller's cancel() takes effect.
+func (p *Publisher) Close() error {
+	<-p.done
+	return p.exchange.Close()
+}
 
 // Dropped is the running count of events dropped on a full buffer or a failed publish.
 func (p *Publisher) Dropped() uint64 { return p.dropped.Load() }
