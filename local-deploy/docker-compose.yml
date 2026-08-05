@@ -60,3 +60,26 @@ services:
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
+
+  ui:
+    image: node:22-alpine
+    container_name: me-ui
+    working_dir: /workspace/ui
+    # api runs on the host too (make run), so the default connection
+    # settings baked into the FE (localhost:4000, see ui/src/config.ts)
+    # reach it fine from the browser without extra env vars here.
+    ports:
+      - "5173:5173"
+    volumes:
+      - ../ui:/workspace/ui
+      # ts-sdk is imported straight from source (see ui/vite.config.ts
+      # alias) — no build step, just needs to be present on the same
+      # relative path as on the host.
+      - ../ts-sdk:/workspace/ts-sdk
+      # Named volume so container-installed (musl/alpine) native deps
+      # never overwrite the host's own node_modules, and vice versa.
+      - ui_node_modules:/workspace/ui/node_modules
+    command: sh -c "npm ci && npm run dev -- --host"
+
+volumes:
+  ui_node_modules:
