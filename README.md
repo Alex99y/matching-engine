@@ -40,8 +40,56 @@ docker build -f db/Dockerfile   -t matching-engine/db   .
 
 ## Local Development
 
-Start infrastructure (Postgres, RabbitMQ, Prometheus, Grafana):
+Bring the pieces up in this order: infrastructure, database migrations, `core`, then `api`. `ui` and `bots` are optional clients on top.
+
+### 1. Infrastructure
+
+Start Postgres, RabbitMQ, Prometheus, and Grafana:
 
 ```sh
 docker compose -f local-deploy/docker-compose.yml up -d
 ```
+
+### 2. Database migrations
+
+```sh
+make -C db migrate
+```
+
+### 3. Core (matching engine)
+
+> `core` needs to be configured (its own environment file) before it will run.
+
+```sh
+make -C core run
+```
+
+### 4. API
+
+> `api` needs to be configured (its own environment file) before it will run.
+
+```sh
+make -C api run
+```
+
+### 5. (Optional) UI
+
+Either as a container:
+
+```sh
+docker compose -f local-deploy/docker-compose.yml up -d ui
+```
+
+or directly on the host:
+
+```sh
+cd ui && npm install && npm run dev
+```
+
+### 6. (Optional) Bots
+
+```sh
+cd bots && npm install && npm run build && npm start
+```
+
+> `bots` also needs to be configured (its own environment variables) before it will run.
