@@ -15,14 +15,23 @@ import (
 const sessionTTL = 7 * 24 * time.Hour
 
 var (
-	ErrCreateSession = errors.New("could not create session")
-	ErrRevokeSession = errors.New("could not revoke session")
+	ErrCreateSession     = errors.New("could not create session")
+	ErrRevokeSession     = errors.New("could not revoke session")
+	ErrGetActiveSessions = errors.New("could not get active sessions")
+	ErrSessionNotFound   = errors.New("session not found")
 )
 
 type SessionRepository interface {
 	InsertSession(ctx context.Context, userID uuid.UUID, tokenHash string, expiresAt time.Time) error
 	GetActiveSessionByTokenHash(ctx context.Context, tokenHash string) (*repository.Session, error)
-	RevokeSessionByTokenHash(ctx context.Context, tokenHash string) error
+	RevokeSessionByTokenHash(ctx context.Context, userID uuid.UUID, tokenHash string) error
+	GetActiveSessionByUserId(ctx context.Context, userID uuid.UUID) ([]repository.Session, error)
+}
+
+type ActiveSessions struct {
+	CreatedAt int64
+	ExpiresAt int64
+	TokenHash string
 }
 
 type SessionService struct {
@@ -60,12 +69,37 @@ func (s *SessionService) ValidateToken(ctx context.Context, rawToken string) (*u
 	return &session.UserID, nil
 }
 
-func (s *SessionService) RevokeToken(ctx context.Context, rawToken string) error {
-	tokenHash := token.Hash(rawToken)
-	if err := s.repository.RevokeSessionByTokenHash(ctx, tokenHash); err != nil {
+func (s *SessionService) RevokeTokenByTokenHash(ctx context.Context, userID uuid.UUID, tokenHash string) error {
+	if err := s.repository.RevokeSessionByTokenHash(ctx, userID, tokenHash); err != nil {
+		if errors.Is(err, repository.ErrSessionNotFound) {
+			return ErrSessionNotFound
+		}
 		return ErrRevokeSession
 	}
 	return nil
+}
+
+func (s *SessionService) RevokeToken(ctx context.Context, userID uuid.UUID, rawToken string) error {
+	tokenHash := token.Hash(rawToken)
+	return s.RevokeTokenByTokenHash(ctx, userID, tokenHash)
+}
+
+func (s *SessionService) GetActiveSessions(ctx context.Context, userID uuid.UUID) ([]ActiveSessions, error) {
+	sessions, err := s.repository.GetActiveSessionByUserId(ctx, userID)
+	if err != nil {
+		return nil, ErrGetActiveSessions
+	}
+
+	activeSessions := make([]ActiveSessions, len(sessions))
+	for i, session := range sessions {
+		activeSessions[i] = ActiveSessions{
+			CreatedAt: session.CreatedAt.Unix(),
+			ExpiresAt: session.ExpiresAt.Unix(),
+			TokenHash: session.TokenHash,
+		}
+	}
+
+	return activeSessions, nil
 }
 
 func NewSessionService(logger *logger.Logger, repo SessionRepository) *SessionService {

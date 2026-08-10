@@ -23,8 +23,19 @@ type LoginRequest struct {
 	Password string `json:"password" validate:"required,min=10"`
 }
 
+type RevokeTokenHashRequest struct {
+	TokenHash string `json:"session_id" validate:"required"`
+}
+
 type LoginResponse struct {
 	Token string `json:"token"`
+}
+
+type GetActiveSessionResponse struct {
+	CreatedAt int64 `json:"created_at"`
+	ExpiresAt int64 `json:"expires_at"`
+	// one-way hash of the bearer token, reused as the external session id — never accept for authentication
+	SessionID string `json:"session_id"`
 }
 
 type SessionHandler struct {
@@ -56,9 +67,53 @@ func (h *SessionHandler) Login(c fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(LoginResponse{Token: token})
 }
 
+func (h *SessionHandler) GetSessions(c fiber.Ctx) error {
+	userID := middleware.UserIDFromContext(c)
+
+	activeSessions, err := h.sessionService.GetActiveSessions(c.Context(), userID)
+	if err != nil {
+		return utils.NewServerErrorResponse(c, h.logger, err)
+	}
+
+	var parsedActiveSessions []GetActiveSessionResponse
+
+	for _, activeSession := range activeSessions {
+		parsedActiveSessions = append(parsedActiveSessions, GetActiveSessionResponse{
+			CreatedAt: activeSession.CreatedAt,
+			ExpiresAt: activeSession.ExpiresAt,
+			SessionID: activeSession.TokenHash,
+		})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(parsedActiveSessions)
+}
+
+func (h *SessionHandler) DeleteActiveSession(c fiber.Ctx) error {
+	userID := middleware.UserIDFromContext(c)
+
+	var tokenHashRequest RevokeTokenHashRequest
+	if err := c.Bind().Body(&tokenHashRequest); err != nil {
+		h.logger.Error("Delete active session: invalid body, request_id=" + requestid.FromContext(c))
+		return utils.NewErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
+	}
+
+	err := h.sessionService.RevokeTokenByTokenHash(c.Context(), userID, tokenHashRequest.TokenHash)
+
+	if err != nil {
+		if errors.Is(err, ErrSessionNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(nil)
+		}
+
+		return utils.NewServerErrorResponse(c, h.logger, err)
+	}
+
+	return c.Status(fiber.StatusOK).JSON(nil)
+}
+
 func (h *SessionHandler) Logout(c fiber.Ctx) error {
+	userID := middleware.UserIDFromContext(c)
 	rawToken := strings.TrimPrefix(c.Get(fiber.HeaderAuthorization), "Bearer ")
-	if err := h.sessionService.RevokeToken(c.Context(), rawToken); err != nil {
+	if err := h.sessionService.RevokeToken(c.Context(), userID, rawToken); err != nil {
 		return utils.NewServerErrorResponse(c, h.logger, err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)

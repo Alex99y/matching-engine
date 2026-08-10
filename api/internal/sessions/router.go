@@ -15,4 +15,11 @@ func RegisterSessionRoutes(app fiber.Router, authMiddleware middleware.AuthMiddl
 		handler.Login,
 	)
 	sessGroup.Delete("", auth, handler.Logout)
+	sessGroup.Get("/active", auth, handler.GetSessions)
+	sessGroup.Delete(
+		"/active",
+		validations.ValidateContentType(validations.ContentTypeJSON),
+		auth,
+		handler.DeleteActiveSession,
+	)
 }
