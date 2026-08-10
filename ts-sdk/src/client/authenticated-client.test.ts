@@ -79,6 +79,25 @@ describe("AuthenticatedClient", () => {
     expect(request).toHaveBeenCalledWith("DELETE", "/api/v1/sessions", { token: "tok" });
   });
 
+  it("getActiveSessions returns mapped sessions and forwards the token", async () => {
+    const { session, request } = client([
+      { session_id: "hash-1", created_at: 1700000000, expires_at: 1700604800 },
+    ]);
+    const sessions = await session.getActiveSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.sessionId).toBe("hash-1");
+    expect(request).toHaveBeenCalledWith("GET", "/api/v1/sessions/active", { token: "tok" });
+  });
+
+  it("revokeSession sends DELETE with session_id body and forwards the token", async () => {
+    const { session, request } = client(undefined);
+    await session.revokeSession("hash-1");
+    expect(request).toHaveBeenCalledWith("DELETE", "/api/v1/sessions/active", {
+      token: "tok",
+      body: { session_id: "hash-1" },
+    });
+  });
+
   it("keeps two sessions independent", () => {
     const a = client(orderRow, "token-a").session;
     const b = client(orderRow, "token-b").session;

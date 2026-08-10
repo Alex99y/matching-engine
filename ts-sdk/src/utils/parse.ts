@@ -25,6 +25,7 @@ import type {
   OpenOrder,
   Order,
   OrderMessage,
+  Session,
   SnapshotMessage,
   StreamMessage,
   TradeMessage,
@@ -305,6 +306,19 @@ export function parseStreamMessage(data: string): StreamMessage {
 export function parseLoginToken(raw: unknown): string {
   const o = asRecord(raw, "login response");
   return reqString(o, "token");
+}
+
+export function parseSession(raw: unknown): Session {
+  const o = asRecord(raw, "session");
+  return {
+    sessionId: reqString(o, "session_id"),
+    createdAt: reqNumber(o, "created_at"),
+    expiresAt: reqNumber(o, "expires_at"),
+  };
+}
+
+export function parseActiveSessions(raw: unknown): Session[] {
+  return asArray(raw, "sessions").map(parseSession);
 }
 
 function parseBalance(raw: unknown): Balance {

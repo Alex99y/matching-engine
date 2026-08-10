@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ParseError } from "../errors/index.js";
 import {
+  parseActiveSessions,
   parseBatchCancelOrderResponse,
   parseBatchCreateOrderResponse,
   parseInstruments,
@@ -198,6 +199,26 @@ describe("parseLoginToken", () => {
 
   it("throws ParseError when token is missing", () => {
     expect(() => parseLoginToken({})).toThrow(ParseError);
+  });
+});
+
+describe("parseActiveSessions", () => {
+  it("maps session fields", () => {
+    expect(
+      parseActiveSessions([
+        { session_id: "hash-1", created_at: 1700000000, expires_at: 1700604800 },
+      ]),
+    ).toEqual([{ sessionId: "hash-1", createdAt: 1700000000, expiresAt: 1700604800 }]);
+  });
+
+  it("throws ParseError when not an array", () => {
+    expect(() => parseActiveSessions({})).toThrow(ParseError);
+  });
+
+  it("throws ParseError when session_id is missing", () => {
+    expect(() =>
+      parseActiveSessions([{ created_at: 1700000000, expires_at: 1700604800 }]),
+    ).toThrow(ParseError);
   });
 });
 

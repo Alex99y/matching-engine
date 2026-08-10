@@ -41,7 +41,8 @@ function startServer(): Promise<Server> {
       const isPrivate =
         url.pathname.startsWith("/api/v1/order") ||
         url.pathname === "/api/v1/users/balances" ||
-        url.pathname === "/api/v1/stream/users";
+        url.pathname === "/api/v1/stream/users" ||
+        url.pathname === "/api/v1/sessions/active";
       if (isPrivate && auth !== "Bearer e2e-token") {
         sendJson(401, '{"message":"missing or invalid authorization header"}');
         return;
@@ -111,6 +112,15 @@ function startServer(): Promise<Server> {
         case "DELETE /api/v1/sessions":
           res.writeHead(204).end();
           return;
+        case "GET /api/v1/sessions/active":
+          sendJson(
+            200,
+            '[{"session_id":"hash-1","created_at":1700000000,"expires_at":1700604800}]',
+          );
+          return;
+        case "DELETE /api/v1/sessions/active":
+          sendJson(200, "null");
+          return;
         default:
           sendJson(404, '{"message":"not found"}');
       }
@@ -178,6 +188,17 @@ describe("end-to-end flow against a mock server", () => {
     expect(balances[0]?.blocked).toBe(1000000000000000000n);
 
     await expect(session.logout()).resolves.toBeUndefined();
+  });
+
+  it("lists and revokes active sessions", async () => {
+    const session = await client.login({ username: "bot", password: "supersecret" });
+
+    const active = await session.getActiveSessions();
+    expect(active).toEqual([
+      { sessionId: "hash-1", createdAt: 1700000000, expiresAt: 1700604800 },
+    ]);
+
+    await expect(session.revokeSession(active[0]!.sessionId)).resolves.toBeUndefined();
   });
 
   it("surfaces a not-found order as an APIError(404)", async () => {

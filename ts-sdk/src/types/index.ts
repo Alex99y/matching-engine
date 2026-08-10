@@ -111,6 +111,17 @@ export interface GetOrdersFilter {
   readonly showCancelled?: boolean;
 }
 
+// ---- Authenticated session responses ----
+
+export interface Session {
+  /** One-way hash of the bearer token, reused as the external session id — never accept this for authentication. */
+  readonly sessionId: string;
+  /** Unix seconds. */
+  readonly createdAt: number;
+  /** Unix seconds. */
+  readonly expiresAt: number;
+}
+
 // ---- Authenticated user responses ----
 
 export interface Balance {

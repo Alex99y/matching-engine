@@ -45,6 +45,7 @@ export type {
   Order,
   OrderMessage,
   RegisterParams,
+  Session,
   SnapshotMessage,
   StreamMessage,
   TradeMessage,

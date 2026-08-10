@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ParseError, ValidationError } from "../errors/index.js";
 import type { Transport } from "../http/transport.js";
-import { login, logout } from "./sessions.js";
+import { getActiveSessions, login, logout, revokeSession } from "./sessions.js";
 
 function stubTransport(result: unknown = undefined) {
   const request = vi.fn().mockResolvedValue(result);
@@ -56,5 +56,52 @@ describe("sessions.logout", () => {
   it("resolves to undefined on success", async () => {
     const { transport } = stubTransport(undefined);
     await expect(logout(transport, "tok")).resolves.toBeUndefined();
+  });
+});
+
+describe("sessions.getActiveSessions", () => {
+  it("sends GET /api/v1/sessions/active with the bearer token", async () => {
+    const { transport, request } = stubTransport([]);
+    await getActiveSessions(transport, "my-token");
+    expect(request).toHaveBeenCalledWith("GET", "/api/v1/sessions/active", {
+      token: "my-token",
+    });
+  });
+
+  it("returns mapped sessions", async () => {
+    const { transport } = stubTransport([
+      { session_id: "hash-1", created_at: 1700000000, expires_at: 1700604800 },
+    ]);
+    const sessions = await getActiveSessions(transport, "tok");
+    expect(sessions).toEqual([
+      { sessionId: "hash-1", createdAt: 1700000000, expiresAt: 1700604800 },
+    ]);
+  });
+
+  it("throws ParseError when the response is not an array", async () => {
+    const { transport } = stubTransport({});
+    await expect(getActiveSessions(transport, "tok")).rejects.toBeInstanceOf(ParseError);
+  });
+});
+
+describe("sessions.revokeSession", () => {
+  it("sends DELETE /api/v1/sessions/active with the session id and bearer token", async () => {
+    const { transport, request } = stubTransport(undefined);
+    await revokeSession(transport, "my-token", "hash-1");
+    expect(request).toHaveBeenCalledWith("DELETE", "/api/v1/sessions/active", {
+      token: "my-token",
+      body: { session_id: "hash-1" },
+    });
+  });
+
+  it("resolves to undefined on success", async () => {
+    const { transport } = stubTransport(undefined);
+    await expect(revokeSession(transport, "tok", "hash-1")).resolves.toBeUndefined();
+  });
+
+  it("throws ValidationError when sessionId is empty", async () => {
+    const { transport, request } = stubTransport(undefined);
+    await expect(revokeSession(transport, "tok", "")).rejects.toBeInstanceOf(ValidationError);
+    expect(request).not.toHaveBeenCalled();
   });
 });

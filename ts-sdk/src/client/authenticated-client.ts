@@ -10,6 +10,7 @@ import type {
   CreateOrderParams,
   GetOrdersFilter,
   Order,
+  Session,
   StreamMessage,
   UserStreamOptions,
 } from "../types/index.js";
@@ -154,5 +155,34 @@ export class AuthenticatedClient {
    */
   async logout(): Promise<void> {
     await sessionsResource.logout(this.transport, this.token);
+  }
+
+  /**
+   * List the authenticated user's active (non-expired, non-revoked) sessions
+   * — useful for building a "log out other devices" view.
+   *
+   * @throws {@link AuthenticationError} (401) when the token is invalid or expired.
+   * @example
+   * const active = await session.getActiveSessions();
+   * console.log(active.map((s) => s.sessionId));
+   */
+  async getActiveSessions(): Promise<Session[]> {
+    return sessionsResource.getActiveSessions(this.transport, this.token);
+  }
+
+  /**
+   * Revoke one of the authenticated user's active sessions by its session id
+   * (as returned by {@link getActiveSessions}) — not necessarily the caller's
+   * own session. Unlike {@link logout}, which always revokes the session
+   * behind the current bearer token, this can end a session on another device.
+   *
+   * @param sessionId - A session id from {@link getActiveSessions}.
+   * @throws {@link ValidationError} when `sessionId` is empty.
+   * @throws {@link APIError} (404) when no active session matches `sessionId` for this user.
+   * @example
+   * await session.revokeSession(otherSessionId);
+   */
+  async revokeSession(sessionId: string): Promise<void> {
+    await sessionsResource.revokeSession(this.transport, this.token, sessionId);
   }
 }

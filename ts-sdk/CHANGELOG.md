@@ -4,6 +4,15 @@
 
 ### Added
 
+- `AuthenticatedClient.getActiveSessions()` — list the authenticated user's active
+  (non-expired, non-revoked) sessions (`GET /api/v1/sessions/active`). Returns
+  `Session[]`, useful for a "log out other devices" view.
+- `AuthenticatedClient.revokeSession(sessionId)` — revoke a specific active session by
+  its `sessionId` (`DELETE /api/v1/sessions/active`), which may be a different session
+  than the one behind the current bearer token (unlike `logout()`). Throws
+  `ValidationError` for an empty `sessionId` and `APIError` (404) when no active
+  session matches it for this user.
+- New exported type: `Session` (`sessionId`, `createdAt`, `expiresAt`).
 - `MatchingEngineClient.getCandles(market, params)` — fetch historical OHLCV candles
   (`GET /api/v1/markets/:market/candles`). Returns a `GetCandlesResponse` with an
   array of `Candle` objects; OHLCV amounts are `bigint` (decoded from the API's

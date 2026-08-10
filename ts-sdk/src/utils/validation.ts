@@ -51,6 +51,10 @@ export function validateOrderId(orderId: string): void {
   requireNonEmpty(orderId, "orderId");
 }
 
+export function validateSessionId(sessionId: string): void {
+  requireNonEmpty(sessionId, "sessionId");
+}
+
 export function validateCreateOrderParams(params: CreateOrderParams): void {
   requireNonEmpty(params.market, "market");
 

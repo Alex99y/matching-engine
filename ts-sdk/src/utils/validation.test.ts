@@ -7,6 +7,7 @@ import {
   validateLoginParams,
   validateOrderId,
   validateRegisterParams,
+  validateSessionId,
 } from "./validation.js";
 
 const validCreate = {
@@ -43,6 +44,16 @@ describe("validateLoginParams", () => {
 describe("validateOrderId", () => {
   it("throws on empty id", () => {
     expect(() => validateOrderId("")).toThrow(ValidationError);
+  });
+});
+
+describe("validateSessionId", () => {
+  it("throws on empty id", () => {
+    expect(() => validateSessionId("")).toThrow(ValidationError);
+  });
+
+  it("passes a non-empty id", () => {
+    expect(() => validateSessionId("hash-1")).not.toThrow();
   });
 });
 
