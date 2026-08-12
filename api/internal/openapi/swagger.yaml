@@ -1,0 +1,832 @@
+openapi: 3.0.3
+info:
+  title: Matching Engine API
+  version: 0.1.0
+  description: >-
+    REST + SSE API for the matching engine. Authenticated routes use a bearer
+    token (`Authorization: Bearer <token>`) obtained from `POST /sessions`.
+    A session has a scope (`read` or `write`) and an origin (`login` or
+    `minted`): write-scoped routes (order create/cancel) require a
+    write-scoped session, and session-management routes that mint or revoke
+    tokens require a login-origin session — a minted token can never expand
+    its own access.
+servers:
+  - url: /api/v1
+
+paths:
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Liveness check
+      tags: [health]
+      security: []
+      responses:
+        "200":
+          description: Service is up.
+
+  /sessions:
+    post:
+      operationId: login
+      summary: Log in with a username and password
+      tags: [sessions]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Login session created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: Invalid username or password.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      operationId: logout
+      summary: Revoke the calling session's own token
+      tags: [sessions]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204":
+          description: Session revoked.
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /sessions/refresh:
+    post:
+      operationId: refreshSession
+      summary: Extend the calling session's expiry
+      tags: [sessions]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Session refreshed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RefreshSessionResponse" }
+        "401":
+          description: Session can no longer be refreshed; log in again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /sessions/active:
+    get:
+      operationId: getActiveSessions
+      summary: List the calling user's active sessions
+      tags: [sessions]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Active sessions for the authenticated user.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/GetActiveSessionResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      operationId: revokeActiveSession
+      summary: Revoke another of the calling user's sessions by id
+      description: >-
+        Requires a login-origin session — a minted token cannot revoke a
+        session, including itself.
+      tags: [sessions]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RevokeTokenHashRequest" }
+      responses:
+        "200":
+          description: Session revoked. Body is JSON null, not an ErrorResponse envelope.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403":
+          description: Calling session is not login-origin.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: >-
+            Session not found. Body is JSON null, not an ErrorResponse
+            envelope (this route does not use the shared error shape).
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /sessions/tokens:
+    post:
+      operationId: createToken
+      summary: Mint a scoped, long-lived token from a login session
+      description: >-
+        Requires a login-origin session — a minted token can never mint
+        another.
+      tags: [sessions]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateTokenRequest" }
+      responses:
+        "201":
+          description: Token minted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreateTokenResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403":
+          description: Calling session is not login-origin.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /users/register:
+    post:
+      operationId: createUser
+      summary: Register a new user
+      tags: [users]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateUserRequest" }
+      responses:
+        "201":
+          description: User created.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409":
+          description: Username already taken.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /users/check-username:
+    post:
+      operationId: isUsernameAvailable
+      summary: Check whether a username is available
+      tags: [users]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UsernameAvailableRequest" }
+      responses:
+        "200":
+          description: Availability result.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UsernameAvailableResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /users/balances:
+    get:
+      operationId: getBalances
+      summary: Get the calling user's per-instrument balances
+      tags: [users]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Balances for the authenticated user.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/BalanceResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /instruments:
+    get:
+      operationId: getInstruments
+      summary: List instruments
+      tags: [instruments]
+      security: []
+      responses:
+        "200":
+          description: All instruments.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/GetInstrumentResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /instruments/{symbol}:
+    get:
+      operationId: getInstrument
+      summary: Get an instrument by symbol
+      tags: [instruments]
+      security: []
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The instrument.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GetInstrumentResponse" }
+        "404":
+          description: Instrument not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /markets:
+    get:
+      operationId: getMarkets
+      summary: List markets
+      tags: [markets]
+      security: []
+      responses:
+        "200":
+          description: All markets.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/GetMarketResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /markets/{market}:
+    get:
+      operationId: getMarket
+      summary: Get a market by ref (e.g. ETH-USDT)
+      tags: [markets]
+      security: []
+      parameters:
+        - name: market
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The market.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GetMarketResponse" }
+        "404":
+          description: Market not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /markets/{market}/candles:
+    get:
+      operationId: getCandles
+      summary: Get OHLCV candles for a market
+      tags: [candles]
+      security: []
+      parameters:
+        - name: market
+          in: path
+          required: true
+          schema: { type: string }
+        - name: interval
+          in: query
+          required: true
+          description: Bucket size in seconds.
+          schema:
+            type: integer
+            enum: [60, 300, 900, 3600, 14400, 86400]
+        - name: from
+          in: query
+          required: true
+          description: Range start, unix seconds.
+          schema: { type: integer, format: int64 }
+        - name: to
+          in: query
+          required: true
+          description: Range end (exclusive of "before"), unix seconds. Must be after `from`.
+          schema: { type: integer, format: int64 }
+      responses:
+        "200":
+          description: Candles for the requested range.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CandlesResponse" }
+        "400":
+          description: >-
+            Invalid interval, missing/invalid from or to, from not before to,
+            or the requested range exceeds 1000 candles at the given interval.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: Unknown market.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /order:
+    post:
+      operationId: createOrders
+      summary: Submit a batch of orders
+      description: >-
+        Requires a write-scoped session. Body is a non-empty array (max 500).
+        Every element is queued independently — a per-element failure does
+        not fail the whole request, it surfaces as that element's `error` in
+        the response array. The response schema is the same
+        (`BatchCreateOrderResponse`) for 202/207/422; only the failure mix
+        differs. `price`/`quantity` are in the market's quantum units.
+      tags: [orders]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              maxItems: 500
+              items: { $ref: "#/components/schemas/CreateOrderRequest" }
+      responses:
+        "202":
+          description: All orders in the batch were queued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchCreateOrderResponse" }
+        "207":
+          description: Partial success — see each result's `error`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchCreateOrderResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "422":
+          description: >-
+            Either the batch exceeded 500 orders (ErrorResponse), or every
+            order in the batch was rejected (BatchCreateOrderResponse, see
+            each result's `error`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ErrorResponse"
+                  - $ref: "#/components/schemas/BatchCreateOrderResponse"
+        "500": { $ref: "#/components/responses/InternalError" }
+    get:
+      operationId: getOrders
+      summary: List the calling user's orders
+      tags: [orders]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: client_order_id
+          in: query
+          schema: { type: string }
+        - name: market
+          in: query
+          schema: { type: string }
+        - name: show_open
+          in: query
+          description: 'Set to "true" to include open orders.'
+          schema: { type: string, enum: ["true", "false"] }
+        - name: show_cancelled
+          in: query
+          description: 'Set to "true" to include cancelled orders.'
+          schema: { type: string, enum: ["true", "false"] }
+        - name: start_date
+          in: query
+          description: "Format: YYYY-MM-DD."
+          schema: { type: string, format: date }
+        - name: end_date
+          in: query
+          description: "Format: YYYY-MM-DD."
+          schema: { type: string, format: date }
+        - name: limit
+          in: query
+          description: Must be between 1 and 100.
+          schema: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: Matching orders.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/OrderResponse" }
+        "400":
+          description: Invalid start_date, end_date, or limit.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: Order or market not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      operationId: cancelOrders
+      summary: Cancel a batch of orders by id
+      description: Requires a write-scoped session. Body is a non-empty array of order ids (max 500).
+      tags: [orders]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BatchCancelOrderRequest" }
+      responses:
+        "202":
+          description: Cancellation requests accepted — see each result's `error`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchCancelOrderResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "422":
+          description: Batch size exceeds 500.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /order/{id}:
+    get:
+      operationId: getOrder
+      summary: Get one of the calling user's orders by id
+      tags: [orders]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrderResponse" }
+        "400":
+          description: Invalid order id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: Order not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /stream/users:
+    get:
+      operationId: streamUserOrders
+      summary: SSE stream of the calling user's own order/fill events
+      description: >-
+        Server-Sent Events, long-lived connection. See docs/event-log.md for
+        the frame format. Registered before /stream/{market} so "users" is
+        never captured as a market ref.
+      tags: [stream]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: text/event-stream connection.
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+  /stream/markets/{market}/candles:
+    get:
+      operationId: streamCandles
+      summary: SSE stream of candle snapshots/updates for a market
+      description: >-
+        Server-Sent Events, long-lived connection. First frame is a
+        candle.snapshot seeded from the DB (current forming bucket); then
+        candle.trade per trade and candle.closed on bucket boundary. See
+        docs/event-log.md.
+      tags: [stream]
+      security: []
+      parameters:
+        - name: market
+          in: path
+          required: true
+          schema: { type: string }
+        - name: interval
+          in: query
+          required: true
+          schema:
+            type: integer
+            enum: [60, 300, 900, 3600, 14400, 86400]
+      responses:
+        "200":
+          description: text/event-stream connection.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "400":
+          description: Invalid interval.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: Unknown market.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /stream/{market}:
+    get:
+      operationId: streamMarket
+      summary: SSE stream of public order book deltas and trades for a market
+      description: >-
+        Server-Sent Events, long-lived connection. First frame is a full
+        snapshot of the cached book, then live deltas/trades/heartbeats. The
+        connection is authenticated (so a user id is available if this
+        client also wants /stream/users), but the book/trade data itself is
+        public. See docs/event-log.md.
+      tags: [stream]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: market
+          in: path
+          required: true
+          schema: { type: string }
+        - name: group
+          in: query
+          description: >-
+            Price-bucket size to aggregate to; must be a positive multiple of
+            the market's price_quantum. Omit for native resolution.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        "200":
+          description: text/event-stream connection.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "400":
+          description: Invalid group.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: Unknown market.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        Token issued by POST /sessions (login) or POST /sessions/tokens
+        (minted, scoped). Send as `Authorization: Bearer <token>`.
+
+  responses:
+    BadRequest:
+      description: Invalid request body or parameters.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    InternalError:
+      description: Internal server error. No internal detail is included in the body.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        message: { type: string }
+      required: [message]
+
+    LoginRequest:
+      type: object
+      properties:
+        username: { type: string }
+        password: { type: string, minLength: 10 }
+      required: [username, password]
+
+    LoginResponse:
+      type: object
+      properties:
+        token: { type: string }
+      required: [token]
+
+    RevokeTokenHashRequest:
+      type: object
+      description: session_id is the one-way hash of the target session's token, as returned by GET /sessions/active.
+      properties:
+        session_id: { type: string }
+      required: [session_id]
+
+    CreateTokenRequest:
+      type: object
+      properties:
+        scope: { type: string, enum: [read, write] }
+      required: [scope]
+
+    CreateTokenResponse:
+      type: object
+      properties:
+        token: { type: string }
+        scope: { type: string, enum: [read, write] }
+        expires_at: { type: integer, format: int64, description: unix seconds }
+      required: [token, scope, expires_at]
+
+    RefreshSessionResponse:
+      type: object
+      properties:
+        expires_at: { type: integer, format: int64, description: unix seconds }
+      required: [expires_at]
+
+    GetActiveSessionResponse:
+      type: object
+      properties:
+        created_at: { type: integer, format: int64, description: unix seconds }
+        expires_at: { type: integer, format: int64, description: unix seconds }
+        session_id:
+          type: string
+          description: One-way hash of the bearer token, reused as the external session id. Never accepted for authentication.
+        origin: { type: string, enum: [login, minted] }
+        scope: { type: string, enum: [read, write] }
+        user_agent: { type: string }
+        ip_address: { type: string }
+      required: [created_at, expires_at, session_id, origin, scope]
+
+    CreateUserRequest:
+      type: object
+      properties:
+        username: { type: string }
+        email: { type: string }
+        password: { type: string, minLength: 10 }
+      required: [username, email, password]
+
+    UsernameAvailableRequest:
+      type: object
+      properties:
+        username: { type: string }
+      required: [username]
+
+    UsernameAvailableResponse:
+      type: object
+      properties:
+        available: { type: boolean }
+      required: [available]
+
+    BalanceResponse:
+      type: object
+      properties:
+        name: { type: string }
+        symbol: { type: string }
+        decimals: { type: integer, format: int32 }
+        balance: { type: integer, format: int64 }
+        blocked: { type: integer, format: int64 }
+      required: [name, symbol, decimals, balance, blocked]
+
+    GetInstrumentResponse:
+      type: object
+      properties:
+        name: { type: string }
+        symbol: { type: string }
+        decimals: { type: integer, format: int32 }
+        created_at: { type: string, format: date-time }
+      required: [name, symbol, decimals, created_at]
+
+    GetMarketResponse:
+      type: object
+      description: price_quantum/amount_quantum/min_order_size/max_order_size are in the market's quantum units.
+      properties:
+        base_symbol: { type: string }
+        quote_symbol: { type: string }
+        price_quantum: { type: integer, format: int64, minimum: 0 }
+        amount_quantum: { type: integer, format: int64, minimum: 0 }
+        min_order_size: { type: integer, format: int64, minimum: 0 }
+        max_order_size: { type: integer, format: int64, minimum: 0 }
+      required: [base_symbol, quote_symbol, price_quantum, amount_quantum, min_order_size, max_order_size]
+
+    CreateOrderRequest:
+      type: object
+      properties:
+        client_order_id:
+          type: string
+          minLength: 32
+          maxLength: 64
+          description: Optional idempotency key supplied by the caller.
+        order_side: { type: string, enum: [sell, buy] }
+        order_type: { type: string, enum: [limit, market] }
+        order_tif:
+          type: string
+          enum: [gtc, ioc, fok]
+          description: Time in force. gtc is only valid for limit orders.
+        market: { type: string, description: "Market ref, e.g. ETH-USDT." }
+        price: { type: integer, format: int64, minimum: 0, description: In the market's price_quantum units. }
+        quantity: { type: integer, format: int64, minimum: 0, description: In the market's amount_quantum units. }
+        quote_qty: { type: integer, format: int64, minimum: 0 }
+        expires_at: { type: integer, format: int64, description: unix seconds. Only meaningful for gtc orders. }
+      required: [order_side, order_type, order_tif, market]
+
+    BatchCreateOrderResult:
+      type: object
+      properties:
+        index: { type: integer, format: int32, description: Index of this order in the submitted batch. }
+        order_id: { type: string, format: uuid }
+        error: { type: string }
+      required: [index]
+
+    BatchCreateOrderResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/BatchCreateOrderResult" }
+      required: [results]
+
+    BatchCancelOrderRequest:
+      type: object
+      properties:
+        order_ids:
+          type: array
+          maxItems: 500
+          items: { type: string, format: uuid }
+      required: [order_ids]
+
+    BatchCancelOrderResult:
+      type: object
+      properties:
+        order_id: { type: string, format: uuid }
+        error: { type: string }
+      required: [order_id]
+
+    BatchCancelOrderResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/BatchCancelOrderResult" }
+      required: [results]
+
+    OpenOrder:
+      type: object
+      properties:
+        price: { type: integer, format: int64, minimum: 0 }
+        side: { type: string, enum: [sell, buy] }
+        remaining_have: { type: integer, format: int64, minimum: 0 }
+        remaining_want: { type: integer, format: int64, minimum: 0 }
+      required: [price, side, remaining_have, remaining_want]
+
+    CancelledOrder:
+      type: object
+      properties:
+        cancelled_at: { type: integer, format: int64, description: unix seconds }
+        remaining_have: { type: integer, format: int64, minimum: 0 }
+        remaining_want: { type: integer, format: int64, minimum: 0 }
+      required: [cancelled_at, remaining_have, remaining_want]
+
+    OrderResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        client_order_id: { type: string }
+        type: { type: string, enum: [limit, market] }
+        time_in_force: { type: string, enum: [gtc, ioc, fok] }
+        have_quantity: { type: integer, format: int64, minimum: 0 }
+        want_quantity: { type: integer, format: int64, minimum: 0 }
+        created_at: { type: integer, format: int64, description: unix seconds }
+        expires_at: { type: integer, format: int64, description: unix seconds }
+        open_order:
+          allOf: [{ $ref: "#/components/schemas/OpenOrder" }]
+          description: Present only while the order still has an open, unfilled remainder.
+        cancelled_order:
+          allOf: [{ $ref: "#/components/schemas/CancelledOrder" }]
+          description: Present only if the order was cancelled.
+      required: [id, type, time_in_force, have_quantity, want_quantity, created_at]
+
+    CandleJSON:
+      type: object
+      description: OHLCV values are decimal strings (formatted server-side), not JSON numbers, to avoid float precision loss.
+      properties:
+        bucket_start: { type: integer, format: int64, description: unix seconds }
+        open: { type: string }
+        high: { type: string }
+        low: { type: string }
+        close: { type: string }
+        volume: { type: string }
+      required: [bucket_start, open, high, low, close, volume]
+
+    CandlesResponse:
+      type: object
+      properties:
+        interval: { type: integer, format: int64, description: Bucket size in seconds. }
+        candles:
+          type: array
+          items: { $ref: "#/components/schemas/CandleJSON" }
+      required: [interval, candles]
