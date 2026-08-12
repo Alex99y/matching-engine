@@ -7,6 +7,7 @@ import (
 
 	"github.com/alex99y/matching-engine/api/pkg/utils"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	"github.com/alex99y/matching-engine/common/pkg/sessionscope"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
@@ -15,21 +16,25 @@ type AuthMiddleware fiber.Handler
 
 type contextKey string
 
-const contextKeyUserID contextKey = "user_id"
+const (
+	contextKeyUserID contextKey = "user_id"
+	contextKeyOrigin contextKey = "session_origin"
+	contextKeyScope  contextKey = "session_scope"
+)
 
 var (
-	// ErrInvalidSession is returned by TokenValidator when the token is missing, expired, or revoked.
-	// Defined here so both the sessions service and this middleware can reference it without cycles.
-	ErrInvalidSession = errors.New("invalid or expired session")
-
-	// ErrInvalidCredentials is returned by CredentialValidator when username or password is wrong.
-	// Defined here so both the users service and the sessions handler can reference it without cycles.
+	ErrInvalidSession     = errors.New("invalid or expired session")
 	ErrInvalidCredentials = errors.New("invalid username or password")
 )
 
-// TokenValidator is satisfied by sessions.SessionService without importing that package.
+type SessionInfo struct {
+	UserID uuid.UUID
+	Origin string
+	Scope  string
+}
+
 type TokenValidator interface {
-	ValidateToken(ctx context.Context, rawToken string) (*uuid.UUID, error)
+	ValidateToken(ctx context.Context, rawToken string) (*SessionInfo, error)
 }
 
 func Auth(log *logger.Logger, validator TokenValidator) AuthMiddleware {
@@ -40,7 +45,7 @@ func Auth(log *logger.Logger, validator TokenValidator) AuthMiddleware {
 		}
 
 		rawToken := strings.TrimPrefix(authHeader, "Bearer ")
-		userID, err := validator.ValidateToken(c.Context(), rawToken)
+		info, err := validator.ValidateToken(c.Context(), rawToken)
 		if err != nil {
 			if errors.Is(err, ErrInvalidSession) {
 				return utils.NewErrorResponse(c, fiber.StatusUnauthorized, "invalid or expired session")
@@ -48,7 +53,9 @@ func Auth(log *logger.Logger, validator TokenValidator) AuthMiddleware {
 			return utils.NewServerErrorResponse(c, log, err)
 		}
 
-		c.Locals(contextKeyUserID, *userID)
+		c.Locals(contextKeyUserID, info.UserID)
+		c.Locals(contextKeyOrigin, info.Origin)
+		c.Locals(contextKeyScope, info.Scope)
 		return c.Next()
 	}
 }
@@ -57,4 +64,38 @@ func Auth(log *logger.Logger, validator TokenValidator) AuthMiddleware {
 func UserIDFromContext(c fiber.Ctx) uuid.UUID {
 	id, _ := c.Locals(contextKeyUserID).(uuid.UUID)
 	return id
+}
+
+// SessionOriginFromContext returns the authenticated session's origin ("login"/"minted") stored
+// by the Auth middleware.
+func SessionOriginFromContext(c fiber.Ctx) string {
+	origin, _ := c.Locals(contextKeyOrigin).(string)
+	return origin
+}
+
+// SessionScopeFromContext returns the authenticated session's scope ("read"/"write") stored by
+// the Auth middleware.
+func SessionScopeFromContext(c fiber.Ctx) string {
+	scope, _ := c.Locals(contextKeyScope).(string)
+	return scope
+}
+
+// RequireWrite must run after Auth. It rejects a read-scoped session with 403 so trading routes
+// (order create/cancel) can never be reached by a read-only token.
+func RequireWrite(c fiber.Ctx) error {
+	if SessionScopeFromContext(c) != sessionscope.ScopeWrite {
+		return utils.NewErrorResponse(c, fiber.StatusForbidden, "this action requires a write-scoped session")
+	}
+	return c.Next()
+}
+
+// RequireLoginOrigin must run after Auth. It rejects a minted token with 403 so only a
+// password-authenticated login session can mint further tokens or revoke another session — a
+// minted token is always a dead-end: it can never expand its own access or touch a session
+// other than itself.
+func RequireLoginOrigin(c fiber.Ctx) error {
+	if SessionOriginFromContext(c) != sessionscope.OriginLogin {
+		return utils.NewErrorResponse(c, fiber.StatusForbidden, "this action requires a login session")
+	}
+	return c.Next()
 }

@@ -13,6 +13,7 @@ func RegisterOrderRoutes(app fiber.Router, authMiddleware middleware.AuthMiddlew
 		"/",
 		validations.ValidateContentType(validations.ContentTypeJSON),
 		auth,
+		middleware.RequireWrite,
 		orderHandler.CreateOrder,
 	)
 	userGroup.Get(
@@ -29,6 +30,7 @@ func RegisterOrderRoutes(app fiber.Router, authMiddleware middleware.AuthMiddlew
 		"/",
 		validations.ValidateContentType(validations.ContentTypeJSON),
 		auth,
+		middleware.RequireWrite,
 		orderHandler.CancelOrder,
 	)
 }

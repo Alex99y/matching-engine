@@ -15,11 +15,21 @@ func RegisterSessionRoutes(app fiber.Router, authMiddleware middleware.AuthMiddl
 		handler.Login,
 	)
 	sessGroup.Delete("", auth, handler.Logout)
+	sessGroup.Post("/refresh", auth, handler.RefreshSession)
 	sessGroup.Get("/active", auth, handler.GetSessions)
 	sessGroup.Delete(
 		"/active",
 		validations.ValidateContentType(validations.ContentTypeJSON),
 		auth,
+		middleware.RequireLoginOrigin,
 		handler.DeleteActiveSession,
+	)
+	// Minting a token requires a full login session — a minted token can never mint another.
+	sessGroup.Post(
+		"/tokens",
+		validations.ValidateContentType(validations.ContentTypeJSON),
+		auth,
+		middleware.RequireLoginOrigin,
+		handler.CreateToken,
 	)
 }

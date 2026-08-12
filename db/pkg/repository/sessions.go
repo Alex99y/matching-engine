@@ -14,11 +14,12 @@ import (
 const sessionErrPrefix = "session repository:"
 
 var (
-	ErrSessionNotFound     = errors.New("session not found")
-	ErrSessionInsertFailed = errors.New("failed to insert session")
-	ErrSessionRevokeFailed = errors.New("failed to revoke session")
-	ErrSessionGetFailed    = errors.New("failed to get sessions")
-	ErrSessionGetActive    = errors.New("failed to get active sessions")
+	ErrSessionNotFound      = errors.New("session not found")
+	ErrSessionInsertFailed  = errors.New("failed to insert session")
+	ErrSessionRevokeFailed  = errors.New("failed to revoke session")
+	ErrSessionGetFailed     = errors.New("failed to get sessions")
+	ErrSessionGetActive     = errors.New("failed to get active sessions")
+	ErrSessionRefreshFailed = errors.New("failed to refresh session")
 )
 
 type Session struct {
@@ -28,6 +29,10 @@ type Session struct {
 	CreatedAt time.Time
 	ExpiresAt time.Time
 	RevokedAt *time.Time
+	Origin    string
+	Scope     string
+	UserAgent *string
+	IPAddress *string
 }
 
 type SessionRepository struct {
@@ -35,17 +40,29 @@ type SessionRepository struct {
 	logger *logger.Logger
 }
 
-func (r *SessionRepository) InsertSession(
-	ctx context.Context,
-	userID uuid.UUID,
-	tokenHash string,
-	expiresAt time.Time,
-) error {
+// InsertSessionParams bundles a new session's fields — grown past the point a positional
+// parameter list stays readable.
+type InsertSessionParams struct {
+	UserID    uuid.UUID
+	TokenHash string
+	ExpiresAt time.Time
+	// Origin/Scope: opaque to this layer, values owned by common/pkg/sessionscope; enforced
+	// by the sessions table's CHECK constraints.
+	Origin    string
+	Scope     string
+	UserAgent *string
+	IPAddress *string
+}
+
+func (r *SessionRepository) InsertSession(ctx context.Context, params InsertSessionParams) error {
 	query := `
-		INSERT INTO sessions (user_id, token_hash, expires_at)
-		VALUES ($1, $2, $3)
+		INSERT INTO sessions (user_id, token_hash, expires_at, origin, scope, user_agent, ip_address)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`
-	_, err := r.psql.ExecContext(ctx, query, userID, tokenHash, expiresAt)
+	_, err := r.psql.ExecContext(ctx, query,
+		params.UserID, params.TokenHash, params.ExpiresAt, params.Origin, params.Scope,
+		params.UserAgent, params.IPAddress,
+	)
 	if err != nil {
 		r.logger.Error("error inserting session")
 		r.logger.ErrorO(err)
@@ -59,7 +76,7 @@ func (r *SessionRepository) GetActiveSessionByTokenHash(
 	tokenHash string,
 ) (*Session, error) {
 	query := `
-		SELECT id, user_id, token_hash, created_at, expires_at, revoked_at
+		SELECT id, user_id, token_hash, created_at, expires_at, revoked_at, origin, scope, user_agent, ip_address
 		FROM sessions
 		WHERE token_hash = $1
 		  AND revoked_at IS NULL
@@ -67,7 +84,8 @@ func (r *SessionRepository) GetActiveSessionByTokenHash(
 	`
 	row := r.psql.QueryRowContext(ctx, query, tokenHash)
 	s := &Session{}
-	err := row.Scan(&s.ID, &s.UserID, &s.TokenHash, &s.CreatedAt, &s.ExpiresAt, &s.RevokedAt)
+	err := row.Scan(&s.ID, &s.UserID, &s.TokenHash, &s.CreatedAt, &s.ExpiresAt, &s.RevokedAt,
+		&s.Origin, &s.Scope, &s.UserAgent, &s.IPAddress)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("%s %w", sessionErrPrefix, ErrSessionNotFound)
@@ -84,7 +102,7 @@ func (r *SessionRepository) GetActiveSessionByUserId(
 	userId uuid.UUID,
 ) ([]Session, error) {
 	query := `
-		SELECT id, user_id, token_hash, created_at, expires_at, revoked_at
+		SELECT id, user_id, token_hash, created_at, expires_at, revoked_at, origin, scope, user_agent, ip_address
 		FROM sessions
 		WHERE user_id = $1
 			AND revoked_at IS NULL
@@ -108,6 +126,10 @@ func (r *SessionRepository) GetActiveSessionByUserId(
 			&activeSession.CreatedAt,
 			&activeSession.ExpiresAt,
 			&activeSession.RevokedAt,
+			&activeSession.Origin,
+			&activeSession.Scope,
+			&activeSession.UserAgent,
+			&activeSession.IPAddress,
 		); err != nil {
 			r.logger.Error("error scanning active sessions")
 			r.logger.ErrorO(err)
@@ -144,6 +166,43 @@ func (r *SessionRepository) RevokeSessionByTokenHash(
 
 	rowsAffected, err := row.RowsAffected()
 
+	if err != nil {
+		r.logger.Info("Driver does not support RowsAffected")
+		r.logger.ErrorO(err)
+		return nil
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("%s %w", sessionErrPrefix, ErrSessionNotFound)
+	}
+
+	return nil
+}
+
+func (r *SessionRepository) RefreshSession(
+	ctx context.Context,
+	userID uuid.UUID,
+	tokenHash string,
+	newExpiresAt time.Time,
+	minCreatedAt time.Time,
+) error {
+	query := `
+		UPDATE sessions
+		SET expires_at = $1
+		WHERE token_hash = $2
+		  AND user_id = $3
+		  AND revoked_at IS NULL
+		  AND expires_at > NOW()
+		  AND created_at > $4
+	`
+	row, err := r.psql.ExecContext(ctx, query, newExpiresAt, tokenHash, userID, minCreatedAt)
+	if err != nil {
+		r.logger.Error("error refreshing session")
+		r.logger.ErrorO(err)
+		return fmt.Errorf("%s %w", sessionErrPrefix, ErrSessionRefreshFailed)
+	}
+
+	rowsAffected, err := row.RowsAffected()
 	if err != nil {
 		r.logger.Info("Driver does not support RowsAffected")
 		r.logger.ErrorO(err)
