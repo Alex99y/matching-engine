@@ -8,9 +8,12 @@ import type {
   BatchCancelOrderResponse,
   BatchCreateOrderResponse,
   CreateOrderParams,
+  CreateTokenResult,
   GetOrdersFilter,
   Order,
+  RefreshSessionResult,
   Session,
+  SessionScope,
   StreamMessage,
   UserStreamOptions,
 } from "../types/index.js";
@@ -72,6 +75,7 @@ export class AuthenticatedClient {
    *   `clientOrderId` for per-order idempotency.
    * @throws {@link ValidationError} on an empty array, batch size > 500, or
    *   invalid side/type/tif on any item.
+   * @throws {@link AuthenticationError} (403) when called from a read-scoped session.
    * @throws {@link APIError} on server-side failures.
    * @example
    * const { results } = await session.createOrders([
@@ -102,6 +106,7 @@ export class AuthenticatedClient {
    * @param orderIds - Array of order UUIDs to cancel (1–500 items).
    * @throws {@link ValidationError} on an empty array, batch size > 500, or
    *   an empty string in the array.
+   * @throws {@link AuthenticationError} (403) when called from a read-scoped session.
    * @throws {@link APIError} on server-side failures.
    * @example
    * const { results } = await session.cancelOrders(["0190f...", "0190g..."]);
@@ -175,14 +180,51 @@ export class AuthenticatedClient {
    * (as returned by {@link getActiveSessions}) — not necessarily the caller's
    * own session. Unlike {@link logout}, which always revokes the session
    * behind the current bearer token, this can end a session on another device.
+   * Restricted to login-origin sessions — a minted token can never revoke a
+   * session other than itself (use {@link logout} for that).
    *
    * @param sessionId - A session id from {@link getActiveSessions}.
    * @throws {@link ValidationError} when `sessionId` is empty.
+   * @throws {@link AuthenticationError} (403) when called from a minted (non-login) session.
    * @throws {@link APIError} (404) when no active session matches `sessionId` for this user.
    * @example
    * await session.revokeSession(otherSessionId);
    */
   async revokeSession(sessionId: string): Promise<void> {
     await sessionsResource.revokeSession(this.transport, this.token, sessionId);
+  }
+
+  /**
+   * Extend this session's expiry by the server's standard TTL. The bearer
+   * token value itself never changes — only its server-side expiry does — so
+   * there is nothing to swap on this client after calling it. Subject to an
+   * absolute age cap enforced server-side: eventually you must {@link
+   * MatchingEngineClient.login} again regardless of how often you refresh.
+   *
+   * @throws {@link AuthenticationError} (401) when the session can no longer be
+   * refreshed (expired, revoked, or past the absolute age cap) — log in again.
+   * @example
+   * const { expiresAt } = await session.refreshSession();
+   */
+  async refreshSession(): Promise<RefreshSessionResult> {
+    return sessionsResource.refreshSession(this.transport, this.token);
+  }
+
+  /**
+   * Mint a new token scoped to "read" (cannot trade) or "write" (can trade),
+   * for handing to a bot or long-running process instead of sharing this
+   * session's own credential. Restricted to login-origin sessions — a minted
+   * token can never mint another one. Reload the returned token later with
+   * {@link MatchingEngineClient.withToken}.
+   *
+   * @param scope - {@link SessionScope.Read} or {@link SessionScope.Write}.
+   * @throws {@link ValidationError} when `scope` is not "read" or "write".
+   * @throws {@link AuthenticationError} (403) when called from a minted (non-login) session.
+   * @example
+   * const { token } = await session.createToken(SessionScope.Read);
+   * // persist `token`; later: client.withToken(token)
+   */
+  async createToken(scope: SessionScope): Promise<CreateTokenResult> {
+    return sessionsResource.createToken(this.transport, this.token, { scope });
   }
 }

@@ -16,7 +16,15 @@ export {
   ParseError,
 } from "./errors/index.js";
 
-export { CandleInterval, OrderSide, OrderStatus, OrderType, TimeInForce } from "./types/index.js";
+export {
+  CandleInterval,
+  OrderSide,
+  OrderStatus,
+  OrderType,
+  SessionOrigin,
+  SessionScope,
+  TimeInForce,
+} from "./types/index.js";
 export type {
   Balance,
   BatchCancelOrderResponse,
@@ -33,6 +41,8 @@ export type {
   CandleStreamOptions,
   CandleTradeMessage,
   CreateOrderParams,
+  CreateTokenParams,
+  CreateTokenResult,
   GetCandlesParams,
   GetCandlesResponse,
   GetOrdersFilter,
@@ -44,6 +54,7 @@ export type {
   OpenOrder,
   Order,
   OrderMessage,
+  RefreshSessionResult,
   RegisterParams,
   Session,
   SnapshotMessage,

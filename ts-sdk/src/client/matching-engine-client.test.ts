@@ -102,6 +102,19 @@ describe("MatchingEngineClient public methods", () => {
     ).rejects.toBeInstanceOf(AuthenticationError);
   });
 
+  it("withToken builds an AuthenticatedClient without a network call", () => {
+    const { fetchFn, calls } = routerFetch({});
+    const session = makeClient(fetchFn).withToken("minted-tok");
+    expect(session).toBeInstanceOf(AuthenticatedClient);
+    expect(session.authToken).toBe("minted-tok");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("withToken throws ValidationError on an empty token", () => {
+    const { fetchFn } = routerFetch({});
+    expect(() => makeClient(fetchFn).withToken("")).toThrow(ValidationError);
+  });
+
   it("getMarkets and getInstruments map responses", async () => {
     const { fetchFn } = routerFetch({
       "GET /api/v1/markets/": () =>

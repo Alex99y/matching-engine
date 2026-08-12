@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { ValidationError } from "../errors/index.js";
-import { OrderSide, OrderType, TimeInForce } from "../types/index.js";
+import { OrderSide, OrderType, SessionScope, TimeInForce } from "../types/index.js";
 import {
   validateCreateOrderParams,
+  validateCreateTokenParams,
   validateGetOrdersFilter,
   validateLoginParams,
   validateOrderId,
@@ -54,6 +55,18 @@ describe("validateSessionId", () => {
 
   it("passes a non-empty id", () => {
     expect(() => validateSessionId("hash-1")).not.toThrow();
+  });
+});
+
+describe("validateCreateTokenParams", () => {
+  it.each([SessionScope.Read, SessionScope.Write])("passes scope %s", (scope) => {
+    expect(() => validateCreateTokenParams({ scope })).not.toThrow();
+  });
+
+  it("throws on an invalid scope", () => {
+    expect(() => validateCreateTokenParams({ scope: "admin" as never })).toThrow(
+      ValidationError,
+    );
   });
 });
 

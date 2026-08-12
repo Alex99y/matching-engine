@@ -113,12 +113,53 @@ export interface GetOrdersFilter {
 
 // ---- Authenticated session responses ----
 
+export const SessionOrigin = {
+  /** Password-authenticated. Can mint tokens and revoke the user's other sessions. */
+  Login: "login",
+  /** Created via {@link CreateTokenParams}. A dead end: acts per its scope, can never
+   *  mint another token or touch a session other than itself. */
+  Minted: "minted",
+} as const;
+export type SessionOrigin = (typeof SessionOrigin)[keyof typeof SessionOrigin];
+
+export const SessionScope = {
+  /** Cannot place or cancel orders. */
+  Read: "read",
+  /** Can place and cancel orders. A login session is always "write". */
+  Write: "write",
+} as const;
+export type SessionScope = (typeof SessionScope)[keyof typeof SessionScope];
+
 export interface Session {
   /** One-way hash of the bearer token, reused as the external session id — never accept this for authentication. */
   readonly sessionId: string;
   /** Unix seconds. */
   readonly createdAt: number;
   /** Unix seconds. */
+  readonly expiresAt: number;
+  readonly origin: SessionOrigin;
+  readonly scope: SessionScope;
+  /** Best-effort request metadata captured when the session was created; absent for
+   *  sessions created before this field existed. */
+  readonly userAgent?: string;
+  /** Best-effort request metadata captured when the session was created; absent for
+   *  sessions created before this field existed. */
+  readonly ipAddress?: string;
+}
+
+export interface CreateTokenParams {
+  readonly scope: SessionScope;
+}
+
+export interface CreateTokenResult {
+  readonly token: string;
+  readonly scope: SessionScope;
+  /** Unix seconds. */
+  readonly expiresAt: number;
+}
+
+export interface RefreshSessionResult {
+  /** Unix seconds — the session's new expiry. */
   readonly expiresAt: number;
 }
 

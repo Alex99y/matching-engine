@@ -4,6 +4,43 @@
 
 ### Added
 
+- `AuthenticatedClient.refreshSession()` — extends the current session's expiry by the
+  server's standard TTL (`POST /api/v1/sessions/refresh`), up to an absolute age cap
+  enforced server-side. The bearer token value never changes, so there is nothing to
+  swap on the client afterward. Returns `RefreshSessionResult` (`expiresAt`).
+- `AuthenticatedClient.createToken(scope)` — mints a new token scoped to `"read"`
+  (cannot trade) or `"write"` (can trade) (`POST /api/v1/sessions/tokens`), for handing
+  to a bot or long-running process instead of sharing this session's own credential.
+  Restricted to login-origin sessions server-side: throws `AuthenticationError` (403)
+  when called from an already-minted token. Returns `CreateTokenResult` (`token`,
+  `scope`, `expiresAt`).
+- `MatchingEngineClient.withToken(token)` — builds an `AuthenticatedClient` from an
+  existing bearer token (e.g. one minted via `createToken` and persisted by the
+  caller), skipping the login round trip. Required companion to `createToken`: without
+  it a minted token could be created but never reloaded into a working client.
+- New exported types: `SessionOrigin` (`"login"` | `"minted"`), `SessionScope`
+  (`"read"` | `"write"`), `CreateTokenParams`, `CreateTokenResult`,
+  `RefreshSessionResult`.
+- `Session` gained `origin`, `scope` (both required — the API always sends them), and
+  optional `userAgent`/`ipAddress` (best-effort request metadata captured at session
+  creation; absent on sessions created before this field existed).
+- `validateCreateTokenParams` client-side guard (`scope` must be `"read"` or `"write"`).
+
+### Changed
+
+- `AuthenticatedClient.revokeSession(sessionId)` now throws `AuthenticationError` (403)
+  when called from a minted (non-login) token — a minted token can revoke itself (via
+  `logout()`) but never another session.
+- `AuthenticatedClient.createOrders()` / `cancelOrders()` now throw
+  `AuthenticationError` (403) when called from a read-scoped session.
+
+> **Breaking change:** `Session` gained two required fields (`origin`, `scope`). Code
+> that constructs a literal `Session`-typed value (not just reads one returned by
+> `getActiveSessions()`) needs updating. Folded into this release's existing major
+> bump (see the `createOrder`/`cancelOrder` removal below).
+
+### Added
+
 - `AuthenticatedClient.getActiveSessions()` — list the authenticated user's active
   (non-expired, non-revoked) sessions (`GET /api/v1/sessions/active`). Returns
   `Session[]`, useful for a "log out other devices" view.

@@ -18,6 +18,7 @@ import type {
   CandleSnapshotMessage,
   CandleStreamMessage,
   CandleTradeMessage,
+  CreateTokenResult,
   GetCandlesResponse,
   HeartbeatMessage,
   Instrument,
@@ -25,6 +26,7 @@ import type {
   OpenOrder,
   Order,
   OrderMessage,
+  RefreshSessionResult,
   Session,
   SnapshotMessage,
   StreamMessage,
@@ -310,15 +312,40 @@ export function parseLoginToken(raw: unknown): string {
 
 export function parseSession(raw: unknown): Session {
   const o = asRecord(raw, "session");
-  return {
+  const session: Session = {
     sessionId: reqString(o, "session_id"),
     createdAt: reqNumber(o, "created_at"),
     expiresAt: reqNumber(o, "expires_at"),
+    origin: reqString(o, "origin") as Session["origin"],
+    scope: reqString(o, "scope") as Session["scope"],
+  };
+  const userAgent = optString(o, "user_agent");
+  const ipAddress = optString(o, "ip_address");
+  return {
+    ...session,
+    ...(userAgent !== undefined ? { userAgent } : {}),
+    ...(ipAddress !== undefined ? { ipAddress } : {}),
   };
 }
 
 export function parseActiveSessions(raw: unknown): Session[] {
   return asArray(raw, "sessions").map(parseSession);
+}
+
+export function parseCreateTokenResult(raw: unknown): CreateTokenResult {
+  const o = asRecord(raw, "create token response");
+  return {
+    token: reqString(o, "token"),
+    scope: reqString(o, "scope") as CreateTokenResult["scope"],
+    expiresAt: reqNumber(o, "expires_at"),
+  };
+}
+
+export function parseRefreshSessionResult(raw: unknown): RefreshSessionResult {
+  const o = asRecord(raw, "refresh session response");
+  return {
+    expiresAt: reqNumber(o, "expires_at"),
+  };
 }
 
 function parseBalance(raw: unknown): Balance {

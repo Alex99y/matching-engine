@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Transport } from "../http/transport.js";
-import { OrderSide, OrderType, TimeInForce } from "../types/index.js";
+import { OrderSide, OrderType, SessionScope, TimeInForce } from "../types/index.js";
 import { AuthenticatedClient } from "./authenticated-client.js";
 
 const orderRow = {
@@ -81,7 +81,13 @@ describe("AuthenticatedClient", () => {
 
   it("getActiveSessions returns mapped sessions and forwards the token", async () => {
     const { session, request } = client([
-      { session_id: "hash-1", created_at: 1700000000, expires_at: 1700604800 },
+      {
+        session_id: "hash-1",
+        created_at: 1700000000,
+        expires_at: 1700604800,
+        origin: "login",
+        scope: "write",
+      },
     ]);
     const sessions = await session.getActiveSessions();
     expect(sessions).toHaveLength(1);
@@ -95,6 +101,27 @@ describe("AuthenticatedClient", () => {
     expect(request).toHaveBeenCalledWith("DELETE", "/api/v1/sessions/active", {
       token: "tok",
       body: { session_id: "hash-1" },
+    });
+  });
+
+  it("refreshSession sends POST /api/v1/sessions/refresh and forwards the token", async () => {
+    const { session, request } = client({ expires_at: 1700604800 });
+    const result = await session.refreshSession();
+    expect(result).toEqual({ expiresAt: 1700604800 });
+    expect(request).toHaveBeenCalledWith("POST", "/api/v1/sessions/refresh", { token: "tok" });
+  });
+
+  it("createToken sends POST /api/v1/sessions/tokens with the scope and forwards the token", async () => {
+    const { session, request } = client({
+      token: "minted-tok",
+      scope: "read",
+      expires_at: 1700604800,
+    });
+    const result = await session.createToken(SessionScope.Read);
+    expect(result).toEqual({ token: "minted-tok", scope: "read", expiresAt: 1700604800 });
+    expect(request).toHaveBeenCalledWith("POST", "/api/v1/sessions/tokens", {
+      token: "tok",
+      body: { scope: "read" },
     });
   });
 

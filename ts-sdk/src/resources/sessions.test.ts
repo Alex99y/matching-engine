@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { ParseError, ValidationError } from "../errors/index.js";
 import type { Transport } from "../http/transport.js";
-import { getActiveSessions, login, logout, revokeSession } from "./sessions.js";
+import { SessionScope } from "../types/index.js";
+import {
+  createToken,
+  getActiveSessions,
+  login,
+  logout,
+  refreshSession,
+  revokeSession,
+} from "./sessions.js";
 
 function stubTransport(result: unknown = undefined) {
   const request = vi.fn().mockResolvedValue(result);
@@ -70,17 +78,109 @@ describe("sessions.getActiveSessions", () => {
 
   it("returns mapped sessions", async () => {
     const { transport } = stubTransport([
-      { session_id: "hash-1", created_at: 1700000000, expires_at: 1700604800 },
+      {
+        session_id: "hash-1",
+        created_at: 1700000000,
+        expires_at: 1700604800,
+        origin: "login",
+        scope: "write",
+      },
     ]);
     const sessions = await getActiveSessions(transport, "tok");
     expect(sessions).toEqual([
-      { sessionId: "hash-1", createdAt: 1700000000, expiresAt: 1700604800 },
+      {
+        sessionId: "hash-1",
+        createdAt: 1700000000,
+        expiresAt: 1700604800,
+        origin: "login",
+        scope: "write",
+      },
     ]);
+  });
+
+  it("includes userAgent/ipAddress only when present", async () => {
+    const { transport } = stubTransport([
+      {
+        session_id: "hash-1",
+        created_at: 1700000000,
+        expires_at: 1700604800,
+        origin: "minted",
+        scope: "read",
+        user_agent: "curl/8.0",
+        ip_address: "127.0.0.1",
+      },
+    ]);
+    const [session] = await getActiveSessions(transport, "tok");
+    expect(session).toEqual({
+      sessionId: "hash-1",
+      createdAt: 1700000000,
+      expiresAt: 1700604800,
+      origin: "minted",
+      scope: "read",
+      userAgent: "curl/8.0",
+      ipAddress: "127.0.0.1",
+    });
   });
 
   it("throws ParseError when the response is not an array", async () => {
     const { transport } = stubTransport({});
     await expect(getActiveSessions(transport, "tok")).rejects.toBeInstanceOf(ParseError);
+  });
+});
+
+describe("sessions.refreshSession", () => {
+  it("sends POST /api/v1/sessions/refresh with the bearer token", async () => {
+    const { transport, request } = stubTransport({ expires_at: 1700604800 });
+    await refreshSession(transport, "my-token");
+    expect(request).toHaveBeenCalledWith("POST", "/api/v1/sessions/refresh", {
+      token: "my-token",
+    });
+  });
+
+  it("returns the new expiry", async () => {
+    const { transport } = stubTransport({ expires_at: 1700604800 });
+    await expect(refreshSession(transport, "tok")).resolves.toEqual({ expiresAt: 1700604800 });
+  });
+
+  it("throws ParseError when the response has no expires_at field", async () => {
+    const { transport } = stubTransport({});
+    await expect(refreshSession(transport, "tok")).rejects.toBeInstanceOf(ParseError);
+  });
+});
+
+describe("sessions.createToken", () => {
+  it("sends POST /api/v1/sessions/tokens with the scope and bearer token", async () => {
+    const { transport, request } = stubTransport({
+      token: "minted-tok",
+      scope: "read",
+      expires_at: 1700604800,
+    });
+    await createToken(transport, "my-token", { scope: SessionScope.Read });
+    expect(request).toHaveBeenCalledWith("POST", "/api/v1/sessions/tokens", {
+      token: "my-token",
+      body: { scope: "read" },
+    });
+  });
+
+  it("returns the minted token, scope, and expiry", async () => {
+    const { transport } = stubTransport({
+      token: "minted-tok",
+      scope: "write",
+      expires_at: 1700604800,
+    });
+    await expect(createToken(transport, "tok", { scope: SessionScope.Write })).resolves.toEqual({
+      token: "minted-tok",
+      scope: "write",
+      expiresAt: 1700604800,
+    });
+  });
+
+  it("throws ValidationError for an invalid scope", async () => {
+    const { transport, request } = stubTransport(undefined);
+    await expect(
+      createToken(transport, "tok", { scope: "admin" as never }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(request).not.toHaveBeenCalled();
   });
 });
 

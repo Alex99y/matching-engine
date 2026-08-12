@@ -3,9 +3,11 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   APIError,
+  AuthenticationError,
   MatchingEngineClient,
   OrderSide,
   OrderType,
+  SessionScope,
   TimeInForce,
   type StreamMessage,
 } from "../src/index.js";
@@ -37,14 +39,44 @@ function startServer(): Promise<Server> {
         res.end(payload);
       };
 
-      // Private routes require the bearer token issued at login.
+      // Any of these three tokens authenticates: "e2e-token" is the login (full/write)
+      // session; "read-tok"/"write-tok" simulate tokens minted via createToken, scoped
+      // as their name says. Only "e2e-token" is login-origin.
+      const bearer = auth?.startsWith("Bearer ") ? auth.slice("Bearer ".length) : undefined;
+      const tokenScope: Record<string, "write" | "read"> = {
+        "e2e-token": "write",
+        "write-tok": "write",
+        "read-tok": "read",
+      };
+      const isLoginOrigin = bearer === "e2e-token";
+
+      // Private routes require one of the tokens above.
       const isPrivate =
         url.pathname.startsWith("/api/v1/order") ||
         url.pathname === "/api/v1/users/balances" ||
         url.pathname === "/api/v1/stream/users" ||
-        url.pathname === "/api/v1/sessions/active";
-      if (isPrivate && auth !== "Bearer e2e-token") {
+        url.pathname === "/api/v1/sessions/active" ||
+        url.pathname === "/api/v1/sessions/refresh" ||
+        url.pathname === "/api/v1/sessions/tokens";
+      if (isPrivate && !(bearer && bearer in tokenScope)) {
         sendJson(401, '{"message":"missing or invalid authorization header"}');
+        return;
+      }
+      // Trading routes require a write-scoped token.
+      if (
+        (route === "POST /api/v1/order/" || route === "DELETE /api/v1/order/") &&
+        bearer &&
+        tokenScope[bearer] !== "write"
+      ) {
+        sendJson(403, '{"message":"this action requires a write-scoped session"}');
+        return;
+      }
+      // Minting and revoking another session require the login-origin token.
+      if (
+        (route === "POST /api/v1/sessions/tokens" || route === "DELETE /api/v1/sessions/active") &&
+        !isLoginOrigin
+      ) {
+        sendJson(403, '{"message":"this action requires a login session"}');
         return;
       }
 
@@ -115,12 +147,23 @@ function startServer(): Promise<Server> {
         case "GET /api/v1/sessions/active":
           sendJson(
             200,
-            '[{"session_id":"hash-1","created_at":1700000000,"expires_at":1700604800}]',
+            '[{"session_id":"hash-1","created_at":1700000000,"expires_at":1700604800,"origin":"login","scope":"write"}]',
           );
           return;
         case "DELETE /api/v1/sessions/active":
           sendJson(200, "null");
           return;
+        case "POST /api/v1/sessions/refresh":
+          sendJson(200, '{"expires_at":1700604800}');
+          return;
+        case "POST /api/v1/sessions/tokens": {
+          const body = JSON.parse(await readBody(req)) as { scope: "read" | "write" };
+          sendJson(
+            201,
+            JSON.stringify({ token: `${body.scope}-tok`, scope: body.scope, expires_at: 1700604800 }),
+          );
+          return;
+        }
         default:
           sendJson(404, '{"message":"not found"}');
       }
@@ -195,10 +238,67 @@ describe("end-to-end flow against a mock server", () => {
 
     const active = await session.getActiveSessions();
     expect(active).toEqual([
-      { sessionId: "hash-1", createdAt: 1700000000, expiresAt: 1700604800 },
+      {
+        sessionId: "hash-1",
+        createdAt: 1700000000,
+        expiresAt: 1700604800,
+        origin: "login",
+        scope: "write",
+      },
     ]);
 
     await expect(session.revokeSession(active[0]!.sessionId)).resolves.toBeUndefined();
+  });
+
+  it("refreshes a session", async () => {
+    const session = await client.login({ username: "bot", password: "supersecret" });
+    await expect(session.refreshSession()).resolves.toEqual({ expiresAt: 1700604800 });
+  });
+
+  it("mints a read-scoped token and rejects trading with it, but a write-scoped one works", async () => {
+    const session = await client.login({ username: "bot", password: "supersecret" });
+
+    const readToken = await session.createToken(SessionScope.Read);
+    expect(readToken).toEqual({ token: "read-tok", scope: "read", expiresAt: 1700604800 });
+
+    const readSession = client.withToken(readToken.token);
+    const rejected = await readSession
+      .createOrders([
+        {
+          market: "ETH-USDT",
+          side: OrderSide.Buy,
+          type: OrderType.Limit,
+          timeInForce: TimeInForce.GoodTillCancel,
+          price: 1n,
+          quantity: 1n,
+        },
+      ])
+      .catch((e: unknown) => e);
+    expect(rejected).toBeInstanceOf(AuthenticationError);
+    expect((rejected as AuthenticationError).status).toBe(403);
+
+    const writeToken = await session.createToken(SessionScope.Write);
+    const writeSession = client.withToken(writeToken.token);
+    const { results } = await writeSession.createOrders([
+      {
+        market: "ETH-USDT",
+        side: OrderSide.Buy,
+        type: OrderType.Limit,
+        timeInForce: TimeInForce.GoodTillCancel,
+        price: 1n,
+        quantity: 1n,
+      },
+    ]);
+    expect(results[0]?.orderId).toBe("order-1");
+  });
+
+  it("a minted token cannot mint another token", async () => {
+    const session = await client.login({ username: "bot", password: "supersecret" });
+    const { token } = await session.createToken(SessionScope.Write);
+    const minted = client.withToken(token);
+    const rejected = await minted.createToken(SessionScope.Read).catch((e: unknown) => e);
+    expect(rejected).toBeInstanceOf(AuthenticationError);
+    expect((rejected as AuthenticationError).status).toBe(403);
   });
 
   it("surfaces a not-found order as an APIError(404)", async () => {

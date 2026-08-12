@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OrderSide, OrderType, TimeInForce } from "./index.js";
+import { OrderSide, OrderType, SessionOrigin, SessionScope, TimeInForce } from "./index.js";
 
 // These constants are the wire contract with the Go API. If a value changes
 // here without a matching API change, orders will be rejected — so pin them.
@@ -18,5 +18,13 @@ describe("wire enums", () => {
       ImmediateOrCancel: "ioc",
       FillOrKill: "fok",
     });
+  });
+
+  it("SessionOrigin values match the API", () => {
+    expect(SessionOrigin).toEqual({ Login: "login", Minted: "minted" });
+  });
+
+  it("SessionScope values match the API", () => {
+    expect(SessionScope).toEqual({ Read: "read", Write: "write" });
   });
 });

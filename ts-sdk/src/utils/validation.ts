@@ -6,8 +6,10 @@ import { ValidationError } from "../errors/index.js";
 import {
   OrderSide,
   OrderType,
+  SessionScope,
   TimeInForce,
   type CreateOrderParams,
+  type CreateTokenParams,
   type GetCandlesParams,
   type GetOrdersFilter,
   type LoginParams,
@@ -20,6 +22,7 @@ const MAX_BATCH_SIZE = 500;
 const ORDER_SIDES = new Set<string>(Object.values(OrderSide));
 const ORDER_TYPES = new Set<string>(Object.values(OrderType));
 const TIME_IN_FORCES = new Set<string>(Object.values(TimeInForce));
+const SESSION_SCOPES = new Set<string>(Object.values(SessionScope));
 const CLIENT_ORDER_ID_MIN = 32;
 const CLIENT_ORDER_ID_MAX = 64;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -53,6 +56,12 @@ export function validateOrderId(orderId: string): void {
 
 export function validateSessionId(sessionId: string): void {
   requireNonEmpty(sessionId, "sessionId");
+}
+
+export function validateCreateTokenParams(params: CreateTokenParams): void {
+  if (!SESSION_SCOPES.has(params.scope)) {
+    throw new ValidationError(`invalid session scope: ${String(params.scope)}`);
+  }
 }
 
 export function validateCreateOrderParams(params: CreateOrderParams): void {

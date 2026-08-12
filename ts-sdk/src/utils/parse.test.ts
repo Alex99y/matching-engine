@@ -206,9 +206,23 @@ describe("parseActiveSessions", () => {
   it("maps session fields", () => {
     expect(
       parseActiveSessions([
-        { session_id: "hash-1", created_at: 1700000000, expires_at: 1700604800 },
+        {
+          session_id: "hash-1",
+          created_at: 1700000000,
+          expires_at: 1700604800,
+          origin: "login",
+          scope: "write",
+        },
       ]),
-    ).toEqual([{ sessionId: "hash-1", createdAt: 1700000000, expiresAt: 1700604800 }]);
+    ).toEqual([
+      {
+        sessionId: "hash-1",
+        createdAt: 1700000000,
+        expiresAt: 1700604800,
+        origin: "login",
+        scope: "write",
+      },
+    ]);
   });
 
   it("throws ParseError when not an array", () => {
@@ -217,7 +231,17 @@ describe("parseActiveSessions", () => {
 
   it("throws ParseError when session_id is missing", () => {
     expect(() =>
-      parseActiveSessions([{ created_at: 1700000000, expires_at: 1700604800 }]),
+      parseActiveSessions([
+        { created_at: 1700000000, expires_at: 1700604800, origin: "login", scope: "write" },
+      ]),
+    ).toThrow(ParseError);
+  });
+
+  it("throws ParseError when origin is missing", () => {
+    expect(() =>
+      parseActiveSessions([
+        { session_id: "hash-1", created_at: 1700000000, expires_at: 1700604800, scope: "write" },
+      ]),
     ).toThrow(ParseError);
   });
 });

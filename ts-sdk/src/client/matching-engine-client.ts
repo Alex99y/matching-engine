@@ -117,6 +117,26 @@ export class MatchingEngineClient {
   }
 
   /**
+   * Build a session client from an existing bearer token — typically one
+   * minted via {@link AuthenticatedClient.createToken} and persisted by the
+   * caller (e.g. a bot's API key loaded from an environment variable) —
+   * skipping the login round trip entirely. The token is used as-is and not
+   * validated client-side; an invalid, expired, or revoked token surfaces as
+   * {@link AuthenticationError} on the first authenticated call.
+   *
+   * @throws {@link ValidationError} when `token` is empty.
+   * @example
+   * const session = client.withToken(process.env.BOT_API_KEY!);
+   * const balances = await session.getBalances();
+   */
+  withToken(token: string): AuthenticatedClient {
+    if (!token) {
+      throw new ValidationError("token is required");
+    }
+    return new AuthenticatedClient(this.transport, token);
+  }
+
+  /**
    * List all markets (trading pairs).
    *
    * @throws {@link APIError} on server-side failures.
