@@ -8,6 +8,7 @@ import (
 	"github.com/alex99y/matching-engine/api/internal/instruments"
 	"github.com/alex99y/matching-engine/api/internal/markets"
 	"github.com/alex99y/matching-engine/api/internal/metrics"
+	"github.com/alex99y/matching-engine/api/internal/openapi"
 	"github.com/alex99y/matching-engine/api/internal/orders"
 	"github.com/alex99y/matching-engine/api/internal/sessions"
 	"github.com/alex99y/matching-engine/api/internal/stream"
@@ -105,6 +106,7 @@ func NewServer(dependencies ServerDependencies) *Server {
 	// }))
 
 	app.Get("/health", healthcheck.New())
+	openapi.RegisterOpenAPIRoutes(app)
 	apiV1 := app.Group("/api/v1")
 	sessions.RegisterSessionRoutes(apiV1, dependencies.AuthMiddleware, dependencies.SessionsHandler)
 	users.RegisterUserRoutes(apiV1, dependencies.AuthMiddleware, dependencies.UsersHandler)
