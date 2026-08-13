@@ -105,7 +105,10 @@ func (a *ackRecorder) counts() (int, int) {
 }
 
 func testMarket() *repository.Market {
-	return &repository.Market{ID: 1, BaseSymbol: "BTC", QuoteSymbol: "USDT", BaseInstrumentID: 10, QuoteInstrumentID: 20}
+	// BaseScale: 1 == decimals=0, so quoteAmount's price*qty/BaseScale stays unscaled —
+	// matches production, which always populates this from GetMarket (see
+	// db/pkg/repository/markets.go); a zero-value Market here divides by zero.
+	return &repository.Market{ID: 1, BaseSymbol: "BTC", QuoteSymbol: "USDT", BaseInstrumentID: 10, QuoteInstrumentID: 20, BaseScale: 1}
 }
 
 func limitBuy() *oeq.OpenOrderEvent {

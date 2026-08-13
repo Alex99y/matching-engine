@@ -20,6 +20,7 @@ func testBook() *OrderBook {
 		ID:                1,
 		BaseInstrumentID:  baseInstr,
 		QuoteInstrumentID: quoteInstr,
+		BaseScale:         1, // decimals=0: every quantity below is unscaled, matches quoteAmt comments
 	})
 }
 
@@ -208,6 +209,7 @@ func TestTakerMakerFees(t *testing.T) {
 		QuoteInstrumentID: quoteInstr,
 		TakerFeeBps:       10, // 0.10%
 		MakerFeeBps:       5,  // 0.05%
+		BaseScale:         1, // decimals=0, matches the quoteAmt comment below
 	})
 	seller := uuid.New() // resting maker (sell)
 	buyer := uuid.New()  // incoming taker (buy)
