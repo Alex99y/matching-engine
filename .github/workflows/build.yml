@@ -24,7 +24,7 @@ on:
 
 jobs:
   build:
-    name: Build (${{ matrix.module }})
+    name: Build & Test (${{ matrix.module }})
     runs-on: ubuntu-latest
 
     strategy:
@@ -44,3 +44,7 @@ jobs:
       - name: Build
         working-directory: ${{ matrix.module }}
         run: go build ./...
+
+      - name: Test
+        working-directory: ${{ matrix.module }}
+        run: go test ./...
