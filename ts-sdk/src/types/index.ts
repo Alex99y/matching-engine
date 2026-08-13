@@ -169,10 +169,46 @@ export interface Balance {
   readonly name: string;
   readonly symbol: string;
   readonly decimals: number;
-  /** Available (unlocked) amount. uint64. */
+  /** Tradeable amount (excludes blocked and frozen). uint64. */
   readonly balance: bigint;
-  /** Amount currently locked in open orders. uint64. */
+  /** Amount currently locked in the user's own open orders. uint64. */
   readonly blocked: bigint;
+  /** Amount frozen by an admin; unavailable for trading or withdrawal. uint64. */
+  readonly frozen: bigint;
+}
+
+export const OperationType = {
+  Deposit: "deposit",
+  Withdraw: "withdraw",
+  Freeze: "freeze",
+  Unfreeze: "unfreeze",
+} as const;
+export type OperationType = (typeof OperationType)[keyof typeof OperationType];
+
+/**
+ * A single deposit/withdraw/freeze/unfreeze applied to the user's balance.
+ * These are only ever written by an admin via the CLI — there is no
+ * user-facing way to create one.
+ */
+export interface Operation {
+  readonly id: string;
+  readonly symbol: string;
+  /** Always positive; {@link type} conveys direction. uint64. */
+  readonly amount: bigint;
+  readonly type: OperationType;
+  /** Optional operator note. Absent when none was given. */
+  readonly reason?: string;
+  /** Unix seconds. */
+  readonly createdAt: number;
+}
+
+export interface GetUserOperationsFilter {
+  /** YYYY-MM-DD (inclusive lower bound). */
+  readonly startDate?: string;
+  /** YYYY-MM-DD (exclusive upper bound: returns operations where createdAt < endDate). */
+  readonly endDate?: string;
+  /** 1-100. The API defaults to 100 when omitted. */
+  readonly limit?: number;
 }
 
 // ---- Stream event types ----

@@ -1,12 +1,22 @@
-// Users resource: register (public) and balance query (authenticated).
+// Users resource: register (public), balance query, and operation history
+// (both authenticated).
 
 import type { Transport } from "../http/transport.js";
-import type { Balance, RegisterParams } from "../types/index.js";
-import { parseBalances } from "../utils/parse.js";
-import { validateRegisterParams } from "../utils/validation.js";
+import type {
+  Balance,
+  GetUserOperationsFilter,
+  Operation,
+  RegisterParams,
+} from "../types/index.js";
+import { parseBalances, parseOperations } from "../utils/parse.js";
+import {
+  validateGetUserOperationsFilter,
+  validateRegisterParams,
+} from "../utils/validation.js";
 
 const REGISTER_PATH = "/api/v1/users/register";
 const BALANCES_PATH = "/api/v1/users/balances";
+const OPERATIONS_PATH = "/api/v1/users/operations";
 
 export async function register(
   transport: Transport,
@@ -29,4 +39,25 @@ export async function getBalances(
 ): Promise<Balance[]> {
   const raw = await transport.request<unknown>("GET", BALANCES_PATH, { token });
   return parseBalances(raw);
+}
+
+/** Returns the authenticated user's deposit/withdraw/freeze/unfreeze history. */
+export async function getOperations(
+  transport: Transport,
+  token: string,
+  filter: GetUserOperationsFilter = {},
+): Promise<Operation[]> {
+  validateGetUserOperationsFilter(filter);
+
+  const query: Record<string, string | number | undefined> = {
+    start_date: filter.startDate,
+    end_date: filter.endDate,
+    limit: filter.limit,
+  };
+
+  const raw = await transport.request<unknown>("GET", OPERATIONS_PATH, {
+    query,
+    token,
+  });
+  return parseOperations(raw);
 }

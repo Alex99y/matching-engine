@@ -21,6 +21,8 @@ export const BIGINT_WIRE_FIELDS: ReadonlySet<string> = new Set([
   "remaining_want",
   "balance",
   "blocked",
+  "frozen",
+  "amount",
 ]);
 
 // V8 (Node 21.7+, all of Node 22) passes a third `context` argument to the

@@ -10,6 +10,8 @@ import type {
   CreateOrderParams,
   CreateTokenResult,
   GetOrdersFilter,
+  GetUserOperationsFilter,
+  Operation,
   Order,
   RefreshSessionResult,
   Session,
@@ -128,6 +130,23 @@ export class AuthenticatedClient {
    */
   async getBalances(): Promise<Balance[]> {
     return users.getBalances(this.transport, this.token);
+  }
+
+  /**
+   * List the authenticated user's deposit/withdraw/freeze/unfreeze history,
+   * newest first. These rows are only ever written by an admin via the CLI
+   * (`cli user balance add|remove|freeze|unfreeze`) — there is no way to
+   * create one through this SDK.
+   *
+   * @param filter - Optional date range and limit (see {@link GetUserOperationsFilter}).
+   * @throws {@link ValidationError} when `limit` is out of 1-100 or dates are malformed.
+   * @throws {@link APIError} on server-side failures.
+   * @example
+   * const recent = await session.getOperations({ limit: 20 });
+   * for (const op of recent) console.log(op.type, op.symbol, op.amount);
+   */
+  async getOperations(filter: GetUserOperationsFilter = {}): Promise<Operation[]> {
+    return users.getOperations(this.transport, this.token, filter);
   }
 
   /**

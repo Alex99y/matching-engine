@@ -5,6 +5,7 @@ import {
   validateCreateOrderParams,
   validateCreateTokenParams,
   validateGetOrdersFilter,
+  validateGetUserOperationsFilter,
   validateLoginParams,
   validateOrderId,
   validateRegisterParams,
@@ -137,6 +138,33 @@ describe("validateGetOrdersFilter", () => {
   it("accepts well-formed dates and limit", () => {
     expect(() =>
       validateGetOrdersFilter({ startDate: "2026-01-01", endDate: "2026-02-01", limit: 50 }),
+    ).not.toThrow();
+  });
+});
+
+describe("validateGetUserOperationsFilter", () => {
+  it("passes an empty filter", () => {
+    expect(() => validateGetUserOperationsFilter({})).not.toThrow();
+  });
+
+  it.each([0, 101, 1.5])("throws on invalid limit %s", (limit) => {
+    expect(() => validateGetUserOperationsFilter({ limit })).toThrow(ValidationError);
+  });
+
+  it("throws on malformed dates", () => {
+    expect(() => validateGetUserOperationsFilter({ startDate: "2026/01/01" })).toThrow(
+      ValidationError,
+    );
+    expect(() => validateGetUserOperationsFilter({ endDate: "bad" })).toThrow(ValidationError);
+  });
+
+  it("accepts well-formed dates and limit", () => {
+    expect(() =>
+      validateGetUserOperationsFilter({
+        startDate: "2026-01-01",
+        endDate: "2026-02-01",
+        limit: 50,
+      }),
     ).not.toThrow();
   });
 });

@@ -54,6 +54,7 @@ function startServer(): Promise<Server> {
       const isPrivate =
         url.pathname.startsWith("/api/v1/order") ||
         url.pathname === "/api/v1/users/balances" ||
+        url.pathname === "/api/v1/users/operations" ||
         url.pathname === "/api/v1/stream/users" ||
         url.pathname === "/api/v1/sessions/active" ||
         url.pathname === "/api/v1/sessions/refresh" ||
@@ -138,7 +139,13 @@ function startServer(): Promise<Server> {
         case "GET /api/v1/users/balances":
           sendJson(
             200,
-            '[{"name":"Ether","symbol":"ETH","decimals":18,"balance":5000000000000000000,"blocked":1000000000000000000}]',
+            '[{"name":"Ether","symbol":"ETH","decimals":18,"balance":5000000000000000000,"blocked":1000000000000000000,"frozen":0}]',
+          );
+          return;
+        case "GET /api/v1/users/operations":
+          sendJson(
+            200,
+            '[{"id":"op-1","symbol":"ETH","amount":1000000000000000000,"type":"deposit","created_at":1700000000}]',
           );
           return;
         case "DELETE /api/v1/sessions":
@@ -229,6 +236,11 @@ describe("end-to-end flow against a mock server", () => {
     expect(balances[0]?.symbol).toBe("ETH");
     expect(balances[0]?.balance).toBe(5000000000000000000n);
     expect(balances[0]?.blocked).toBe(1000000000000000000n);
+    expect(balances[0]?.frozen).toBe(0n);
+
+    const operations = await session.getOperations({ limit: 10 });
+    expect(operations[0]?.type).toBe("deposit");
+    expect(operations[0]?.amount).toBe(1000000000000000000n);
 
     await expect(session.logout()).resolves.toBeUndefined();
   });

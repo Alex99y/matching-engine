@@ -4,6 +4,17 @@
 
 ### Added
 
+- `AuthenticatedClient.getOperations(filter?)` — list the authenticated user's
+  deposit/withdraw/freeze/unfreeze history, newest first (`GET /api/v1/users/operations`).
+  These rows are only ever written by an admin via the CLI
+  (`cli user balance add|remove|freeze|unfreeze`); there is no way to create one through
+  this SDK. `filter` accepts `startDate`/`endDate` (`YYYY-MM-DD`, end exclusive) and
+  `limit` (1-100, defaults to 100 server-side). Returns `Operation[]`.
+- New exported types: `Operation` (`id`, `symbol`, `amount`, `type`, `reason?`,
+  `createdAt`), `OperationType` const object (`Deposit`, `Withdraw`, `Freeze`,
+  `Unfreeze`), `GetUserOperationsFilter`.
+- `validateGetUserOperationsFilter` client-side guard (same `limit`/date rules as
+  `validateGetOrdersFilter`).
 - `AuthenticatedClient.refreshSession()` — extends the current session's expiry by the
   server's standard TTL (`POST /api/v1/sessions/refresh`), up to an absolute age cap
   enforced server-side. The bearer token value never changes, so there is nothing to
@@ -28,16 +39,20 @@
 
 ### Changed
 
+- `Balance` gained a required `frozen: bigint` field — the amount an admin has frozen
+  via the CLI, excluded from both `balance` (tradeable) and `blocked` (locked in the
+  user's own open orders).
 - `AuthenticatedClient.revokeSession(sessionId)` now throws `AuthenticationError` (403)
   when called from a minted (non-login) token — a minted token can revoke itself (via
   `logout()`) but never another session.
 - `AuthenticatedClient.createOrders()` / `cancelOrders()` now throw
   `AuthenticationError` (403) when called from a read-scoped session.
 
-> **Breaking change:** `Session` gained two required fields (`origin`, `scope`). Code
-> that constructs a literal `Session`-typed value (not just reads one returned by
-> `getActiveSessions()`) needs updating. Folded into this release's existing major
-> bump (see the `createOrder`/`cancelOrder` removal below).
+> **Breaking change:** `Session` gained two required fields (`origin`, `scope`), and
+> `Balance` gained a required `frozen` field. Code that constructs a literal
+> `Session`- or `Balance`-typed value (not just reads one returned by the API) needs
+> updating. Folded into this release's existing major bump (see the
+> `createOrder`/`cancelOrder` removal below).
 
 ### Added
 

@@ -18,6 +18,7 @@ export {
 
 export {
   CandleInterval,
+  OperationType,
   OrderSide,
   OrderStatus,
   OrderType,
@@ -46,12 +47,14 @@ export type {
   GetCandlesParams,
   GetCandlesResponse,
   GetOrdersFilter,
+  GetUserOperationsFilter,
   HeartbeatMessage,
   Instrument,
   LoginParams,
   Market,
   MarketStreamOptions,
   OpenOrder,
+  Operation,
   Order,
   OrderMessage,
   RefreshSessionResult,

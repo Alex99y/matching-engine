@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ParseError, ValidationError } from "../errors/index.js";
 import type { Transport } from "../http/transport.js";
-import { getBalances, register } from "./users.js";
+import { getBalances, getOperations, register } from "./users.js";
 
 function stubTransport(result: unknown = undefined) {
   const request = vi.fn().mockResolvedValue(result);
@@ -33,6 +33,7 @@ describe("users.getBalances", () => {
     decimals: 18,
     balance: 5000000000000000000n,
     blocked: 1000000000000000000n,
+    frozen: 0n,
   };
 
   it("returns parsed balances", async () => {
@@ -58,6 +59,60 @@ describe("users.getBalances", () => {
   it("returns an empty array when the server sends []", async () => {
     const { transport } = stubTransport([]);
     await expect(getBalances(transport, "tok")).resolves.toEqual([]);
+  });
+});
+
+describe("users.getOperations", () => {
+  const operationRow = {
+    id: "0190f...",
+    symbol: "ETH",
+    amount: 1000000000000000000n,
+    type: "freeze",
+    reason: "KYC hold",
+    created_at: 1700000000,
+  };
+
+  it("returns parsed operations, reason included", async () => {
+    const { transport } = stubTransport([operationRow]);
+    const result = await getOperations(transport, "tok");
+    expect(result).toHaveLength(1);
+    expect(result[0]?.type).toBe("freeze");
+    expect(result[0]?.amount).toBe(1000000000000000000n);
+    expect(result[0]?.reason).toBe("KYC hold");
+  });
+
+  it("omits reason when the server didn't send one", async () => {
+    const { reason: _reason, ...withoutReason } = operationRow;
+    const { transport } = stubTransport([withoutReason]);
+    const result = await getOperations(transport, "tok");
+    expect(result[0]?.reason).toBeUndefined();
+  });
+
+  it("forwards the bearer token and query filters", async () => {
+    const { transport, request } = stubTransport([operationRow]);
+    await getOperations(transport, "my-token", { startDate: "2026-01-01", limit: 50 });
+    expect(request).toHaveBeenCalledWith("GET", "/api/v1/users/operations", {
+      token: "my-token",
+      query: { start_date: "2026-01-01", end_date: undefined, limit: 50 },
+    });
+  });
+
+  it("validates the filter before calling the API", async () => {
+    const { transport, request } = stubTransport();
+    await expect(getOperations(transport, "tok", { limit: 0 })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("throws ParseError when an operation entry is malformed", async () => {
+    const { transport } = stubTransport([{ id: "op1" }]);
+    await expect(getOperations(transport, "tok")).rejects.toBeInstanceOf(ParseError);
+  });
+
+  it("returns an empty array when the server sends []", async () => {
+    const { transport } = stubTransport([]);
+    await expect(getOperations(transport, "tok")).resolves.toEqual([]);
   });
 });
 

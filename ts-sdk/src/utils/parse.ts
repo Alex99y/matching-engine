@@ -24,6 +24,8 @@ import type {
   Instrument,
   Market,
   OpenOrder,
+  Operation,
+  OperationType,
   Order,
   OrderMessage,
   RefreshSessionResult,
@@ -356,11 +358,37 @@ function parseBalance(raw: unknown): Balance {
     decimals: reqNumber(o, "decimals"),
     balance: reqBigInt(o, "balance"),
     blocked: reqBigInt(o, "blocked"),
+    frozen: reqBigInt(o, "frozen"),
   };
 }
 
 export function parseBalances(raw: unknown): Balance[] {
   return asArray(raw, "balances").map(parseBalance);
+}
+
+function parseOperation(raw: unknown): Operation {
+  const o = asRecord(raw, "operation");
+  const operation: {
+    id: string;
+    symbol: string;
+    amount: bigint;
+    type: OperationType;
+    reason?: string;
+    createdAt: number;
+  } = {
+    id: reqString(o, "id"),
+    symbol: reqString(o, "symbol"),
+    amount: reqBigInt(o, "amount"),
+    type: reqString(o, "type") as OperationType,
+    createdAt: reqNumber(o, "created_at"),
+  };
+  const reason = optString(o, "reason");
+  if (reason !== undefined) operation.reason = reason;
+  return operation;
+}
+
+export function parseOperations(raw: unknown): Operation[] {
+  return asArray(raw, "operations").map(parseOperation);
 }
 
 // ---- Candle parsers ----

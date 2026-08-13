@@ -55,13 +55,27 @@ describe("AuthenticatedClient", () => {
 
   it("getBalances returns parsed balances and forwards the token", async () => {
     const { session, request } = client([
-      { name: "Ether", symbol: "ETH", decimals: 18, balance: 3n, blocked: 1n },
+      { name: "Ether", symbol: "ETH", decimals: 18, balance: 3n, blocked: 1n, frozen: 0n },
     ]);
     const balances = await session.getBalances();
     expect(balances).toHaveLength(1);
     expect(balances[0]?.symbol).toBe("ETH");
     expect(balances[0]?.balance).toBe(3n);
     expect(request.mock.calls[0]?.[2]?.token).toBe("tok");
+  });
+
+  it("getOperations returns mapped operations and forwards the token", async () => {
+    const { session, request } = client([
+      { id: "op1", symbol: "ETH", amount: 5n, type: "deposit", created_at: 1700000000 },
+    ]);
+    const operations = await session.getOperations({ limit: 20 });
+    expect(operations).toHaveLength(1);
+    expect(operations[0]?.type).toBe("deposit");
+    expect(operations[0]?.amount).toBe(5n);
+    expect(request).toHaveBeenCalledWith("GET", "/api/v1/users/operations", {
+      token: "tok",
+      query: { start_date: undefined, end_date: undefined, limit: 20 },
+    });
   });
 
   it("cancelOrders sends DELETE with order_ids body and forwards the token", async () => {
