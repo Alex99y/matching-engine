@@ -206,6 +206,45 @@ paths:
                 items: { $ref: "#/components/schemas/BalanceResponse" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /users/operations:
+    get:
+      operationId: getUserOperations
+      summary: List the calling user's balance-affecting operations
+      description: >-
+        Deposits, withdrawals, and freezes/unfreezes applied to the calling
+        user's balances, newest first. These rows are only ever written by
+        an admin via the CLI (`cli user balance add|remove|freeze|unfreeze`)
+        — there is no user-facing way to create one.
+      tags: [users]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: start_date
+          in: query
+          description: "Format: YYYY-MM-DD."
+          schema: { type: string, format: date }
+        - name: end_date
+          in: query
+          description: "Format: YYYY-MM-DD."
+          schema: { type: string, format: date }
+        - name: limit
+          in: query
+          description: Must be between 1 and 100. Defaults to 100.
+          schema: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: Operations for the authenticated user.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/OperationResponse" }
+        "400":
+          description: Invalid start_date, end_date, or limit.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /instruments:
     get:
       operationId: getInstruments
@@ -688,9 +727,22 @@ components:
         name: { type: string }
         symbol: { type: string }
         decimals: { type: integer, format: int32 }
-        balance: { type: integer, format: int64 }
-        blocked: { type: integer, format: int64 }
-      required: [name, symbol, decimals, balance, blocked]
+        balance: { type: integer, format: int64, description: Tradeable balance (excludes blocked and frozen). }
+        blocked: { type: integer, format: int64, description: Reserved by the calling user's own open orders. }
+        frozen: { type: integer, format: int64, description: Admin-frozen via the CLI; unavailable for trading or withdrawal. }
+      required: [name, symbol, decimals, balance, blocked, frozen]
+
+    OperationResponse:
+      type: object
+      description: A single deposit/withdraw/freeze/unfreeze applied to the calling user's balance.
+      properties:
+        id: { type: string, format: uuid }
+        symbol: { type: string }
+        amount: { type: integer, format: int64, minimum: 0, description: Always positive; type conveys direction. }
+        type: { type: string, enum: [deposit, withdraw, freeze, unfreeze] }
+        reason: { type: string, description: Optional operator note. Absent when none was given. }
+        created_at: { type: integer, format: int64, description: unix seconds }
+      required: [id, symbol, amount, type, created_at]
 
     GetInstrumentResponse:
       type: object
