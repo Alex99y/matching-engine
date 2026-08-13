@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alex99y/matching-engine/db/pkg/postgres"
+	dbutils "github.com/alex99y/matching-engine/db/pkg/utils"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
@@ -203,17 +204,11 @@ type MatchFunc func(fundedOrderIDs []uuid.UUID) (*BatchResult, error)
 // the batch's messages.
 func (o *OrderRepository) ProcessBatch(ctx context.Context, incoming []IncomingOrder, match MatchFunc) (outErr error) {
 	defer o.metrics.ObserveQuery("process_batch", time.Now(), &outErr)
-	tx, err := o.psql.BeginTx(ctx, nil)
+	tx, rollback, err := dbutils.BeginTx(ctx, o.psql, o.logger, "ProcessBatch")
 	if err != nil {
-		o.logger.Error("ProcessBatch: begin tx: " + err.Error())
 		return fmt.Errorf("process batch: %w: %w", ErrBatchBegin, err)
 	}
-	// Safe no-op after a successful Commit; rolls back on any early return.
-	defer func() {
-		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
-			o.logger.Error("ProcessBatch: rollback failed: " + rbErr.Error())
-		}
-	}()
+	defer rollback()
 
 	// Phase 1a — idempotency. Orders already present were committed by a prior batch
 	// (e.g. redelivered after a commit-ambiguous failure); never match or persist them again.

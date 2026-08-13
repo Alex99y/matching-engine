@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/db/pkg/postgres"
+	dbutils "github.com/alex99y/matching-engine/db/pkg/utils"
 	"github.com/google/uuid"
 )
 
@@ -28,9 +31,21 @@ var (
 	ErrGetBalancesFailed     = errors.New("failed to get user balances")
 	ErrUpdateBalanceFailed   = errors.New("failed to update user balance")
 	ErrInsufficientBalance   = errors.New("insufficient balance")
+	ErrInsufficientFrozen    = errors.New("insufficient frozen balance")
+	ErrOperationTxBegin      = errors.New("begin user operation transaction failed")
+	ErrOperationTxCommit     = errors.New("commit user operation transaction failed")
+	ErrOperationInsertFailed = errors.New("failed to insert user operation")
+	ErrGetOperationsFailed   = errors.New("failed to get user operations")
 )
 
 const UserUniqueConstraintName = "users_username_uk"
+
+const (
+	OperationTypeDeposit  = "deposit"
+	OperationTypeWithdraw = "withdraw"
+	OperationTypeFreeze   = "freeze"
+	OperationTypeUnfreeze = "unfreeze"
+)
 
 func (r *UserRepository) InsertUser(
 	ctx context.Context,
@@ -107,6 +122,7 @@ type UserBalance struct {
 	InstrumentDecimals int
 	Balance            int64
 	Blocked            int64
+	Frozen             int64
 }
 
 func (r *UserRepository) GetUserBalances(ctx context.Context, userID uuid.UUID) ([]UserBalance, error) {
@@ -116,7 +132,8 @@ func (r *UserRepository) GetUserBalances(ctx context.Context, userID uuid.UUID) 
 			i.symbol,
 			i.decimals,
 			ub.balance,
-			ub.blocked
+			ub.blocked,
+			ub.frozen
 		FROM user_balances ub
 		JOIN instruments i ON i.id = ub.instrument_id
 		WHERE ub.user_id = $1
@@ -133,7 +150,7 @@ func (r *UserRepository) GetUserBalances(ctx context.Context, userID uuid.UUID) 
 	var balances []UserBalance
 	for rows.Next() {
 		var b UserBalance
-		if err := rows.Scan(&b.InstrumentName, &b.InstrumentSymbol, &b.InstrumentDecimals, &b.Balance, &b.Blocked); err != nil {
+		if err := rows.Scan(&b.InstrumentName, &b.InstrumentSymbol, &b.InstrumentDecimals, &b.Balance, &b.Blocked, &b.Frozen); err != nil {
 			r.logger.Error("error scanning user balance")
 			r.logger.ErrorO(err)
 			return nil, fmt.Errorf("%s %w", error_prefix, ErrGetBalancesFailed)
@@ -149,29 +166,70 @@ func (r *UserRepository) GetUserBalances(ctx context.Context, userID uuid.UUID) 
 	return balances, nil
 }
 
-func (r *UserRepository) AddUserBalance(ctx context.Context, userID uuid.UUID, instrumentID int, amount int64) error {
-	query := `
+func insertUserOperation(
+	ctx context.Context,
+	tx *sql.Tx,
+	userID uuid.UUID,
+	instrumentID int,
+	amount int64,
+	opType string,
+	reason *string,
+) error {
+	const query = `
+		INSERT INTO user_operations (user_id, instrument_id, amount, type, reason)
+		VALUES ($1, $2, $3, $4, $5)
+	`
+	if _, err := tx.ExecContext(ctx, query, userID, instrumentID, amount, opType, reason); err != nil {
+		return fmt.Errorf("insert user operation: %w", err)
+	}
+	return nil
+}
+
+func (r *UserRepository) AddUserBalance(ctx context.Context, userID uuid.UUID, instrumentID int, amount int64, reason *string) error {
+	tx, rollback, err := dbutils.BeginTx(ctx, r.psql, r.logger, "AddUserBalance")
+	if err != nil {
+		return fmt.Errorf("%s %w: %w", error_prefix, ErrOperationTxBegin, err)
+	}
+	defer rollback()
+
+	const query = `
 		INSERT INTO user_balances (user_id, instrument_id, balance)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (user_id, instrument_id)
 		DO UPDATE SET balance = user_balances.balance + EXCLUDED.balance
 	`
-	_, err := r.psql.ExecContext(ctx, query, userID, instrumentID, amount)
-	if err != nil {
+	if _, err := tx.ExecContext(ctx, query, userID, instrumentID, amount); err != nil {
 		r.logger.Error("error adding user balance")
 		r.logger.ErrorO(err)
 		return fmt.Errorf("%s %w", error_prefix, ErrUpdateBalanceFailed)
 	}
+
+	if err := insertUserOperation(ctx, tx, userID, instrumentID, amount, OperationTypeDeposit, reason); err != nil {
+		r.logger.Error("error inserting deposit operation")
+		r.logger.ErrorO(err)
+		return fmt.Errorf("%s %w", error_prefix, ErrOperationInsertFailed)
+	}
+
+	if err := tx.Commit(); err != nil {
+		r.logger.Error("AddUserBalance: commit: " + err.Error())
+		return fmt.Errorf("%s %w: %w", error_prefix, ErrOperationTxCommit, err)
+	}
 	return nil
 }
 
-func (r *UserRepository) RemoveUserBalance(ctx context.Context, userID uuid.UUID, instrumentID int, amount int64) error {
-	query := `
+func (r *UserRepository) RemoveUserBalance(ctx context.Context, userID uuid.UUID, instrumentID int, amount int64, reason *string) error {
+	tx, rollback, err := dbutils.BeginTx(ctx, r.psql, r.logger, "RemoveUserBalance")
+	if err != nil {
+		return fmt.Errorf("%s %w: %w", error_prefix, ErrOperationTxBegin, err)
+	}
+	defer rollback()
+
+	const query = `
 		UPDATE user_balances
 		SET balance = balance - $3
 		WHERE user_id = $1 AND instrument_id = $2 AND balance >= $3
 	`
-	result, err := r.psql.ExecContext(ctx, query, userID, instrumentID, amount)
+	result, err := tx.ExecContext(ctx, query, userID, instrumentID, amount)
 	if err != nil {
 		r.logger.Error("error removing user balance")
 		r.logger.ErrorO(err)
@@ -186,7 +244,177 @@ func (r *UserRepository) RemoveUserBalance(ctx context.Context, userID uuid.UUID
 	if rows == 0 {
 		return fmt.Errorf("%s %w", error_prefix, ErrInsufficientBalance)
 	}
+
+	if err := insertUserOperation(ctx, tx, userID, instrumentID, amount, OperationTypeWithdraw, reason); err != nil {
+		r.logger.Error("error inserting withdraw operation")
+		r.logger.ErrorO(err)
+		return fmt.Errorf("%s %w", error_prefix, ErrOperationInsertFailed)
+	}
+
+	if err := tx.Commit(); err != nil {
+		r.logger.Error("RemoveUserBalance: commit: " + err.Error())
+		return fmt.Errorf("%s %w: %w", error_prefix, ErrOperationTxCommit, err)
+	}
 	return nil
+}
+
+func (r *UserRepository) FreezeUserBalance(ctx context.Context, userID uuid.UUID, instrumentID int, amount int64, reason *string) error {
+	tx, rollback, err := dbutils.BeginTx(ctx, r.psql, r.logger, "FreezeUserBalance")
+	if err != nil {
+		return fmt.Errorf("%s %w: %w", error_prefix, ErrOperationTxBegin, err)
+	}
+	defer rollback()
+
+	const query = `
+		UPDATE user_balances
+		SET balance = balance - $3, frozen = frozen + $3
+		WHERE user_id = $1 AND instrument_id = $2 AND balance >= $3
+	`
+	result, err := tx.ExecContext(ctx, query, userID, instrumentID, amount)
+	if err != nil {
+		r.logger.Error("error freezing user balance")
+		r.logger.ErrorO(err)
+		return fmt.Errorf("%s %w", error_prefix, ErrUpdateBalanceFailed)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		r.logger.Error("error checking rows affected when freezing balance")
+		r.logger.ErrorO(err)
+		return fmt.Errorf("%s %w", error_prefix, ErrUpdateBalanceFailed)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%s %w", error_prefix, ErrInsufficientBalance)
+	}
+
+	if err := insertUserOperation(ctx, tx, userID, instrumentID, amount, OperationTypeFreeze, reason); err != nil {
+		r.logger.Error("error inserting freeze operation")
+		r.logger.ErrorO(err)
+		return fmt.Errorf("%s %w", error_prefix, ErrOperationInsertFailed)
+	}
+
+	if err := tx.Commit(); err != nil {
+		r.logger.Error("FreezeUserBalance: commit: " + err.Error())
+		return fmt.Errorf("%s %w: %w", error_prefix, ErrOperationTxCommit, err)
+	}
+	return nil
+}
+
+func (r *UserRepository) UnfreezeUserBalance(ctx context.Context, userID uuid.UUID, instrumentID int, amount int64, reason *string) error {
+	tx, rollback, err := dbutils.BeginTx(ctx, r.psql, r.logger, "UnfreezeUserBalance")
+	if err != nil {
+		return fmt.Errorf("%s %w: %w", error_prefix, ErrOperationTxBegin, err)
+	}
+	defer rollback()
+
+	const query = `
+		UPDATE user_balances
+		SET balance = balance + $3, frozen = frozen - $3
+		WHERE user_id = $1 AND instrument_id = $2 AND frozen >= $3
+	`
+	result, err := tx.ExecContext(ctx, query, userID, instrumentID, amount)
+	if err != nil {
+		r.logger.Error("error unfreezing user balance")
+		r.logger.ErrorO(err)
+		return fmt.Errorf("%s %w", error_prefix, ErrUpdateBalanceFailed)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		r.logger.Error("error checking rows affected when unfreezing balance")
+		r.logger.ErrorO(err)
+		return fmt.Errorf("%s %w", error_prefix, ErrUpdateBalanceFailed)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%s %w", error_prefix, ErrInsufficientFrozen)
+	}
+
+	if err := insertUserOperation(ctx, tx, userID, instrumentID, amount, OperationTypeUnfreeze, reason); err != nil {
+		r.logger.Error("error inserting unfreeze operation")
+		r.logger.ErrorO(err)
+		return fmt.Errorf("%s %w", error_prefix, ErrOperationInsertFailed)
+	}
+
+	if err := tx.Commit(); err != nil {
+		r.logger.Error("UnfreezeUserBalance: commit: " + err.Error())
+		return fmt.Errorf("%s %w: %w", error_prefix, ErrOperationTxCommit, err)
+	}
+	return nil
+}
+
+type UserOperation struct {
+	ID                 uuid.UUID
+	InstrumentName     string
+	InstrumentSymbol   string
+	InstrumentDecimals int
+	Amount             int64
+	Type               string
+	Reason             *string
+	CreatedAt          int64
+}
+
+func (r *UserRepository) GetUserOperations(
+	ctx context.Context,
+	userID uuid.UUID,
+	startDate, endDate *time.Time,
+	limit int,
+) ([]UserOperation, error) {
+	var sb strings.Builder
+	sb.WriteString(`
+		SELECT
+			uo.id,
+			i.name,
+			i.symbol,
+			i.decimals,
+			uo.amount,
+			uo.type,
+			uo.reason,
+			uo.created_at
+		FROM user_operations uo
+		JOIN instruments i ON i.id = uo.instrument_id
+		WHERE uo.user_id = $1`)
+	args := []any{userID}
+
+	if startDate != nil {
+		args = append(args, *startDate)
+		sb.WriteString(fmt.Sprintf("\nAND uo.created_at >= $%d", len(args)))
+	}
+	if endDate != nil {
+		args = append(args, *endDate)
+		sb.WriteString(fmt.Sprintf("\nAND uo.created_at < $%d", len(args)))
+	}
+
+	args = append(args, limit)
+	sb.WriteString(fmt.Sprintf("\nORDER BY uo.created_at DESC\nLIMIT $%d", len(args)))
+
+	rows, err := r.psql.QueryContext(ctx, sb.String(), args...)
+	if err != nil {
+		r.logger.Error("error getting user operations")
+		r.logger.ErrorO(err)
+		return nil, fmt.Errorf("%s %w", error_prefix, ErrGetOperationsFailed)
+	}
+	defer rows.Close()
+
+	var operations []UserOperation
+	for rows.Next() {
+		var op UserOperation
+		var createdAt time.Time
+		if err := rows.Scan(
+			&op.ID, &op.InstrumentName, &op.InstrumentSymbol, &op.InstrumentDecimals,
+			&op.Amount, &op.Type, &op.Reason, &createdAt,
+		); err != nil {
+			r.logger.Error("error scanning user operation")
+			r.logger.ErrorO(err)
+			return nil, fmt.Errorf("%s %w", error_prefix, ErrGetOperationsFailed)
+		}
+		op.CreatedAt = createdAt.Unix()
+		operations = append(operations, op)
+	}
+	if err := rows.Err(); err != nil {
+		r.logger.Error("error iterating user operations")
+		r.logger.ErrorO(err)
+		return nil, fmt.Errorf("%s %w", error_prefix, ErrGetOperationsFailed)
+	}
+
+	return operations, nil
 }
 
 func NewUserRepository(logger *logger.Logger, psql *sql.DB) *UserRepository {

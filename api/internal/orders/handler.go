@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"time"
 
 	"github.com/alex99y/matching-engine/api/pkg/middleware"
 	"github.com/alex99y/matching-engine/api/pkg/utils"
@@ -147,21 +146,17 @@ func (o *OrderHandler) GetOrders(c fiber.Ctx) error {
 		ShowCancelledOrders: c.Query("show_cancelled") == "true",
 	}
 
-	if raw := c.Query("start_date"); raw != "" {
-		t, err := time.Parse("2006-01-02", raw)
-		if err != nil {
-			return utils.NewErrorResponse(c, fiber.StatusBadRequest, "invalid start_date, expected YYYY-MM-DD")
-		}
-		filter.StartDate = &t
+	startDate, err := utils.ParseDateQuery(c, "start_date")
+	if err != nil {
+		return utils.NewErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
+	filter.StartDate = startDate
 
-	if raw := c.Query("end_date"); raw != "" {
-		t, err := time.Parse("2006-01-02", raw)
-		if err != nil {
-			return utils.NewErrorResponse(c, fiber.StatusBadRequest, "invalid end_date, expected YYYY-MM-DD")
-		}
-		filter.EndDate = &t
+	endDate, err := utils.ParseDateQuery(c, "end_date")
+	if err != nil {
+		return utils.NewErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
+	filter.EndDate = endDate
 
 	if raw := c.Query("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)

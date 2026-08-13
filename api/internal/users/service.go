@@ -3,6 +3,7 @@ package users
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/alex99y/matching-engine/api/pkg/middleware"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
@@ -18,12 +19,23 @@ var (
 	ErrGettingUser      = repository.ErrUserGetFailed
 	ErrOnValidating     = errors.New("error validating credentials")
 	ErrGetBalances      = errors.New("error getting balances")
+	ErrGetOperations    = errors.New("error getting user operations")
+	ErrInvalidLimit     = errors.New("limit must be between 1 and 100")
 )
+
+const maxOperationsLimit = 100
+
+type GetUserOperationsFilter struct {
+	StartDate *time.Time
+	EndDate   *time.Time
+	Limit     int
+}
 
 type UserRepository interface {
 	InsertUser(ctx context.Context, username, email, passwordHash string) error
 	GetUserByUsername(ctx context.Context, username string) (*repository.User, error)
 	GetUserBalances(ctx context.Context, userID uuid.UUID) ([]repository.UserBalance, error)
+	GetUserOperations(ctx context.Context, userID uuid.UUID, startDate, endDate *time.Time, limit int) ([]repository.UserOperation, error)
 }
 
 type UserService struct {
@@ -98,6 +110,21 @@ func (u *UserService) GetUserBalances(ctx context.Context, userID uuid.UUID) ([]
 		return nil, ErrGetBalances
 	}
 	return balances, nil
+}
+
+func (u *UserService) GetUserOperations(ctx context.Context, userID uuid.UUID, filter GetUserOperationsFilter) ([]repository.UserOperation, error) {
+	limit := filter.Limit
+	if limit == 0 {
+		limit = maxOperationsLimit
+	} else if limit > maxOperationsLimit {
+		return nil, ErrInvalidLimit
+	}
+
+	operations, err := u.userRepository.GetUserOperations(ctx, userID, filter.StartDate, filter.EndDate, limit)
+	if err != nil {
+		return nil, ErrGetOperations
+	}
+	return operations, nil
 }
 
 func NewUserService(

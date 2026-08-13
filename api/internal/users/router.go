@@ -24,4 +24,9 @@ func RegisterUserRoutes(app fiber.Router, authMiddleware middleware.AuthMiddlewa
 		auth,
 		userHandler.GetBalance,
 	)
+	userGroup.Get(
+		"/operations",
+		auth,
+		userHandler.GetOperations,
+	)
 }

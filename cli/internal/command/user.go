@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/alex99y/matching-engine/common/pkg/utils"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
 )
 
@@ -33,6 +34,8 @@ func newUserBalanceCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newUserBalanceAddCmd())
 	cmd.AddCommand(newUserBalanceRemoveCmd())
+	cmd.AddCommand(newUserBalanceFreezeCmd())
+	cmd.AddCommand(newUserBalanceUnfreezeCmd())
 	return cmd
 }
 
@@ -41,6 +44,7 @@ func newUserBalanceAddCmd() *cobra.Command {
 		username   string
 		instrument string
 		amount     int64
+		reason     string
 	)
 
 	cmd := &cobra.Command{
@@ -79,7 +83,7 @@ func newUserBalanceAddCmd() *cobra.Command {
 				return err
 			}
 
-			if err := userRepo.AddUserBalance(ctx, user.ID, instr.ID, amount); err != nil {
+			if err := userRepo.AddUserBalance(ctx, user.ID, instr.ID, amount, utils.NilIfBlank(reason)); err != nil {
 				return err
 			}
 
@@ -91,6 +95,7 @@ func newUserBalanceAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&username, "username", "", "username of the user")
 	cmd.Flags().StringVar(&instrument, "instrument", "", "instrument symbol (e.g. BTC)")
 	cmd.Flags().Int64Var(&amount, "amount", 0, "amount to add (must be > 0)")
+	cmd.Flags().StringVar(&reason, "reason", "", "optional note recorded on the user_operations row")
 
 	return cmd
 }
@@ -100,6 +105,7 @@ func newUserBalanceRemoveCmd() *cobra.Command {
 		username   string
 		instrument string
 		amount     int64
+		reason     string
 	)
 
 	cmd := &cobra.Command{
@@ -138,7 +144,7 @@ func newUserBalanceRemoveCmd() *cobra.Command {
 				return err
 			}
 
-			if err := userRepo.RemoveUserBalance(ctx, user.ID, instr.ID, amount); err != nil {
+			if err := userRepo.RemoveUserBalance(ctx, user.ID, instr.ID, amount, utils.NilIfBlank(reason)); err != nil {
 				if errors.Is(err, repository.ErrInsufficientBalance) {
 					return fmt.Errorf("user %q does not have sufficient %s balance", username, instrument)
 				}
@@ -153,6 +159,135 @@ func newUserBalanceRemoveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&username, "username", "", "username of the user")
 	cmd.Flags().StringVar(&instrument, "instrument", "", "instrument symbol (e.g. BTC)")
 	cmd.Flags().Int64Var(&amount, "amount", 0, "amount to remove (must be > 0)")
+	cmd.Flags().StringVar(&reason, "reason", "", "optional note recorded on the user_operations row")
+
+	return cmd
+}
+
+func newUserBalanceFreezeCmd() *cobra.Command {
+	var (
+		username   string
+		instrument string
+		amount     int64
+		reason     string
+	)
+
+	cmd := &cobra.Command{
+		Use:     "freeze",
+		Short:   "Freeze balance for a user, moving it out of the tradeable balance",
+		Example: `  cli user balance freeze --instrument BTC --username alice --amount 100000 --reason "KYC hold"`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			username = strings.TrimSpace(username)
+			instrument = strings.ToUpper(strings.TrimSpace(instrument))
+
+			if username == "" {
+				return errUserBalanceUsernameRequired
+			}
+			if instrument == "" {
+				return errUserBalanceInstrumentRequired
+			}
+			if amount <= 0 {
+				return errUserBalanceAmountNonPositive
+			}
+
+			ctx := context.Background()
+
+			user, err := userRepo.GetUserByUsername(ctx, username)
+			if err != nil {
+				if errors.Is(err, repository.ErrUserNotFound) {
+					return fmt.Errorf("user %q not found", username)
+				}
+				return err
+			}
+
+			instr, err := instrumentRepo.GetInstrument(ctx, instrument)
+			if err != nil {
+				if errors.Is(err, repository.ErrInstrumentNotFound) {
+					return fmt.Errorf("instrument %q not found", instrument)
+				}
+				return err
+			}
+
+			if err := userRepo.FreezeUserBalance(ctx, user.ID, instr.ID, amount, utils.NilIfBlank(reason)); err != nil {
+				if errors.Is(err, repository.ErrInsufficientBalance) {
+					return fmt.Errorf("user %q does not have sufficient %s balance to freeze", username, instrument)
+				}
+				return err
+			}
+
+			fmt.Printf("froze %d of %s balance for user %s\n", amount, instrument, username)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&username, "username", "", "username of the user")
+	cmd.Flags().StringVar(&instrument, "instrument", "", "instrument symbol (e.g. BTC)")
+	cmd.Flags().Int64Var(&amount, "amount", 0, "amount to freeze (must be > 0)")
+	cmd.Flags().StringVar(&reason, "reason", "", "optional note recorded on the user_operations row")
+
+	return cmd
+}
+
+func newUserBalanceUnfreezeCmd() *cobra.Command {
+	var (
+		username   string
+		instrument string
+		amount     int64
+		reason     string
+	)
+
+	cmd := &cobra.Command{
+		Use:     "unfreeze",
+		Short:   "Unfreeze balance for a user, returning it to the tradeable balance",
+		Example: `  cli user balance unfreeze --instrument BTC --username alice --amount 100000 --reason "hold lifted"`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			username = strings.TrimSpace(username)
+			instrument = strings.ToUpper(strings.TrimSpace(instrument))
+
+			if username == "" {
+				return errUserBalanceUsernameRequired
+			}
+			if instrument == "" {
+				return errUserBalanceInstrumentRequired
+			}
+			if amount <= 0 {
+				return errUserBalanceAmountNonPositive
+			}
+
+			ctx := context.Background()
+
+			user, err := userRepo.GetUserByUsername(ctx, username)
+			if err != nil {
+				if errors.Is(err, repository.ErrUserNotFound) {
+					return fmt.Errorf("user %q not found", username)
+				}
+				return err
+			}
+
+			instr, err := instrumentRepo.GetInstrument(ctx, instrument)
+			if err != nil {
+				if errors.Is(err, repository.ErrInstrumentNotFound) {
+					return fmt.Errorf("instrument %q not found", instrument)
+				}
+				return err
+			}
+
+			if err := userRepo.UnfreezeUserBalance(ctx, user.ID, instr.ID, amount, utils.NilIfBlank(reason)); err != nil {
+				if errors.Is(err, repository.ErrInsufficientFrozen) {
+					return fmt.Errorf("user %q does not have sufficient frozen %s balance to unfreeze", username, instrument)
+				}
+				return err
+			}
+
+			fmt.Printf("unfroze %d of %s balance for user %s\n", amount, instrument, username)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&username, "username", "", "username of the user")
+	cmd.Flags().StringVar(&instrument, "instrument", "", "instrument symbol (e.g. BTC)")
+	cmd.Flags().Int64Var(&amount, "amount", 0, "amount to unfreeze (must be > 0)")
+	cmd.Flags().StringVar(&reason, "reason", "", "optional note recorded on the user_operations row")
 
 	return cmd
 }
