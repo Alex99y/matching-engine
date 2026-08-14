@@ -619,6 +619,41 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
 
+  /faucet:
+    post:
+      operationId: requestFaucetFunds
+      summary: Credit the calling user with a small amount of an instrument for testing
+      description: >-
+        Requires a write-scoped session. Sandbox/POC feature: there is no
+        rate limit and no lifetime cap, so it can be called as often as
+        desired to accumulate balance. Credits a fixed 1 whole unit of the
+        instrument (10^decimals) per call.
+      tags: [faucet]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: instrument
+          in: query
+          required: true
+          description: Instrument symbol, e.g. BTC.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Funds credited.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FaucetResponse" }
+        "400":
+          description: Missing instrument query param.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: Instrument not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -882,3 +917,10 @@ components:
           type: array
           items: { $ref: "#/components/schemas/CandleJSON" }
       required: [interval, candles]
+
+    FaucetResponse:
+      type: object
+      properties:
+        symbol: { type: string }
+        amount: { type: integer, format: int64, minimum: 0, description: "Amount credited, in the instrument's smallest unit." }
+      required: [symbol, amount]

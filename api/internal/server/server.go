@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/alex99y/matching-engine/api/internal/candles"
+	"github.com/alex99y/matching-engine/api/internal/faucet"
 	"github.com/alex99y/matching-engine/api/internal/instruments"
 	"github.com/alex99y/matching-engine/api/internal/markets"
 	"github.com/alex99y/matching-engine/api/internal/metrics"
@@ -33,6 +34,7 @@ type ServerDependencies struct {
 	OrdersHandler      *orders.OrderHandler
 	CandleHandler      *candles.CandleHandler
 	StreamHandler      *stream.StreamHandler
+	FaucetHandler      *faucet.FaucetHandler
 }
 
 type Server struct {
@@ -75,6 +77,9 @@ func NewServer(dependencies ServerDependencies) *Server {
 	if dependencies.StreamHandler == nil {
 		panic("stream handler cannot be nil")
 	}
+	if dependencies.FaucetHandler == nil {
+		panic("faucet handler cannot be nil")
+	}
 
 	app := fiber.New(fiber.Config{
 		StructValidator: validations.NewStructValidator(),
@@ -115,6 +120,7 @@ func NewServer(dependencies ServerDependencies) *Server {
 	orders.RegisterOrderRoutes(apiV1, dependencies.AuthMiddleware, dependencies.OrdersHandler)
 	candles.RegisterCandleRoutes(apiV1, dependencies.CandleHandler)
 	stream.RegisterStreamRoutes(apiV1, dependencies.AuthMiddleware, dependencies.StreamHandler)
+	faucet.RegisterFaucetRoutes(apiV1, dependencies.AuthMiddleware, dependencies.FaucetHandler)
 
 	return &Server{httpServer: app}
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/alex99y/matching-engine/api/internal/candles"
 	"github.com/alex99y/matching-engine/api/internal/config"
+	"github.com/alex99y/matching-engine/api/internal/faucet"
 	"github.com/alex99y/matching-engine/api/internal/instruments"
 	"github.com/alex99y/matching-engine/api/internal/markets"
 	"github.com/alex99y/matching-engine/api/internal/metrics"
@@ -84,6 +85,9 @@ func main() {
 	instrumentService := instruments.NewInstrumentService(log, instrumentRepository)
 	instrumentHandler := instruments.NewInstrumentHandler(log, instrumentService)
 
+	faucetService := faucet.NewFaucetService(log, instrumentRepository, userRepository)
+	faucetHandler := faucet.NewFaucetHandler(log, faucetService)
+
 	marketRepository := repository.NewMarketRepository(log, postgresqlClient)
 	marketService := markets.NewMarketService(log, marketRepository)
 	marketHandler := markets.NewMarketHandler(log, marketService)
@@ -140,6 +144,7 @@ func main() {
 		OrdersHandler:      orderHandler,
 		CandleHandler:      candleHandler,
 		StreamHandler:      streamHandler,
+		FaucetHandler:      faucetHandler,
 	})
 
 	serverErrCh := make(chan error, 1)
