@@ -44,6 +44,7 @@ export type {
   CreateOrderParams,
   CreateTokenParams,
   CreateTokenResult,
+  FaucetResult,
   GetCandlesParams,
   GetCandlesResponse,
   GetOrdersFilter,

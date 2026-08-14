@@ -1,4 +1,5 @@
 import type { Transport } from "../http/transport.js";
+import * as faucetResource from "../resources/faucet.js";
 import * as orders from "../resources/orders.js";
 import * as sessionsResource from "../resources/sessions.js";
 import * as streamResource from "../resources/stream.js";
@@ -9,6 +10,7 @@ import type {
   BatchCreateOrderResponse,
   CreateOrderParams,
   CreateTokenResult,
+  FaucetResult,
   GetOrdersFilter,
   GetUserOperationsFilter,
   Operation,
@@ -147,6 +149,23 @@ export class AuthenticatedClient {
    */
   async getOperations(filter: GetUserOperationsFilter = {}): Promise<Operation[]> {
     return users.getOperations(this.transport, this.token, filter);
+  }
+
+  /**
+   * Credit this session's user with a small, fixed amount of an instrument
+   * for testing. Sandbox/POC feature: the API applies no rate limit and no
+   * lifetime cap on this endpoint — call it as many times as needed to
+   * accumulate balance.
+   *
+   * @param instrument - Instrument symbol, e.g. "BTC".
+   * @throws {@link ValidationError} when `instrument` is empty.
+   * @throws {@link AuthenticationError} (403) when called from a read-scoped session.
+   * @throws {@link APIError} (404) when the instrument does not exist.
+   * @example
+   * const { symbol, amount } = await session.requestFaucetFunds("BTC");
+   */
+  async requestFaucetFunds(instrument: string): Promise<FaucetResult> {
+    return faucetResource.requestFaucetFunds(this.transport, this.token, instrument);
   }
 
   /**

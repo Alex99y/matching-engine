@@ -138,6 +138,17 @@
 
 > **Breaking change:** this release requires a major version bump.
 
+### Added
+
+- `AuthenticatedClient.requestFaucetFunds(instrument)` — sandbox/POC self-serve
+  funding: credits the authenticated user with a small, fixed amount (1 whole unit)
+  of the given instrument (`POST /api/v1/faucet`). Requires a write-scoped session
+  server-side. **No rate limit and no lifetime cap** — this is a testing convenience
+  only, not something to expose against a real balance sheet; call it repeatedly to
+  accumulate balance. Returns `FaucetResult` (`symbol`, `amount`).
+- New exported type: `FaucetResult` (`symbol`, `amount`).
+- `validateInstrumentSymbol` client-side guard (non-empty instrument symbol).
+
 All notable changes to this SDK are documented here. The project adheres to
 [Semantic Versioning](https://semver.org/): removing/renaming an export,
 changing a return type, or adding a required field is a major bump; new

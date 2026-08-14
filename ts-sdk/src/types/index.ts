@@ -211,6 +211,16 @@ export interface GetUserOperationsFilter {
   readonly limit?: number;
 }
 
+/**
+ * Result of a sandbox/POC faucet call. The endpoint has no rate limit or
+ * lifetime cap — call it repeatedly to accumulate balance.
+ */
+export interface FaucetResult {
+  readonly symbol: string;
+  /** Amount credited, in the instrument's smallest unit. uint64. */
+  readonly amount: bigint;
+}
+
 // ---- Stream event types ----
 
 export const OrderStatus = {

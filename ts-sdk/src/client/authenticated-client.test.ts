@@ -78,6 +78,17 @@ describe("AuthenticatedClient", () => {
     });
   });
 
+  it("requestFaucetFunds returns parsed result and forwards the token", async () => {
+    const { session, request } = client({ symbol: "BTC", amount: 1000000000n });
+    const result = await session.requestFaucetFunds("BTC");
+    expect(result.symbol).toBe("BTC");
+    expect(result.amount).toBe(1000000000n);
+    expect(request).toHaveBeenCalledWith("POST", "/api/v1/faucet", {
+      query: { instrument: "BTC" },
+      token: "tok",
+    });
+  });
+
   it("cancelOrders sends DELETE with order_ids body and forwards the token", async () => {
     const { session, request } = client({ results: [{ order_id: "o1" }] });
     await session.cancelOrders(["o1"]);

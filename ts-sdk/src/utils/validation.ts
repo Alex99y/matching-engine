@@ -137,6 +137,10 @@ export function validateMarket(market: string): void {
   requireNonEmpty(market, "market");
 }
 
+export function validateInstrumentSymbol(instrument: string): void {
+  requireNonEmpty(instrument, "instrument");
+}
+
 export function validateMarketStreamOptions(options: MarketStreamOptions): void {
   if (options.group !== undefined && options.group <= 0n) {
     throw new ValidationError("group must be a positive integer");

@@ -58,14 +58,17 @@ function startServer(): Promise<Server> {
         url.pathname === "/api/v1/stream/users" ||
         url.pathname === "/api/v1/sessions/active" ||
         url.pathname === "/api/v1/sessions/refresh" ||
-        url.pathname === "/api/v1/sessions/tokens";
+        url.pathname === "/api/v1/sessions/tokens" ||
+        url.pathname === "/api/v1/faucet";
       if (isPrivate && !(bearer && bearer in tokenScope)) {
         sendJson(401, '{"message":"missing or invalid authorization header"}');
         return;
       }
       // Trading routes require a write-scoped token.
       if (
-        (route === "POST /api/v1/order/" || route === "DELETE /api/v1/order/") &&
+        (route === "POST /api/v1/order/" ||
+          route === "DELETE /api/v1/order/" ||
+          route === "POST /api/v1/faucet") &&
         bearer &&
         tokenScope[bearer] !== "write"
       ) {
@@ -147,6 +150,9 @@ function startServer(): Promise<Server> {
             200,
             '[{"id":"op-1","symbol":"ETH","amount":1000000000000000000,"type":"deposit","created_at":1700000000}]',
           );
+          return;
+        case "POST /api/v1/faucet":
+          sendJson(200, JSON.stringify({ symbol: url.searchParams.get("instrument"), amount: 1000000000 }));
           return;
         case "DELETE /api/v1/sessions":
           res.writeHead(204).end();
@@ -241,6 +247,9 @@ describe("end-to-end flow against a mock server", () => {
     const operations = await session.getOperations({ limit: 10 });
     expect(operations[0]?.type).toBe("deposit");
     expect(operations[0]?.amount).toBe(1000000000000000000n);
+
+    const faucetResult = await session.requestFaucetFunds("BTC");
+    expect(faucetResult).toEqual({ symbol: "BTC", amount: 1000000000n });
 
     await expect(session.logout()).resolves.toBeUndefined();
   });

@@ -19,6 +19,7 @@ import type {
   CandleStreamMessage,
   CandleTradeMessage,
   CreateTokenResult,
+  FaucetResult,
   GetCandlesResponse,
   HeartbeatMessage,
   Instrument,
@@ -389,6 +390,14 @@ function parseOperation(raw: unknown): Operation {
 
 export function parseOperations(raw: unknown): Operation[] {
   return asArray(raw, "operations").map(parseOperation);
+}
+
+export function parseFaucetResult(raw: unknown): FaucetResult {
+  const o = asRecord(raw, "faucet response");
+  return {
+    symbol: reqString(o, "symbol"),
+    amount: reqBigInt(o, "amount"),
+  };
 }
 
 // ---- Candle parsers ----
