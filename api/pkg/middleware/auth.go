@@ -20,6 +20,7 @@ const (
 	contextKeyUserID contextKey = "user_id"
 	contextKeyOrigin contextKey = "session_origin"
 	contextKeyScope  contextKey = "session_scope"
+	contextKeyFrozen contextKey = "user_frozen"
 )
 
 var (
@@ -31,6 +32,7 @@ type SessionInfo struct {
 	UserID uuid.UUID
 	Origin string
 	Scope  string
+	Frozen bool
 }
 
 type TokenValidator interface {
@@ -56,6 +58,7 @@ func Auth(log *logger.Logger, validator TokenValidator) AuthMiddleware {
 		c.Locals(contextKeyUserID, info.UserID)
 		c.Locals(contextKeyOrigin, info.Origin)
 		c.Locals(contextKeyScope, info.Scope)
+		c.Locals(contextKeyFrozen, info.Frozen)
 		return c.Next()
 	}
 }
@@ -80,6 +83,13 @@ func SessionScopeFromContext(c fiber.Ctx) string {
 	return scope
 }
 
+// UserFrozenFromContext returns whether the authenticated user's account is frozen, stored by
+// the Auth middleware.
+func UserFrozenFromContext(c fiber.Ctx) bool {
+	frozen, _ := c.Locals(contextKeyFrozen).(bool)
+	return frozen
+}
+
 // RequireWrite must run after Auth. It rejects a read-scoped session with 403 so trading routes
 // (order create/cancel) can never be reached by a read-only token.
 func RequireWrite(c fiber.Ctx) error {
@@ -96,6 +106,16 @@ func RequireWrite(c fiber.Ctx) error {
 func RequireLoginOrigin(c fiber.Ctx) error {
 	if SessionOriginFromContext(c) != sessionscope.OriginLogin {
 		return utils.NewErrorResponse(c, fiber.StatusForbidden, "this action requires a login session")
+	}
+	return c.Next()
+}
+
+// RequireNotFrozen must run after Auth. It rejects a frozen account with 403 on fund-moving
+// routes (order creation, faucet) — attach it per-route rather than globally, since a frozen
+// account must still be able to cancel resting orders.
+func RequireNotFrozen(c fiber.Ctx) error {
+	if UserFrozenFromContext(c) {
+		return utils.NewErrorResponse(c, fiber.StatusForbidden, "account is frozen")
 	}
 	return c.Next()
 }

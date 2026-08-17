@@ -101,6 +101,7 @@ func (s *SessionService) ValidateToken(ctx context.Context, rawToken string) (*m
 		UserID: session.UserID,
 		Origin: session.Origin,
 		Scope:  session.Scope,
+		Frozen: session.Frozen,
 	}, nil
 }
 

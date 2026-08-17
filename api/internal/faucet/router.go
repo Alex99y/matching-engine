@@ -11,6 +11,7 @@ func RegisterFaucetRoutes(app fiber.Router, authMiddleware middleware.AuthMiddle
 		"/faucet",
 		auth,
 		middleware.RequireWrite,
+		middleware.RequireNotFrozen,
 		faucetHandler.RequestFunds,
 	)
 }

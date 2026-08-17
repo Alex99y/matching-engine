@@ -36,6 +36,7 @@ var (
 	ErrOperationTxCommit     = errors.New("commit user operation transaction failed")
 	ErrOperationInsertFailed = errors.New("failed to insert user operation")
 	ErrGetOperationsFailed   = errors.New("failed to get user operations")
+	ErrSetFrozenFailed       = errors.New("failed to set user frozen status")
 )
 
 const UserUniqueConstraintName = "users_username_uk"
@@ -336,6 +337,35 @@ func (r *UserRepository) UnfreezeUserBalance(ctx context.Context, userID uuid.UU
 	if err := tx.Commit(); err != nil {
 		r.logger.Error("UnfreezeUserBalance: commit: " + err.Error())
 		return fmt.Errorf("%s %w: %w", error_prefix, ErrOperationTxCommit, err)
+	}
+	return nil
+}
+
+func (r *UserRepository) FreezeUser(ctx context.Context, userID uuid.UUID) error {
+	return r.setUserFrozen(ctx, userID, true)
+}
+
+func (r *UserRepository) UnfreezeUser(ctx context.Context, userID uuid.UUID) error {
+	return r.setUserFrozen(ctx, userID, false)
+}
+
+func (r *UserRepository) setUserFrozen(ctx context.Context, userID uuid.UUID, frozen bool) error {
+	const query = `UPDATE users SET frozen = $2 WHERE id = $1`
+	result, err := r.psql.ExecContext(ctx, query, userID, frozen)
+	if err != nil {
+		r.logger.Error("error setting user frozen status")
+		r.logger.ErrorO(err)
+		return fmt.Errorf("%s %w", error_prefix, ErrSetFrozenFailed)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		r.logger.Error("error checking rows affected when setting user frozen status")
+		r.logger.ErrorO(err)
+		return fmt.Errorf("%s %w", error_prefix, ErrSetFrozenFailed)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%s %w", error_prefix, ErrUserNotFound)
 	}
 	return nil
 }

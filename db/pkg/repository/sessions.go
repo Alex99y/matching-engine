@@ -33,6 +33,10 @@ type Session struct {
 	Scope     string
 	UserAgent *string
 	IPAddress *string
+	// Frozen is not a sessions column — it's joined in from users in
+	// GetActiveSessionByTokenHash so the auth hot path gets it for free, since that lookup
+	// already round-trips Postgres on every authenticated request.
+	Frozen bool
 }
 
 type SessionRepository struct {
@@ -76,16 +80,18 @@ func (r *SessionRepository) GetActiveSessionByTokenHash(
 	tokenHash string,
 ) (*Session, error) {
 	query := `
-		SELECT id, user_id, token_hash, created_at, expires_at, revoked_at, origin, scope, user_agent, ip_address
-		FROM sessions
-		WHERE token_hash = $1
-		  AND revoked_at IS NULL
-		  AND expires_at > NOW()
+		SELECT s.id, s.user_id, s.token_hash, s.created_at, s.expires_at, s.revoked_at,
+		       s.origin, s.scope, s.user_agent, s.ip_address, u.frozen
+		FROM sessions s
+		JOIN users u ON u.id = s.user_id
+		WHERE s.token_hash = $1
+		  AND s.revoked_at IS NULL
+		  AND s.expires_at > NOW()
 	`
 	row := r.psql.QueryRowContext(ctx, query, tokenHash)
 	s := &Session{}
 	err := row.Scan(&s.ID, &s.UserID, &s.TokenHash, &s.CreatedAt, &s.ExpiresAt, &s.RevokedAt,
-		&s.Origin, &s.Scope, &s.UserAgent, &s.IPAddress)
+		&s.Origin, &s.Scope, &s.UserAgent, &s.IPAddress, &s.Frozen)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("%s %w", sessionErrPrefix, ErrSessionNotFound)

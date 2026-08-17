@@ -24,6 +24,82 @@ func newUserCmd() *cobra.Command {
 		Short: "Manage users",
 	}
 	cmd.AddCommand(newUserBalanceCmd())
+	cmd.AddCommand(newUserFreezeCmd())
+	cmd.AddCommand(newUserUnfreezeCmd())
+	return cmd
+}
+
+func newUserFreezeCmd() *cobra.Command {
+	var username string
+
+	cmd := &cobra.Command{
+		Use:     "freeze",
+		Short:   "Freeze a user's account, blocking order creation and faucet requests",
+		Example: `  cli user freeze --username alice`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			username = strings.TrimSpace(username)
+			if username == "" {
+				return errUserBalanceUsernameRequired
+			}
+
+			ctx := context.Background()
+
+			user, err := userRepo.GetUserByUsername(ctx, username)
+			if err != nil {
+				if errors.Is(err, repository.ErrUserNotFound) {
+					return fmt.Errorf("user %q not found", username)
+				}
+				return err
+			}
+
+			if err := userRepo.FreezeUser(ctx, user.ID); err != nil {
+				return err
+			}
+
+			fmt.Printf("froze account for user %s\n", username)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&username, "username", "", "username of the user")
+
+	return cmd
+}
+
+func newUserUnfreezeCmd() *cobra.Command {
+	var username string
+
+	cmd := &cobra.Command{
+		Use:     "unfreeze",
+		Short:   "Unfreeze a user's account, restoring order creation and faucet requests",
+		Example: `  cli user unfreeze --username alice`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			username = strings.TrimSpace(username)
+			if username == "" {
+				return errUserBalanceUsernameRequired
+			}
+
+			ctx := context.Background()
+
+			user, err := userRepo.GetUserByUsername(ctx, username)
+			if err != nil {
+				if errors.Is(err, repository.ErrUserNotFound) {
+					return fmt.Errorf("user %q not found", username)
+				}
+				return err
+			}
+
+			if err := userRepo.UnfreezeUser(ctx, user.ID); err != nil {
+				return err
+			}
+
+			fmt.Printf("unfroze account for user %s\n", username)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&username, "username", "", "username of the user")
+
 	return cmd
 }
 

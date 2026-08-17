@@ -14,6 +14,7 @@ func RegisterOrderRoutes(app fiber.Router, authMiddleware middleware.AuthMiddlew
 		validations.ValidateContentType(validations.ContentTypeJSON),
 		auth,
 		middleware.RequireWrite,
+		middleware.RequireNotFrozen,
 		orderHandler.CreateOrder,
 	)
 	userGroup.Get(

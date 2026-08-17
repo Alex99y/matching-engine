@@ -37,6 +37,7 @@ func newAuthTestApp(v TokenValidator, guards ...fiber.Handler) *fiber.App {
 			"user_id": UserIDFromContext(c),
 			"origin":  SessionOriginFromContext(c),
 			"scope":   SessionScopeFromContext(c),
+			"frozen":  UserFrozenFromContext(c),
 		})
 	})
 	return app
@@ -140,6 +141,7 @@ func TestAuthSuccessSetsLocals(t *testing.T) {
 		UserID string `json:"user_id"`
 		Origin string `json:"origin"`
 		Scope  string `json:"scope"`
+		Frozen bool   `json:"frozen"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -153,6 +155,9 @@ func TestAuthSuccessSetsLocals(t *testing.T) {
 	if got.Scope != sessionscope.ScopeWrite {
 		t.Errorf("scope = %q, want %q", got.Scope, sessionscope.ScopeWrite)
 	}
+	if got.Frozen != false {
+		t.Errorf("frozen = %v, want false", got.Frozen)
+	}
 }
 
 // The accessor functions must be safe to call even when Auth never ran (e.g. a public route),
@@ -164,6 +169,7 @@ func TestContextAccessorsZeroValueWhenUnset(t *testing.T) {
 			"user_id": UserIDFromContext(c),
 			"origin":  SessionOriginFromContext(c),
 			"scope":   SessionScopeFromContext(c),
+			"frozen":  UserFrozenFromContext(c),
 		})
 	})
 
@@ -175,6 +181,7 @@ func TestContextAccessorsZeroValueWhenUnset(t *testing.T) {
 		UserID string `json:"user_id"`
 		Origin string `json:"origin"`
 		Scope  string `json:"scope"`
+		Frozen bool   `json:"frozen"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -184,6 +191,9 @@ func TestContextAccessorsZeroValueWhenUnset(t *testing.T) {
 	}
 	if got.Origin != "" || got.Scope != "" {
 		t.Errorf("origin/scope = %q/%q, want empty", got.Origin, got.Scope)
+	}
+	if got.Frozen != false {
+		t.Errorf("frozen = %v, want false", got.Frozen)
 	}
 }
 
@@ -200,6 +210,33 @@ func TestRequireWrite(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			info := &SessionInfo{UserID: uuid.New(), Origin: sessionscope.OriginLogin, Scope: c.scope}
 			app := newAuthTestApp(&fakeValidator{info: info}, RequireWrite)
+
+			req := httptest.NewRequest("GET", "/", nil)
+			req.Header.Set(fiber.HeaderAuthorization, "Bearer sometoken")
+			resp, err := app.Test(req)
+			if err != nil {
+				t.Fatalf("app.Test: %v", err)
+			}
+			if resp.StatusCode != c.wantCode {
+				t.Errorf("status = %d, want %d", resp.StatusCode, c.wantCode)
+			}
+		})
+	}
+}
+
+func TestRequireNotFrozen(t *testing.T) {
+	cases := []struct {
+		name     string
+		frozen   bool
+		wantCode int
+	}{
+		{"not frozen allowed", false, fiber.StatusOK},
+		{"frozen blocked", true, fiber.StatusForbidden},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			info := &SessionInfo{UserID: uuid.New(), Origin: sessionscope.OriginLogin, Scope: sessionscope.ScopeWrite, Frozen: c.frozen}
+			app := newAuthTestApp(&fakeValidator{info: info}, RequireNotFrozen)
 
 			req := httptest.NewRequest("GET", "/", nil)
 			req.Header.Set(fiber.HeaderAuthorization, "Bearer sometoken")
