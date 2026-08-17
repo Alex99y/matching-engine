@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"math/bits"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/common/pkg/utils"
@@ -18,10 +19,17 @@ var (
 	ErrCreditingBalance   = errors.New("error crediting faucet balance")
 )
 
-// faucetUnits is how many whole units of an instrument a single call credits. Kept at 1 so
-// unitAmount never overflows int64 even at the highest decimals the CLI allows instrument
-// creation with (18, e.g. ETH) — 10^18 fits comfortably, 10 * 10^18 would not.
-const faucetUnits = 1
+// faucetAmountTenths hardcodes how much of each instrument a single faucet call credits, in
+// tenths of a whole unit (BTC: 1 == 0.1, ETH: 5 == 0.5, USDT: 10000 == 1000) — tenths keep the
+// fractional amounts exact integer math instead of float64, which can't represent 0.1 precisely.
+// Symbols not listed here fall back to defaultFaucetAmountTenths (1 whole unit).
+var faucetAmountTenths = map[string]uint64{
+	"BTC":  1,
+	"ETH":  5,
+	"USDT": 10000,
+}
+
+const defaultFaucetAmountTenths = 10
 
 const faucetOperationReason = "faucet"
 
@@ -44,7 +52,8 @@ type FaucetCredit struct {
 	Amount int64
 }
 
-// Request credits userID with faucetUnits worth of symbol and returns what was credited.
+// Request credits userID with symbol's hardcoded faucetAmountTenths amount and returns what
+// was credited.
 //
 // TODO(spam): this endpoint has no per-user/per-IP rate limit and no lifetime cap — any
 // authenticated user can call it as fast as they want and mint unbounded balance. Acceptable for
@@ -59,7 +68,7 @@ func (s *FaucetService) Request(ctx context.Context, userID uuid.UUID, symbol st
 		return nil, ErrGettingInstrument
 	}
 
-	amount, err := unitAmount(instr.Decimals)
+	amount, err := unitAmount(instr.Symbol, instr.Decimals)
 	if err != nil {
 		return nil, err
 	}
@@ -72,8 +81,18 @@ func (s *FaucetService) Request(ctx context.Context, userID uuid.UUID, symbol st
 	return &FaucetCredit{Symbol: instr.Symbol, Amount: amount}, nil
 }
 
-func unitAmount(decimals int) (int64, error) {
-	scaled := utils.Pow10Uint64(decimals) * faucetUnits
+// unitAmount computes symbol's hardcoded credit amount at decimals precision. Uses
+// bits.Mul64/Div64 (128-bit-safe intermediate) rather than a raw uint64 multiply, since
+// Pow10Uint64(decimals) * tenths can exceed uint64 range before the /10 brings it back down
+// (e.g. an 18-decimal instrument at 10000 tenths) — same pattern as feeOf() in
+// core/internal/orderbook/orderbook.go.
+func unitAmount(symbol string, decimals int) (int64, error) {
+	tenths, ok := faucetAmountTenths[symbol]
+	if !ok {
+		tenths = defaultFaucetAmountTenths
+	}
+	hi, lo := bits.Mul64(utils.Pow10Uint64(decimals), tenths)
+	scaled, _ := bits.Div64(hi, lo, 10)
 	if scaled > math.MaxInt64 {
 		return 0, ErrAmountOverflow
 	}

@@ -11,10 +11,11 @@ import { validateInstrumentSymbol } from "../utils/validation.js";
 const FAUCET_PATH = "/api/v1/faucet";
 
 /**
- * Credit the authenticated user with a small, fixed amount (1 whole unit) of
- * an instrument, for testing. Sandbox/POC only — the API applies no rate
- * limit and no lifetime cap, so this can be called repeatedly to accumulate
- * balance.
+ * Credit the authenticated user with a small, fixed amount of an instrument, for
+ * testing. The amount is hardcoded per-instrument server-side (see
+ * `faucetAmountTenths` in api/internal/faucet/service.go) — the caller cannot
+ * choose it. Sandbox/POC only — the API applies no rate limit and no lifetime
+ * cap, so this can be called repeatedly to accumulate balance.
  *
  * @param transport - SDK transport instance.
  * @param token - Bearer token for a write-scoped session.
