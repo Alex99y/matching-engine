@@ -2,6 +2,14 @@
 
 React web frontend for visualizing the matching engine's order book and candle charts live.
 
+## Routes
+
+- `/` — trading view (order book, chart, order entry)
+- `/history` — order history and account operations (deposits/withdrawals/freezes), tabbed
+- `/faucet` — sandbox faucet to credit test balances
+
+`/history` and `/faucet` require a signed-in session; guests are prompted to sign in.
+
 ## Run locally
 
 Requires the `api` (and `core`) to already be running — see the root [README](../README.md#local-development).

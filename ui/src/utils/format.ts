@@ -1,6 +1,6 @@
 // Formatting helpers for display. All values from the API are raw quantum
-// units (uint64 as bigint). We display them as-is since the UI doesn't know
-// the per-market decimal configuration — this is a dev/testing tool.
+// units (uint64 as bigint). Where a value's instrument/market decimals are
+// known, prefer fmtUnits/parseUnits below over these raw helpers.
 
 export function fmtBigInt(n: bigint): string {
   return n.toLocaleString("en-US");
@@ -54,4 +54,43 @@ export function fmtUnits(raw: bigint, decimals: number): string {
 // Market ref from base/quote symbols.
 export function marketRef(baseSymbol: string, quoteSymbol: string): string {
   return `${baseSymbol}-${quoteSymbol}`;
+}
+
+// A limit order's "have"/"want" legs map to base/quote by side — mirrors
+// limitHaveWant() in core/internal/orderbook/orderbook.go:
+//   buy:  have = quote (notional), want = base
+//   sell: have = base,             want = quote (notional)
+// Only meaningful when side is known (i.e. the order is still open — see
+// the note in HistoryPage.tsx about filled/cancelled orders).
+export function orderLegDecimals(
+  side: string,
+  baseDecimals: number,
+  quoteDecimals: number,
+): { haveDecimals: number; wantDecimals: number } {
+  return side === "buy"
+    ? { haveDecimals: quoteDecimals, wantDecimals: baseDecimals }
+    : { haveDecimals: baseDecimals, wantDecimals: quoteDecimals };
+}
+
+// Parse a human-entered decimal string into a raw ME quantum bigint, the
+// inverse of fmtUnits. Returns undefined for anything that isn't a
+// non-negative decimal number, or that has more fractional digits than the
+// instrument supports (we don't silently round — that would misrepresent
+// what the user typed).
+// e.g. parseUnits("63,448", 6)  → 63_448_000_000n  (USDT with 6 decimals)
+//      parseUnits("0.169", 9)  → 169_000_000n      (BTC with 9 decimals)
+export function parseUnits(input: string, decimals: number): bigint | undefined {
+  const trimmed = input.trim().replace(/,/g, "");
+  if (trimmed === "") return undefined;
+
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(trimmed);
+  if (!match) return undefined;
+
+  const [, wholeStr, fracStr = ""] = match;
+  if (!wholeStr || fracStr.length > decimals) return undefined;
+
+  const scale = 10n ** BigInt(decimals);
+  const whole = BigInt(wholeStr) * scale;
+  const frac = BigInt(fracStr.padEnd(decimals, "0") || "0");
+  return whole + frac;
 }

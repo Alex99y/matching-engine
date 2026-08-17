@@ -2,15 +2,19 @@ import { useCallback, useEffect, useState } from "react";
 import type { Order } from "ts-sdk";
 import { useSession } from "../contexts/AuthContext.tsx";
 import { useToast } from "../contexts/ToastContext.tsx";
-import { fmtDateTime, shortId } from "../utils/format.ts";
+import { fmtDateTime, fmtUnits, orderLegDecimals, shortId } from "../utils/format.ts";
 import { Skeleton, SkeletonRows } from "./Skeleton.tsx";
 
 interface Props {
   market: string;
+  baseSymbol: string;
+  quoteSymbol: string;
+  baseDecimals: number;
+  quoteDecimals: number;
   refreshSignal?: number; // increment to force a refresh
 }
 
-export function OrderList({ market, refreshSignal }: Props) {
+export function OrderList({ market, baseSymbol, quoteSymbol, baseDecimals, quoteDecimals, refreshSignal }: Props) {
   const { session } = useSession();
   const { showToast } = useToast();
   const [orders, setOrders] = useState<Order[]>([]);
@@ -85,6 +89,7 @@ export function OrderList({ market, refreshSignal }: Props) {
           {openOrders.map((order) => {
             const o = order.openOrder!;
             const isBuy = o.side === "buy";
+            const { haveDecimals } = orderLegDecimals(o.side, baseDecimals, quoteDecimals);
             return (
               <div key={order.id} style={s.row}>
                 <div style={s.rowTop}>
@@ -94,7 +99,7 @@ export function OrderList({ market, refreshSignal }: Props) {
                     {o.side.toUpperCase()}
                   </span>
                   <span style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>
-                    {o.price.toLocaleString()}
+                    {fmtUnits(o.price, quoteDecimals)} {quoteSymbol}
                   </span>
                   <button
                     onClick={() => void cancelOrder(order.id)}
@@ -109,7 +114,7 @@ export function OrderList({ market, refreshSignal }: Props) {
                     id: {shortId(order.id)}
                   </span>
                   <span style={{ color: "var(--text-muted)" }}>
-                    rem: {o.remainingHave.toLocaleString()}
+                    rem: {fmtUnits(o.remainingHave, haveDecimals)} {isBuy ? quoteSymbol : baseSymbol}
                   </span>
                   <span style={{ color: "var(--text-muted)" }}>
                     {fmtDateTime(order.createdAt)}

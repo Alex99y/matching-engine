@@ -1,34 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
-import type { Balance } from "ts-sdk";
-import { useSession } from "../contexts/AuthContext.tsx";
-import { useToast } from "../contexts/ToastContext.tsx";
+import { useBalances } from "../contexts/BalanceContext.tsx";
+import { fmtUnits } from "../utils/format.ts";
 import { Skeleton } from "./Skeleton.tsx";
 
 export function BalancePanel() {
-  const { session } = useSession();
-  const { showToast } = useToast();
-  const [balances, setBalances] = useState<Balance[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { balances, loading, refresh } = useBalances();
 
-  const fetchBalances = useCallback(async () => {
-    try {
-      const list = await session.getBalances();
-      setBalances(list);
-    } catch (err) {
-      showToast(
-        `Failed to load balances: ${err instanceof Error ? err.message : String(err)}`,
-        "error",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [session, showToast]);
-
-  useEffect(() => {
-    void fetchBalances();
-  }, [fetchBalances]);
-
-  if (loading) {
+  if (loading && balances.length === 0) {
     return (
       <div style={s.container}>
         <Skeleton width={80} height={20} />
@@ -40,15 +17,19 @@ export function BalancePanel() {
   return (
     <div style={s.container}>
       {balances.map((b) => (
-        <div key={b.symbol} style={s.item} title={`blocked: ${b.blocked.toLocaleString()}`}>
+        <div
+          key={b.symbol}
+          style={s.item}
+          title={`blocked: ${fmtUnits(b.blocked, b.decimals)}${b.frozen > 0n ? `, frozen: ${fmtUnits(b.frozen, b.decimals)}` : ""}`}
+        >
           <span style={s.symbol}>{b.symbol}</span>
-          <span style={s.amount}>{b.balance.toLocaleString()}</span>
+          <span style={s.amount}>{fmtUnits(b.balance, b.decimals)}</span>
           {b.blocked > 0n && (
-            <span style={s.blocked}>−{b.blocked.toLocaleString()}</span>
+            <span style={s.blocked}>−{fmtUnits(b.blocked, b.decimals)}</span>
           )}
         </div>
       ))}
-      <button onClick={() => void fetchBalances()} style={s.refreshBtn} title="Refresh balances">
+      <button onClick={() => void refresh()} style={s.refreshBtn} title="Refresh balances">
         ↻
       </button>
     </div>

@@ -1,14 +1,15 @@
-import { useEffect, useState } from "react";
-import type { Instrument, Market } from "ts-sdk";
+import { useState } from "react";
+import type { Market } from "ts-sdk";
 import { MatchingEngineClient } from "ts-sdk";
 import { useAuth } from "../contexts/AuthContext.tsx";
 import { useToast } from "../contexts/ToastContext.tsx";
+import { useInstruments } from "../hooks/useInstruments.ts";
+import { AppHeader } from "../components/AppHeader.tsx";
 import { MarketSelector } from "../components/MarketSelector.tsx";
 import { OrderBook } from "../components/OrderBook.tsx";
 import { CandleChart } from "../components/CandleChart.tsx";
 import { OrderForm } from "../components/OrderForm.tsx";
 import { OrderList } from "../components/OrderList.tsx";
-import { BalancePanel } from "../components/BalancePanel.tsx";
 
 // ── Inline login panel (shown in the right rail when not authenticated) ───
 
@@ -190,12 +191,12 @@ const lp = {
 // ── Main trading page ─────────────────────────────────────────────────────
 
 export function TradingPage() {
-  const { client, session, username, logout, disconnect } = useAuth();
-  const { showToast } = useToast();
+  const { client, session } = useAuth();
   const [market, setMarket] = useState("");
   const [selectedMarket, setSelectedMarket] = useState<Market | null>(null);
-  const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [orderRefresh, setOrderRefresh] = useState(0);
+
+  const instruments = useInstruments(client);
 
   if (!(client instanceof MatchingEngineClient)) return null;
 
@@ -204,51 +205,16 @@ export function TradingPage() {
   const quoteDecimals =
     instruments.find((i) => i.symbol === selectedMarket?.quoteSymbol)?.decimals ?? 0;
 
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  useEffect(() => {
-    let active = true;
-    client.getInstruments().then((list) => {
-      if (active) setInstruments(list);
-    }).catch(() => {});
-    return () => { active = false; };
-  }, [client]);
-
-  async function handleLogout() {
-    try {
-      await session!.logout();
-    } catch {
-      // token already expired — ignore
-    }
-    logout();
-    showToast("Signed out", "info");
-  }
-
   return (
     <div style={s.shell}>
-      {/* ── Header ─────────────────────────────────────── */}
-      <header style={s.header}>
-        <div style={s.headerLeft}>
-          <span style={s.logo}>⬡ ME</span>
-          <MarketSelector value={market} onChange={(ref: string, m: Market) => { setMarket(ref); setSelectedMarket(m); }} />
-        </div>
-
-        <div style={s.headerRight}>
-          {session ? (
-            <>
-              <BalancePanel />
-              <span style={s.username}>{username}</span>
-              <button onClick={() => void handleLogout()} style={s.actionBtn}>
-                Sign out
-              </button>
-            </>
-          ) : (
-            <span style={s.guestBadge}>Guest — order features disabled</span>
-          )}
-          <button onClick={disconnect} style={{ ...s.actionBtn, color: "var(--text-muted)" }}>
-            ✕
-          </button>
-        </div>
-      </header>
+      <AppHeader
+        leftExtra={
+          <MarketSelector
+            value={market}
+            onChange={(ref: string, m: Market) => { setMarket(ref); setSelectedMarket(m); }}
+          />
+        }
+      />
 
       {/* ── Body ───────────────────────────────────────── */}
       {market ? (
@@ -269,9 +235,20 @@ export function TradingPage() {
               <>
                 <OrderForm
                   market={market}
+                  baseSymbol={selectedMarket?.baseSymbol ?? ""}
+                  quoteSymbol={selectedMarket?.quoteSymbol ?? ""}
+                  baseDecimals={baseDecimals}
+                  quoteDecimals={quoteDecimals}
                   onOrderPlaced={() => setOrderRefresh((n) => n + 1)}
                 />
-                <OrderList market={market} refreshSignal={orderRefresh} />
+                <OrderList
+                  market={market}
+                  baseSymbol={selectedMarket?.baseSymbol ?? ""}
+                  quoteSymbol={selectedMarket?.quoteSymbol ?? ""}
+                  baseDecimals={baseDecimals}
+                  quoteDecimals={quoteDecimals}
+                  refreshSignal={orderRefresh}
+                />
               </>
             ) : (
               <LoginPanel />
@@ -293,55 +270,6 @@ const s = {
     flexDirection: "column" as const,
     height: "100%",
     overflow: "hidden",
-  },
-  header: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 16,
-    padding: "0 16px",
-    height: 48,
-    background: "var(--bg-panel)",
-    borderBottom: "1px solid var(--border)",
-    flexShrink: 0,
-    zIndex: 10,
-  },
-  headerLeft: {
-    display: "flex",
-    alignItems: "center",
-    gap: 16,
-  },
-  headerRight: {
-    display: "flex",
-    alignItems: "center",
-    gap: 16,
-  },
-  logo: {
-    fontSize: 16,
-    fontWeight: 700,
-    color: "var(--accent)",
-    letterSpacing: "-0.02em",
-  },
-  username: {
-    fontSize: 12,
-    color: "var(--text-secondary)",
-    fontWeight: 500,
-  },
-  guestBadge: {
-    fontSize: 11,
-    color: "var(--text-muted)",
-    background: "var(--bg-card)",
-    padding: "3px 10px",
-    borderRadius: "var(--radius-sm)",
-    border: "1px solid var(--border)",
-  },
-  actionBtn: {
-    background: "var(--bg-hover)",
-    color: "var(--text-secondary)",
-    padding: "5px 12px",
-    borderRadius: "var(--radius-sm)",
-    fontSize: 12,
-    fontWeight: 500,
   },
   body: {
     flex: 1,
