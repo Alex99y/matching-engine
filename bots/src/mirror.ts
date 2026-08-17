@@ -48,7 +48,6 @@ export class BookMirror {
 
   onDepth(update: DepthUpdate): void {
     const now = Date.now();
-    console.log(update)
     if (this.reconciling || now < this.cooldownUntil) {
       this.pendingDepth = update;
       return;
