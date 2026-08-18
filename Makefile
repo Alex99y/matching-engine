@@ -1,4 +1,4 @@
-MODULES := api cli core db
+MODULES := api cli core db loadtest
 
 .PHONY: build test clean $(MODULES)
 

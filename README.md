@@ -13,6 +13,7 @@ Matching Engine project is a proof of concept for a high-performance order match
 - `ts-sdk` - TypeScript SDK for the API, used by trading bots to interact with the engine
 - `ui` - React web frontend for visualizing the matching engine's order book and candle charts live
 - `local-deploy` - Docker and local deployment scripts
+- `loadtest` - Go load-testing suite measuring order ack/match/cancel latency under configurable background load (see `loadtest/README.md`)
 
 ## Software Requirements
 
@@ -93,3 +94,11 @@ cd bots && npm install && npm run build && npm start
 ```
 
 > `bots` also needs to be configured (its own environment variables) before it will run.
+
+### 7. (Optional) Load testing
+
+```sh
+make -C loadtest run-ack LEVEL=1
+```
+
+> See [docs/load-testing.md](docs/load-testing.md) for the env var reference and results.

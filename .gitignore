@@ -7,3 +7,5 @@
 ## Claude reviews
 reviews/*
 vendor
+
+loadtest/results
