@@ -9,6 +9,7 @@ on:
       - "core/**"
       - "common/**"
       - "db/**"
+      - "loadtest/**"
       - "go.work"
       - "go.work.sum"
   pull_request:
@@ -19,6 +20,7 @@ on:
       - "core/**"
       - "common/**"
       - "db/**"
+      - "loadtest/**"
       - "go.work"
       - "go.work.sum"
 
@@ -30,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [api, cli, common, db, core]
+        module: [api, cli, common, db, core, loadtest]
 
     steps:
       - uses: actions/checkout@v4
