@@ -18,13 +18,13 @@ type UserHandler struct {
 }
 
 type CreateUserRequest struct {
-	Username string `json:"username" validate:"required"`
-	Email    string `json:"email" validate:"required"`
+	Username string `json:"username" validate:"required,max=25"`
+	Email    string `json:"email" validate:"required,max=100"`
 	Password string `json:"password" validate:"required,min=10"`
 }
 
 type UsernameAvailableRequest struct {
-	Username string `json:"username" validate:"required"`
+	Username string `json:"username" validate:"required,max=25"`
 }
 
 type UsernameAvailableResponse struct {
