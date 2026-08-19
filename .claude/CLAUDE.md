@@ -1,13 +1,5 @@
 # Build
 
-To compile all modules, run from the project root:
-
-```sh
-make build
-```
-
-This builds `api`, `cli`, `core`, and `db` in sequence. Each module's binary is output to its own `bin/` directory.
-
 # Advisor Behavior
 
 When responding to any recommendation, implementation choice, architecture decision, or code
