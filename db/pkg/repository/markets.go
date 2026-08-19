@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/common/pkg/utils"
 	"github.com/alex99y/matching-engine/db/pkg/postgres"
+	dbutils "github.com/alex99y/matching-engine/db/pkg/utils"
 )
 
 const marketErrPrefix = "market repository:"
@@ -24,6 +26,15 @@ var (
 
 // markets_base_quote_uk is defined explicitly in the migration DDL.
 const MarketBaseQuoteUniqueConstraint = "markets_base_quote_uk"
+
+type MarketPrice struct {
+	BaseSymbol  string
+	QuoteSymbol string
+	Price       *uint64 // nil when the market has no matches yet
+	MinPrice24h *uint64
+	MaxPrice24h *uint64
+	Volume24h   *uint64
+}
 
 type Market struct {
 	ID                int
@@ -44,7 +55,6 @@ type Market struct {
 	// 10^baseDecimals times larger than a real quote amount.
 	BaseScale uint64
 }
-
 
 type MarketRepository struct {
 	psql   *sql.DB
@@ -158,6 +168,61 @@ func (r *MarketRepository) GetMarkets(ctx context.Context) ([]Market, error) {
 	}
 
 	return markets, nil
+}
+
+func (r *MarketRepository) GetLatestPrices(ctx context.Context, windowStart time.Time) ([]MarketPrice, error) {
+	query := `
+		SELECT bi.symbol, qi.symbol,
+		       lp.match_price,
+		       stats.min_price, stats.max_price, stats.volume
+		FROM markets m
+		JOIN instruments bi ON bi.id = m.base_instrument_id
+		JOIN instruments qi ON qi.id = m.quote_instrument_id
+		LEFT JOIN LATERAL (
+			SELECT match_price
+			FROM matches
+			WHERE matches.market_id = m.id
+			ORDER BY match_time DESC
+			LIMIT 1
+		) lp ON true
+		LEFT JOIN LATERAL (
+			SELECT MIN(match_price) AS min_price, MAX(match_price) AS max_price,
+			       SUM(match_buy_amount) AS volume
+			FROM matches
+			WHERE matches.market_id = m.id AND match_time >= $1
+		) stats ON true
+		ORDER BY bi.symbol ASC, qi.symbol ASC
+	`
+	rows, err := r.psql.QueryContext(ctx, query, windowStart)
+	if err != nil {
+		r.logger.Error("error querying latest prices")
+		r.logger.ErrorO(err)
+		return nil, fmt.Errorf("%s %w", marketErrPrefix, ErrMarketGetFailed)
+	}
+	defer rows.Close()
+
+	prices := []MarketPrice{}
+	for rows.Next() {
+		var p MarketPrice
+		var price, minPrice, maxPrice, volume sql.NullInt64
+		if err := rows.Scan(&p.BaseSymbol, &p.QuoteSymbol, &price, &minPrice, &maxPrice, &volume); err != nil {
+			r.logger.Error("error scanning latest price row")
+			r.logger.ErrorO(err)
+			return nil, fmt.Errorf("%s %w", marketErrPrefix, ErrMarketGetFailed)
+		}
+		p.Price = dbutils.NullInt64ToUint64(price)
+		p.MinPrice24h = dbutils.NullInt64ToUint64(minPrice)
+		p.MaxPrice24h = dbutils.NullInt64ToUint64(maxPrice)
+		p.Volume24h = dbutils.NullInt64ToUint64(volume)
+		prices = append(prices, p)
+	}
+	if err := rows.Err(); err != nil {
+		r.logger.Error("error iterating latest price rows")
+		r.logger.ErrorO(err)
+		return nil, fmt.Errorf("%s %w", marketErrPrefix, ErrMarketGetFailed)
+	}
+
+	return prices, nil
 }
 
 func (r *MarketRepository) RemoveOneMarket(ctx context.Context, baseSymbol, quoteSymbol string) error {

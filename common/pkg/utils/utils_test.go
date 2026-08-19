@@ -37,3 +37,20 @@ func TestFormatUint64(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatUint64PtrNil(t *testing.T) {
+	if got := utils.FormatUint64Ptr(nil); got != nil {
+		t.Errorf("FormatUint64Ptr(nil) = %v, want nil", got)
+	}
+}
+
+func TestFormatUint64PtrValue(t *testing.T) {
+	v := uint64(42)
+	got := utils.FormatUint64Ptr(&v)
+	if got == nil {
+		t.Fatal("FormatUint64Ptr(&42) = nil, want a pointer to \"42\"")
+	}
+	if *got != "42" {
+		t.Errorf("FormatUint64Ptr(&42) = %q, want \"42\"", *got)
+	}
+}

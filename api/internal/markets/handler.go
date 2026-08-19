@@ -5,6 +5,7 @@ import (
 
 	"github.com/alex99y/matching-engine/api/pkg/utils"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	commonutils "github.com/alex99y/matching-engine/common/pkg/utils"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -58,6 +59,34 @@ func (h *MarketHandler) GetMarkets(c fiber.Ctx) error {
 			AmountQuantum: m.AmountQuantum,
 			MinOrderSize:  m.MinOrderSize,
 			MaxOrderSize:  m.MaxOrderSize,
+		}
+	}
+
+	return c.Status(fiber.StatusOK).JSON(response)
+}
+
+type GetPriceResponse struct {
+	Market      string  `json:"market"`
+	Price       *string `json:"price"`
+	MinPrice24h *string `json:"min_price_24h"`
+	MaxPrice24h *string `json:"max_price_24h"`
+	Volume24h   *string `json:"volume_24h"`
+}
+
+func (h *MarketHandler) GetPrices(c fiber.Ctx) error {
+	prices, err := h.marketService.GetPrices(c.Context())
+	if err != nil {
+		return utils.NewServerErrorResponse(c, h.logger, err)
+	}
+
+	response := make([]GetPriceResponse, len(prices))
+	for i, p := range prices {
+		response[i] = GetPriceResponse{
+			Market:      commonutils.MergeMarketRef(p.BaseSymbol, p.QuoteSymbol),
+			Price:       commonutils.FormatUint64Ptr(p.Price),
+			MinPrice24h: commonutils.FormatUint64Ptr(p.MinPrice24h),
+			MaxPrice24h: commonutils.FormatUint64Ptr(p.MaxPrice24h),
+			Volume24h:   commonutils.FormatUint64Ptr(p.Volume24h),
 		}
 	}
 

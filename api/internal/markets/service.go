@@ -3,11 +3,14 @@ package markets
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/common/pkg/utils"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
 )
+
+const price24hWindow = 24 * time.Hour
 
 var (
 	ErrMarketAlreadyExists = repository.ErrMarketAlreadyExists
@@ -28,10 +31,20 @@ type Market struct {
 	MaxOrderSize  uint64
 }
 
+type MarketPrice struct {
+	BaseSymbol  string
+	QuoteSymbol string
+	Price       *uint64
+	MinPrice24h *uint64
+	MaxPrice24h *uint64
+	Volume24h   *uint64
+}
+
 type MarketRepository interface {
 	CreateMarket(ctx context.Context, baseSymbol, quoteSymbol string, priceQuantum, amountQuantum, minOrderSize, maxOrderSize int64, takerFeeBps, makerFeeBps int64) error
 	GetMarket(ctx context.Context, baseSymbol, quoteSymbol string) (*repository.Market, error)
 	GetMarkets(ctx context.Context) ([]repository.Market, error)
+	GetLatestPrices(ctx context.Context, windowStart time.Time) ([]repository.MarketPrice, error)
 	RemoveOneMarket(ctx context.Context, baseSymbol, quoteSymbol string) error
 }
 
@@ -104,6 +117,26 @@ func (s *MarketService) GetMarkets(ctx context.Context) ([]Market, error) {
 		}
 	}
 	return markets, nil
+}
+
+func (s *MarketService) GetPrices(ctx context.Context) ([]MarketPrice, error) {
+	windowStart := time.Now().Add(-price24hWindow)
+	repoPrices, err := s.marketRepository.GetLatestPrices(ctx, windowStart)
+	if err != nil {
+		return nil, ErrGettingMarket
+	}
+	prices := make([]MarketPrice, len(repoPrices))
+	for i, p := range repoPrices {
+		prices[i] = MarketPrice{
+			BaseSymbol:  p.BaseSymbol,
+			QuoteSymbol: p.QuoteSymbol,
+			Price:       p.Price,
+			MinPrice24h: p.MinPrice24h,
+			MaxPrice24h: p.MaxPrice24h,
+			Volume24h:   p.Volume24h,
+		}
+	}
+	return prices, nil
 }
 
 func (s *MarketService) RemoveOneMarket(ctx context.Context, marketRef string) error {
