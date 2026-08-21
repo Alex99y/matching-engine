@@ -59,7 +59,7 @@ type Book struct {
 // OrderUpdate is a private, per-user order lifecycle event (routed by user id, never broadcast).
 type OrderUpdate struct {
 	OrderID   string `json:"order_id"`
-	Status    string `json:"status"` // open | filled | partially_filled | cancelled | rejected
+	Status    string `json:"status"` // open | filled | partially_filled | cancelled | rejected | expired
 	Filled    uint64 `json:"filled"`
 	Remaining uint64 `json:"remaining"`
 }

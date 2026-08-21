@@ -14,6 +14,12 @@ import (
 // so a bot can tell a rejection apart from a user cancel.
 const statusRejected = "rejected"
 
+// statusExpired is the order-update status for a resting order removed because its TTL
+// elapsed (see OrderBook.ExpireOrder). Persisted the same as a plain cancellation/partial-fill
+// (there is no DB status for "expired"), but the live stream reports it distinctly, same idea
+// as statusRejected.
+const statusExpired = "expired"
+
 // levelKey identifies one price level on one side, used to dedupe the set of levels whose aggregate
 // quantity changed during a batch.
 type levelKey struct {

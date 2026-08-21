@@ -39,6 +39,12 @@ const (
 	// fire from the matcher's select loop so they reach the book without a second goroutine.
 	snapshotInterval  = 5 * time.Second
 	heartbeatInterval = 2 * time.Second
+	// expirySweepInterval bounds how long a GTC order can outlive its ExpiresAt before it is
+	// reaped: up to this long, since the sweep only runs on this tick. Fires from the same
+	// select loop as the snapshot/heartbeat tickers, so it reaches the book without a second
+	// goroutine and its removals are naturally serialised with real order flow (never
+	// concurrent with a real batch).
+	expirySweepInterval = 1 * time.Second
 )
 
 // eventPublisher is the subset of marketevents.Publisher the processor needs. Declared here (the
@@ -60,11 +66,14 @@ type orderRepository interface {
 }
 
 // queuedEvent carries a validated, decoded event together with its broker delivery so
-// the matcher can ack/nack it after the batch commits.
+// the matcher can ack/nack it after the batch commits. delivery is nil for a synthetic
+// expiry event (see buildExpiryBatch), which has no broker message to ack/nack — the
+// matcher's ack/nack helpers must treat that as a no-op.
 type queuedEvent struct {
 	delivery *oeq.OrderDelivery
 	open     *oeq.OpenOrderEvent   // set for an open-order event
 	cancel   *oeq.CancelOrderEvent // set for a cancel-order event
+	expire   *uuid.UUID            // set for a synthetic TTL-expiry event
 }
 
 type OrderProcessor struct {
@@ -187,8 +196,10 @@ func (o *OrderProcessor) classify(d *oeq.OrderDelivery) (*queuedEvent, bool) {
 func (o *OrderProcessor) matcher(shutdownCtx, dbCtx context.Context) {
 	snapshotTicker := time.NewTicker(snapshotInterval)
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
+	expiryTicker := time.NewTicker(expirySweepInterval)
 	defer snapshotTicker.Stop()
 	defer heartbeatTicker.Stop()
+	defer expiryTicker.Stop()
 
 	for {
 		select {
@@ -203,8 +214,29 @@ func (o *OrderProcessor) matcher(shutdownCtx, dbCtx context.Context) {
 			o.emitSnapshot()
 		case <-heartbeatTicker.C:
 			o.emitHeartbeat()
+		case now := <-expiryTicker.C:
+			if batch := o.buildExpiryBatch(now); batch != nil {
+				if !o.runBatch(shutdownCtx, dbCtx, batch) {
+					return // shutdown requested during recovery
+				}
+			}
 		}
 	}
+}
+
+// buildExpiryBatch asks the book (in-memory, no I/O) which resting orders are due, and wraps
+// each as a synthetic cancel-like event with no broker delivery. nil means nothing was due —
+// the common case for most ticks, since ExpireDue only walks the due prefix of its index.
+func (o *OrderProcessor) buildExpiryBatch(now time.Time) []*queuedEvent {
+	due := o.book.ExpireDue(now.Unix())
+	if len(due) == 0 {
+		return nil
+	}
+	batch := make([]*queuedEvent, 0, len(due))
+	for i := range due {
+		batch = append(batch, &queuedEvent{expire: &due[i]})
+	}
+	return batch
 }
 
 // collectBatch extends the just-received first event into a micro-batch, collecting more without
@@ -274,6 +306,8 @@ func (o *OrderProcessor) buildMatch(batch []*queuedEvent) repository.MatchFunc {
 				}
 			case qe.cancel != nil:
 				o.book.CancelOrder(qe.cancel, result)
+			case qe.expire != nil:
+				o.book.ExpireOrder(*qe.expire, result)
 			}
 		}
 		return result, nil
@@ -408,15 +442,24 @@ func (o *OrderProcessor) isolate(shutdownCtx, dbCtx context.Context, batch []*qu
 				o.market.BaseSymbol, o.market.QuoteSymbol, key, o.failures[key], err))
 			delete(o.failures, key)
 			o.metrics.IncDeadLetter()
-			if rerr := qe.delivery.Reject(); rerr != nil {
+			if qe.delivery == nil {
+				// A synthetic expiry event has no broker message to reject. Unlike a dead-lettered
+				// real order, this isn't gone for good: ExpireDue derives it fresh from the book
+				// each tick, so it resurfaces on the next sweep if it's still due — an operator has
+				// to fix whatever makes it poison, not requeue it.
+				o.logger.Warn(fmt.Sprintf("order processor %s-%s: giving up isolating poison expiry for order %s after %d failures — it will resurface on the next expiry sweep",
+					o.market.BaseSymbol, o.market.QuoteSymbol, key, o.failures[key]))
+			} else if rerr := qe.delivery.Reject(); rerr != nil {
 				o.logger.Error(fmt.Sprintf("order processor: reject (dead-letter) failed id=%s: %s", qe.delivery.ID(), rerr))
 			}
 			continue
 		}
 		o.logger.Warn(fmt.Sprintf("order processor %s-%s: poison candidate %s (failure %d/%d), requeueing: %s",
 			o.market.BaseSymbol, o.market.QuoteSymbol, key, o.failures[key], maxOrderFailures, err))
-		if nerr := qe.delivery.Nack(); nerr != nil {
-			o.logger.Error(fmt.Sprintf("order processor: nack failed id=%s: %s", qe.delivery.ID(), nerr))
+		if qe.delivery != nil {
+			if nerr := qe.delivery.Nack(); nerr != nil {
+				o.logger.Error(fmt.Sprintf("order processor: nack failed id=%s: %s", qe.delivery.ID(), nerr))
+			}
 		}
 		requeued = true
 	}
@@ -445,6 +488,9 @@ func orderKey(qe *queuedEvent) uuid.UUID {
 	if qe.cancel != nil {
 		return qe.cancel.OrderID
 	}
+	if qe.expire != nil {
+		return *qe.expire
+	}
 	return uuid.UUID{}
 }
 
@@ -470,8 +516,13 @@ func (o *OrderProcessor) loadBook(shutdownCtx, dbCtx context.Context) bool {
 	}
 }
 
+// ackBatch and nackBatch skip a nil delivery: a synthetic expiry event (see buildExpiryBatch)
+// has no broker message behind it, so there is nothing to ack/nack.
 func (o *OrderProcessor) ackBatch(batch []*queuedEvent) {
 	for _, qe := range batch {
+		if qe.delivery == nil {
+			continue
+		}
 		if err := qe.delivery.Ack(); err != nil {
 			o.logger.Error(fmt.Sprintf("order processor: ack failed id=%s: %s", qe.delivery.ID(), err))
 		}
@@ -480,6 +531,9 @@ func (o *OrderProcessor) ackBatch(batch []*queuedEvent) {
 
 func (o *OrderProcessor) nackBatch(batch []*queuedEvent) {
 	for _, qe := range batch {
+		if qe.delivery == nil {
+			continue
+		}
 		if err := qe.delivery.Nack(); err != nil {
 			o.logger.Error(fmt.Sprintf("order processor: nack failed id=%s: %s", qe.delivery.ID(), err))
 		}

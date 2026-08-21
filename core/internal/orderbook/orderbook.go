@@ -1,6 +1,7 @@
 package orderbook
 
 import (
+	"bytes"
 	"container/list"
 	"math/bits"
 	"strings"
@@ -83,6 +84,20 @@ type orderLocator struct {
 	side  oeq.OrderSide
 }
 
+// expiryEntry indexes one resting order's TTL for OrderBook.ExpireDue. orderID breaks ties
+// between orders that share the same expiry second, giving the btree a total order.
+type expiryEntry struct {
+	expiresAt int64
+	orderID   uuid.UUID
+}
+
+func expiryLess(a, b *expiryEntry) bool {
+	if a.expiresAt != b.expiresAt {
+		return a.expiresAt < b.expiresAt
+	}
+	return bytes.Compare(a.orderID[:], b.orderID[:]) < 0
+}
+
 // OrderBook is not thread-safe. It must be driven by a single goroutine. One book
 // exists per market and accumulates all of a batch's persistent side-effects into the
 // *repository.BatchResult passed into MatchOrder / CancelOrder; it performs no I/O.
@@ -92,6 +107,11 @@ type OrderBook struct {
 	bids   *btree.BTreeG[*PriceLevel]
 	asks   *btree.BTreeG[*PriceLevel]
 	index  map[uuid.UUID]orderLocator
+	// expiries indexes resting orders that carry a TTL (ExpiresAt != nil), ordered by expiry
+	// time, so ExpireDue finds due orders in O(k log n) (k = number due) instead of scanning
+	// every resting order. An order without a TTL is never inserted, so the common case (no
+	// expiry) pays nothing.
+	expiries *btree.BTreeG[*expiryEntry]
 	// stream accumulates the live market-data events of the current batch (see stream.go). It is
 	// drained by the matcher after the batch commits. A rebuilt book starts with an empty stream,
 	// so events of a failed (rolled-back) batch are never emitted.
@@ -186,6 +206,7 @@ func (o *OrderBook) match(taker *Order, result *repository.BatchResult) {
 			if maker.Remaining == 0 {
 				lvl.Orders.Remove(front)
 				delete(o.index, maker.OpenOrder.OrderID)
+				o.unindexExpiry(maker)
 				o.emitMakerFilled(maker, result)
 			} else {
 				o.emitMakerPartialFill(maker, result)
@@ -246,26 +267,58 @@ func (o *OrderBook) canFill(taker *Order) bool {
 // the cancellation. A miss is a normal logical race (the order may have filled, never
 // existed, or already been cancelled) and is an idempotent no-op.
 func (o *OrderBook) CancelOrder(event *oeq.CancelOrderEvent, result *repository.BatchResult) {
-	loc, ok := o.index[event.OrderID]
+	stored, ok := o.removeResting(event.OrderID)
 	if !ok {
 		// @TODO(P-events): emit cancel-reject event once Queue 2 exists.
 		return
 	}
+	o.closeResting(stored, result, "")
+}
 
-	stored, ok2 := loc.el.Value.(*Order)
-	if !ok2 {
-		o.logger.Error("orderbook: corrupt list element in CancelOrder")
+// ExpireOrder removes a resting order whose TTL has elapsed (see ExpireDue). It has the
+// same book/fund/persistence effects as CancelOrder; only the live stream's reported reason
+// differs (statusExpired instead of the plain DB status), so a subscriber can tell a TTL
+// reap apart from a user cancel. A miss is a normal race — the order may have filled or been
+// cancelled between ExpireDue collecting its id and this call — and is an idempotent no-op.
+func (o *OrderBook) ExpireOrder(orderID uuid.UUID, result *repository.BatchResult) {
+	stored, ok := o.removeResting(orderID)
+	if !ok {
 		return
+	}
+	o.closeResting(stored, result, statusExpired)
+}
+
+// removeResting detaches a resting order from its price level, the order index, and the
+// expiry index (if it carries a TTL). ok is false if the order is no longer resting.
+func (o *OrderBook) removeResting(orderID uuid.UUID) (*Order, bool) {
+	loc, ok := o.index[orderID]
+	if !ok {
+		return nil, false
+	}
+
+	stored, ok := loc.el.Value.(*Order)
+	if !ok {
+		o.logger.Error("orderbook: corrupt list element in removeResting")
+		return nil, false
 	}
 
 	loc.level.Orders.Remove(loc.el)
 	loc.level.TotalQty -= stored.Remaining
 	o.markLevel(loc.side, loc.level.Price)
-	delete(o.index, event.OrderID)
+	delete(o.index, orderID)
 	if loc.level.Orders.Len() == 0 {
 		o.sideTree(loc.side).Delete(loc.level)
 	}
+	o.unindexExpiry(stored)
 
+	return stored, true
+}
+
+// closeResting releases a resting order's unused reservation and records its terminal
+// status — shared by CancelOrder and ExpireOrder, which differ only in why the order left
+// the book. streamReason overrides the live-stream status when non-empty (see statusExpired);
+// the persisted DB status and the reported filled/remaining amounts are unaffected either way.
+func (o *OrderBook) closeResting(stored *Order, result *repository.BatchResult, streamReason string) {
 	have, want := restingRemaining(stored, o.market.BaseScale)
 
 	if stored.OpenOrder.Side == oeq.BuyOrder {
@@ -274,9 +327,9 @@ func (o *OrderBook) CancelOrder(event *oeq.CancelOrderEvent, result *repository.
 		result.AddBalanceDelta(stored.OpenOrder.UserID, o.baseInstr(), int64(have), -int64(have))
 	}
 
-	result.ClosedOpenOrders = append(result.ClosedOpenOrders, event.OrderID)
+	result.ClosedOpenOrders = append(result.ClosedOpenOrders, stored.OpenOrder.OrderID)
 	result.CancelledOrders = append(result.CancelledOrders, repository.InsertCancelledOrderParams{
-		OrderID:             event.OrderID,
+		OrderID:             stored.OpenOrder.OrderID,
 		RemainingHaveAmount: have,
 		RemainingWantAmount: want,
 	})
@@ -289,11 +342,49 @@ func (o *OrderBook) CancelOrder(event *oeq.CancelOrderEvent, result *repository.
 		status = repository.OrderStatusPartiallyFilled
 	}
 	result.StatusUpdates = append(result.StatusUpdates, repository.OrderStatusUpdate{
-		OrderID: event.OrderID,
+		OrderID: stored.OpenOrder.OrderID,
 		Status:  status,
 	})
-	o.recordOrderUpdate(stored.OpenOrder.UserID, event.OrderID, status,
+
+	streamStatus := status
+	if streamReason != "" {
+		streamStatus = streamReason
+	}
+	o.recordOrderUpdate(stored.OpenOrder.UserID, stored.OpenOrder.OrderID, streamStatus,
 		stored.OpenOrder.Quantity-stored.Remaining, stored.Remaining)
+}
+
+// ExpireDue returns the ids of every resting order whose TTL has elapsed as of now (unix
+// seconds). It is a pure read (no mutation, no I/O): the expiry index is sorted by expiry
+// time, so this walks only the *due* prefix and stops at the first order that isn't —
+// O(k log n) for k due orders, not O(book size). The caller is expected to remove each
+// returned id via ExpireOrder inside the batch/transaction that persists the change.
+func (o *OrderBook) ExpireDue(now int64) []uuid.UUID {
+	var due []uuid.UUID
+	o.expiries.Ascend(func(e *expiryEntry) bool {
+		if e.expiresAt > now {
+			return false
+		}
+		due = append(due, e.orderID)
+		return true
+	})
+	return due
+}
+
+// indexExpiry adds a just-rested order to the expiry index, if it carries a TTL.
+func (o *OrderBook) indexExpiry(order *Order) {
+	if order.OpenOrder.ExpiresAt == nil {
+		return
+	}
+	o.expiries.ReplaceOrInsert(&expiryEntry{expiresAt: *order.OpenOrder.ExpiresAt, orderID: order.OpenOrder.OrderID})
+}
+
+// unindexExpiry removes an order leaving the book from the expiry index, if it carries a TTL.
+func (o *OrderBook) unindexExpiry(order *Order) {
+	if order.OpenOrder.ExpiresAt == nil {
+		return
+	}
+	o.expiries.Delete(&expiryEntry{expiresAt: *order.OpenOrder.ExpiresAt, orderID: order.OpenOrder.OrderID})
 }
 
 // emitTrade records one fill: settlement movements for both parties and the match row.
@@ -462,6 +553,7 @@ func (o *OrderBook) rest(order *Order) {
 		level: lvl,
 		side:  order.OpenOrder.Side,
 	}
+	o.indexExpiry(order)
 }
 
 func (o *OrderBook) getOrCreate(side oeq.OrderSide, price uint64) *PriceLevel {
@@ -729,12 +821,14 @@ func NewOrderBook(
 
 	bids := btree.NewG(btreeDegree, priceLess)
 	asks := btree.NewG(btreeDegree, priceLess)
+	expiries := btree.NewG(btreeDegree, expiryLess)
 	return &OrderBook{
-		logger: log,
-		market: market,
-		bids:   bids,
-		asks:   asks,
-		index:  make(map[uuid.UUID]orderLocator),
-		stream: newStreamEvents(),
+		logger:   log,
+		market:   market,
+		bids:     bids,
+		asks:     asks,
+		expiries: expiries,
+		index:    make(map[uuid.UUID]orderLocator),
+		stream:   newStreamEvents(),
 	}
 }
