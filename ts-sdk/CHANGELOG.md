@@ -4,6 +4,13 @@
 
 ### Added
 
+- `MatchingEngineClient.getDepth(market, options?)` — one-shot order-book depth
+  snapshot (`GET /api/v1/markets/:market/depth`), the REST counterpart of
+  `streamMarket`'s first frame for callers that don't want to hold an SSE
+  connection open. `options.group` buckets prices the same way as
+  `streamMarket`'s `group` option. Returns `MarketDepth` (`market`, `bids`,
+  `asks`; each level is a `BookLevel` — `price`/`quantity` as `bigint`).
+  New exported types: `MarketDepth`, `GetDepthOptions`.
 - `AuthenticatedClient.getOperations(filter?)` — list the authenticated user's
   deposit/withdraw/freeze/unfreeze history, newest first (`GET /api/v1/users/operations`).
   These rows are only ever written by an admin via the CLI

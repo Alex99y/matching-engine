@@ -11,6 +11,7 @@ import {
   type CreateOrderParams,
   type CreateTokenParams,
   type GetCandlesParams,
+  type GetDepthOptions,
   type GetOrdersFilter,
   type GetUserOperationsFilter,
   type LoginParams,
@@ -142,6 +143,12 @@ export function validateInstrumentSymbol(instrument: string): void {
 }
 
 export function validateMarketStreamOptions(options: MarketStreamOptions): void {
+  if (options.group !== undefined && options.group <= 0n) {
+    throw new ValidationError("group must be a positive integer");
+  }
+}
+
+export function validateGetDepthOptions(options: GetDepthOptions): void {
   if (options.group !== undefined && options.group <= 0n) {
     throw new ValidationError("group must be a positive integer");
   }

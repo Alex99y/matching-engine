@@ -24,6 +24,7 @@ import type {
   HeartbeatMessage,
   Instrument,
   Market,
+  MarketDepth,
   OpenOrder,
   Operation,
   OperationType,
@@ -129,6 +130,20 @@ export function parseMarket(raw: unknown): Market {
 
 export function parseMarkets(raw: unknown): Market[] {
   return asArray(raw, "markets").map(parseMarket);
+}
+
+function parseDepthLevel(raw: unknown): BookLevel {
+  const o = asRecord(raw, "depth level");
+  return { price: reqBigInt(o, "price"), quantity: reqBigInt(o, "quantity") };
+}
+
+export function parseMarketDepth(raw: unknown): MarketDepth {
+  const o = asRecord(raw, "market depth");
+  return {
+    market: reqString(o, "market"),
+    bids: asArray(o["bids"], "bids").map(parseDepthLevel),
+    asks: asArray(o["asks"], "asks").map(parseDepthLevel),
+  };
 }
 
 function parseOpenOrder(raw: unknown): OpenOrder {

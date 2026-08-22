@@ -15,9 +15,11 @@ import type {
   CandleStreamOptions,
   GetCandlesParams,
   GetCandlesResponse,
+  GetDepthOptions,
   Instrument,
   LoginParams,
   Market,
+  MarketDepth,
   MarketStreamOptions,
   RegisterParams,
   StreamMessage,
@@ -145,6 +147,23 @@ export class MatchingEngineClient {
    */
   async getMarkets(): Promise<Market[]> {
     return marketsResource.getMarkets(this.transport);
+  }
+
+  /**
+   * Fetch a one-shot order-book depth snapshot for one market — the REST
+   * counterpart of {@link streamMarket}'s first frame, for callers that
+   * don't want to hold an SSE connection open (polling clients, bots).
+   *
+   * @param market - Market ref, e.g. `"ETH-USDT"`.
+   * @param options - Optional price-bucket grouping (see {@link GetDepthOptions}).
+   * @throws {@link ValidationError} for an empty market or a non-positive group.
+   * @throws {@link APIError} (404) for an unknown market, (400) for an invalid group.
+   * @example
+   * const depth = await client.getDepth("ETH-USDT");
+   * console.log(depth.bids[0]?.price, depth.bids[0]?.quantity);
+   */
+  async getDepth(market: string, options: GetDepthOptions = {}): Promise<MarketDepth> {
+    return marketsResource.getDepth(this.transport, market, options);
   }
 
   /**
