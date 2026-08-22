@@ -12,6 +12,7 @@ import (
 type MarketHandler struct {
 	logger        *logger.Logger
 	marketService *MarketService
+	marketQuanta  map[string]uint64 // served market ref -> price_quantum (validates :market and ?group)
 }
 
 type GetMarketResponse struct {
@@ -93,7 +94,56 @@ func (h *MarketHandler) GetPrices(c fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(response)
 }
 
-func NewMarketHandler(logger *logger.Logger, marketService *MarketService) *MarketHandler {
+type DepthLevelResponse struct {
+	Price    uint64 `json:"price"`
+	Quantity uint64 `json:"quantity"`
+}
+
+type GetDepthResponse struct {
+	Market string               `json:"market"`
+	Bids   []DepthLevelResponse `json:"bids"`
+	Asks   []DepthLevelResponse `json:"asks"`
+}
+
+// GetDepth is the REST counterpart of the SSE stream's snapshot frame (GET /stream/:market): a
+// one-shot order-book read for polling clients that don't want to hold a persistent connection
+// open. Served from the same in-memory cache, so it never reads the database.
+func (h *MarketHandler) GetDepth(c fiber.Ctx) error {
+	market := c.Params("market")
+	priceQuantum, ok := h.marketQuanta[market]
+	if !ok {
+		return utils.NewErrorResponse(c, fiber.StatusNotFound, "market not found")
+	}
+
+	group, err := commonutils.ParsePriceGroup(c.Query("group"), priceQuantum)
+	if err != nil {
+		return utils.NewErrorResponse(c, fiber.StatusBadRequest, err.Error())
+	}
+
+	depth, err := h.marketService.GetDepth(c.Context(), market, group)
+	if err != nil {
+		if errors.Is(err, ErrMarketNotFound) {
+			return utils.NewErrorResponse(c, fiber.StatusNotFound, "market not found")
+		}
+		return utils.NewServerErrorResponse(c, h.logger, err)
+	}
+
+	return c.Status(fiber.StatusOK).JSON(GetDepthResponse{
+		Market: depth.Market,
+		Bids:   depthLevelsResponse(depth.Bids),
+		Asks:   depthLevelsResponse(depth.Asks),
+	})
+}
+
+func depthLevelsResponse(levels []DepthLevel) []DepthLevelResponse {
+	out := make([]DepthLevelResponse, len(levels))
+	for i, l := range levels {
+		out[i] = DepthLevelResponse{Price: l.Price, Quantity: l.Quantity}
+	}
+	return out
+}
+
+func NewMarketHandler(logger *logger.Logger, marketService *MarketService, marketQuanta map[string]uint64) *MarketHandler {
 	if logger == nil {
 		panic("logger cannot be nil")
 	}
@@ -103,5 +153,6 @@ func NewMarketHandler(logger *logger.Logger, marketService *MarketService) *Mark
 	return &MarketHandler{
 		logger:        logger,
 		marketService: marketService,
+		marketQuanta:  marketQuanta,
 	}
 }

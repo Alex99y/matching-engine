@@ -9,6 +9,7 @@ import (
 	"github.com/alex99y/matching-engine/api/pkg/middleware"
 	"github.com/alex99y/matching-engine/api/pkg/utils"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	commonutils "github.com/alex99y/matching-engine/common/pkg/utils"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -17,10 +18,7 @@ import (
 // comment frame still detects a vanished client.
 const clientPingInterval = 15 * time.Second
 
-var (
-	errInvalidGroup    = errors.New("group must be a positive multiple of the market price quantum")
-	errInvalidInterval = errors.New("interval must be one of: 60, 300, 900, 3600, 14400, 86400")
-)
+var errInvalidInterval = errors.New("interval must be one of: 60, 300, 900, 3600, 14400, 86400")
 
 type StreamHandler struct {
 	logger     *logger.Logger
@@ -41,7 +39,7 @@ func (h *StreamHandler) MarketStream(c fiber.Ctx) error {
 		return utils.NewErrorResponse(c, fiber.StatusNotFound, "unknown market")
 	}
 
-	group, err := parseGroup(c.Query("group"), priceQuantum)
+	group, err := commonutils.ParsePriceGroup(c.Query("group"), priceQuantum)
 	if err != nil {
 		return utils.NewErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
@@ -122,23 +120,6 @@ func flush(w *bufio.Writer, frame []byte) bool {
 		return false
 	}
 	return w.Flush() == nil
-}
-
-// parseGroup resolves the requested price-bucket size from the ?group query. Empty means native
-// resolution (the market's price_quantum). Otherwise it must be a positive multiple of price_quantum
-// — price_quantum is the tick, so you can only aggregate up from it (docs/event-log.md §5).
-func parseGroup(raw string, priceQuantum uint64) (uint64, error) {
-	if priceQuantum == 0 {
-		priceQuantum = 1 // defensive; markets always have a positive quantum
-	}
-	if raw == "" {
-		return priceQuantum, nil
-	}
-	g, err := strconv.ParseUint(raw, 10, 64)
-	if err != nil || g == 0 || g%priceQuantum != 0 {
-		return 0, errInvalidGroup
-	}
-	return g, nil
 }
 
 // CandleStream is the SSE endpoint GET /api/v1/stream/markets/:market/candles.

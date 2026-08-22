@@ -89,8 +89,6 @@ func main() {
 	faucetHandler := faucet.NewFaucetHandler(log, faucetService)
 
 	marketRepository := repository.NewMarketRepository(log, postgresqlClient)
-	marketService := markets.NewMarketService(log, marketRepository)
-	marketHandler := markets.NewMarketHandler(log, marketService)
 
 	const cacheRefreshSeconds = 5 * 60
 	cacheService := cache.NewCacheService(log, marketRepository, instrumentRepository, cacheRefreshSeconds)
@@ -132,6 +130,9 @@ func main() {
 	go candleHub.Run(ctx)
 
 	streamHandler := stream.NewMarketsStreamHandler(log, streamHub, candleHub, marketQuanta)
+
+	marketService := markets.NewMarketService(log, marketRepository, streamHub)
+	marketHandler := markets.NewMarketHandler(log, marketService, marketQuanta)
 
 	srv := server.NewServer(server.ServerDependencies{
 		Logger:             log,

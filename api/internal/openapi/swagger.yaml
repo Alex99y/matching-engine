@@ -301,6 +301,22 @@ paths:
                 items: { $ref: "#/components/schemas/GetMarketResponse" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /markets/prices:
+    get:
+      operationId: getMarketPrices
+      summary: Get latest price and 24h min/max/volume for every market
+      tags: [markets]
+      security: []
+      responses:
+        "200":
+          description: Prices for all markets. Fields are null for a market with no trades in the last 24h.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/GetPriceResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /markets/{market}:
     get:
       operationId: getMarket
@@ -318,6 +334,46 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/GetMarketResponse" }
+        "404":
+          description: Market not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /markets/{market}/depth:
+    get:
+      operationId: getMarketDepth
+      summary: One-shot order-book depth snapshot
+      description: >-
+        REST counterpart of the /stream/{market} SSE snapshot frame, for
+        polling clients/bots that don't want to hold a persistent connection
+        open. Served from the same in-memory book cache as the SSE stream —
+        never reads the database.
+      tags: [markets]
+      security: []
+      parameters:
+        - name: market
+          in: path
+          required: true
+          schema: { type: string }
+        - name: group
+          in: query
+          description: >-
+            Price-bucket size to aggregate to; must be a positive multiple of
+            the market's price_quantum. Omit for native resolution.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        "200":
+          description: Current book snapshot.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GetDepthResponse" }
+        "400":
+          description: Invalid group.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
         "404":
           description: Market not found.
           content:
@@ -799,6 +855,44 @@ components:
         min_order_size: { type: integer, format: int64, minimum: 0 }
         max_order_size: { type: integer, format: int64, minimum: 0 }
       required: [base_symbol, quote_symbol, price_quantum, amount_quantum, min_order_size, max_order_size]
+
+    GetPriceResponse:
+      type: object
+      description: >-
+        price/min_price_24h/max_price_24h/volume_24h are decimal strings
+        (JS safe-integer limits), null when the market has had no trades in
+        the last 24h.
+      properties:
+        market: { type: string }
+        price: { type: string, nullable: true }
+        min_price_24h: { type: string, nullable: true }
+        max_price_24h: { type: string, nullable: true }
+        volume_24h: { type: string, nullable: true }
+      required: [market]
+
+    DepthLevel:
+      type: object
+      properties:
+        price: { type: integer, format: int64, minimum: 0 }
+        quantity: { type: integer, format: int64, minimum: 0 }
+      required: [price, quantity]
+
+    GetDepthResponse:
+      type: object
+      description: >-
+        bids are sorted high-to-low, asks low-to-high, in the market's
+        price_quantum/amount_quantum units (same as OrderResponse/
+        CreateOrderRequest amounts) — unlike the /stream/{market} SSE
+        snapshot frame, which string-encodes amounts.
+      properties:
+        market: { type: string }
+        bids:
+          type: array
+          items: { $ref: "#/components/schemas/DepthLevel" }
+        asks:
+          type: array
+          items: { $ref: "#/components/schemas/DepthLevel" }
+      required: [market, bids, asks]
 
     CreateOrderRequest:
       type: object
