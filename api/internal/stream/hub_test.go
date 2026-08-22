@@ -49,6 +49,7 @@ func newTestHub(source eventSource, markets ...string) *Hub {
 		events:       make(chan event, eventBuffer),
 		register:     make(chan client),
 		unregister:   make(chan client),
+		depthReq:     make(chan depthRequest),
 		done:         make(chan struct{}),
 	}
 	for _, m := range markets {
@@ -277,6 +278,75 @@ func TestHubUserMultipleConnections(t *testing.T) {
 	h.removeClient(c2)
 	if len(src.unbinds) != 1 {
 		t.Fatalf("unbinds = %v, want one after the last connection leaves", src.unbinds)
+	}
+}
+
+// --- REST depth snapshot ---
+
+// handleDepthRequest resolves the current cache into sorted, bucketed levels for a served market.
+func TestHubHandleDepthRequestReturnsBucketedLevels(t *testing.T) {
+	h := newTestHub(&fakeSource{}, testMarket)
+	h.handleEvent(publicEvent(t, marketdata.EventSnapshot, "e1", 1, marketdata.Snapshot{
+		Epoch: "e1", Seq: 1, Market: testMarket,
+		Bids: []marketdata.BookLevel{{Price: 103, Quantity: 4}, {Price: 98, Quantity: 10}},
+		Asks: []marketdata.BookLevel{{Price: 106, Quantity: 2}},
+	}))
+
+	resp := make(chan depthResult, 1)
+	h.handleDepthRequest(depthRequest{market: testMarket, group: 5, resp: resp})
+	res := <-resp
+
+	if !res.found {
+		t.Fatal("expected found = true for a served market")
+	}
+	if len(res.bids) != 2 || res.bids[0].price != 100 || res.bids[0].qty != 4 || res.bids[1].price != 95 || res.bids[1].qty != 10 {
+		t.Fatalf("bids = %+v, want [{100 4} {95 10}]", res.bids)
+	}
+	if len(res.asks) != 1 || res.asks[0].price != 110 || res.asks[0].qty != 2 {
+		t.Fatalf("asks = %+v, want [{110 2}]", res.asks)
+	}
+}
+
+// A market this Hub doesn't serve reports found = false rather than an empty book, so the handler
+// can tell "no orders" apart from "unknown market".
+func TestHubHandleDepthRequestUnknownMarket(t *testing.T) {
+	h := newTestHub(&fakeSource{}, testMarket)
+
+	resp := make(chan depthResult, 1)
+	h.handleDepthRequest(depthRequest{market: "NOPE-NOPE", group: 1, resp: resp})
+
+	if res := <-resp; res.found {
+		t.Fatal("expected found = false for an unserved market")
+	}
+}
+
+// Depth() round-trips through a running loop exactly like a real HTTP handler would, proving the
+// channel plumbing (not just the pure handleDepthRequest logic) works end to end.
+func TestHubDepthRoundTrip(t *testing.T) {
+	h := newTestHub(&fakeSource{}, testMarket)
+	h.handleEvent(publicEvent(t, marketdata.EventSnapshot, "e1", 1, marketdata.Snapshot{
+		Epoch: "e1", Seq: 1, Market: testMarket,
+		Bids: []marketdata.BookLevel{{Price: 100, Quantity: 2}},
+		Asks: []marketdata.BookLevel{{Price: 101, Quantity: 4}},
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.loop(ctx)
+
+	depth, found, err := h.Depth(ctx, testMarket, 1)
+	if err != nil || !found {
+		t.Fatalf("Depth() = (%v, %v, %v), want a found snapshot", depth, found, err)
+	}
+	if len(depth.Bids) != 1 || depth.Bids[0].Price != 100 || depth.Bids[0].Quantity != 2 {
+		t.Fatalf("bids = %+v, want [{100 2}]", depth.Bids)
+	}
+	if len(depth.Asks) != 1 || depth.Asks[0].Price != 101 || depth.Asks[0].Quantity != 4 {
+		t.Fatalf("asks = %+v, want [{101 4}]", depth.Asks)
+	}
+
+	if _, found, err := h.Depth(ctx, "NOPE-NOPE", 1); err != nil || found {
+		t.Fatalf("Depth() for unserved market = (found %v, err %v), want not found", found, err)
 	}
 }
 

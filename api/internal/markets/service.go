@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/alex99y/matching-engine/api/internal/stream"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/common/pkg/utils"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
@@ -40,6 +41,19 @@ type MarketPrice struct {
 	Volume24h   *uint64
 }
 
+// DepthLevel is one price level of a depth snapshot.
+type DepthLevel struct {
+	Price    uint64
+	Quantity uint64
+}
+
+// MarketDepth is a one-shot snapshot of a market's order book.
+type MarketDepth struct {
+	Market string
+	Bids   []DepthLevel
+	Asks   []DepthLevel
+}
+
 type MarketRepository interface {
 	CreateMarket(ctx context.Context, baseSymbol, quoteSymbol string, priceQuantum, amountQuantum, minOrderSize, maxOrderSize int64, takerFeeBps, makerFeeBps int64) error
 	GetMarket(ctx context.Context, baseSymbol, quoteSymbol string) (*repository.Market, error)
@@ -48,9 +62,16 @@ type MarketRepository interface {
 	RemoveOneMarket(ctx context.Context, baseSymbol, quoteSymbol string) error
 }
 
+// DepthSource serves the in-memory book snapshot backing GetDepth — no DB read, unlike
+// MarketRepository. Implemented directly by *stream.Hub.
+type DepthSource interface {
+	Depth(ctx context.Context, market string, group uint64) (*stream.MarketDepth, bool, error)
+}
+
 type MarketService struct {
 	logger           *logger.Logger
 	marketRepository MarketRepository
+	depthSource      DepthSource
 }
 
 func (s *MarketService) CreateMarket(
@@ -139,6 +160,32 @@ func (s *MarketService) GetPrices(ctx context.Context) ([]MarketPrice, error) {
 	return prices, nil
 }
 
+// GetDepth returns a one-shot order-book snapshot for market, bucketed to group price units. It
+// never touches the DB — market must already be a served market ref (validated by the handler
+// against the same in-memory price-quantum map the depth source itself was built from).
+func (s *MarketService) GetDepth(ctx context.Context, market string, group uint64) (*MarketDepth, error) {
+	d, found, err := s.depthSource.Depth(ctx, market, group)
+	if err != nil {
+		return nil, ErrGettingMarket
+	}
+	if !found {
+		return nil, ErrMarketNotFound
+	}
+	return &MarketDepth{
+		Market: d.Market,
+		Bids:   toDepthLevels(d.Bids),
+		Asks:   toDepthLevels(d.Asks),
+	}, nil
+}
+
+func toDepthLevels(levels []stream.DepthLevel) []DepthLevel {
+	out := make([]DepthLevel, len(levels))
+	for i, l := range levels {
+		out[i] = DepthLevel{Price: l.Price, Quantity: l.Quantity}
+	}
+	return out
+}
+
 func (s *MarketService) RemoveOneMarket(ctx context.Context, marketRef string) error {
 	baseSymbol, quoteSymbol, err := utils.SplitMarketRef(marketRef)
 	if err != nil {
@@ -157,6 +204,7 @@ func (s *MarketService) RemoveOneMarket(ctx context.Context, marketRef string) e
 func NewMarketService(
 	logger *logger.Logger,
 	marketRepository MarketRepository,
+	depthSource DepthSource,
 ) *MarketService {
 	if logger == nil {
 		panic("logger cannot be nil")
@@ -164,8 +212,12 @@ func NewMarketService(
 	if marketRepository == nil {
 		panic("market repository cannot be nil")
 	}
+	if depthSource == nil {
+		panic("depth source cannot be nil")
+	}
 	return &MarketService{
 		logger:           logger,
 		marketRepository: marketRepository,
+		depthSource:      depthSource,
 	}
 }

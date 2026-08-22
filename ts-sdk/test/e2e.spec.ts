@@ -117,6 +117,12 @@ function startServer(): Promise<Server> {
             '[{"base_symbol":"ETH","quote_symbol":"USDT","price_quantum":1000000000000000000,"amount_quantum":1000,"min_order_size":1,"max_order_size":1000000}]',
           );
           return;
+        case "GET /api/v1/markets/ETH-USDT/depth":
+          sendJson(
+            200,
+            '{"market":"ETH-USDT","bids":[{"price":2000,"quantity":5}],"asks":[{"price":2010,"quantity":3}]}',
+          );
+          return;
         case "GET /api/v1/instruments/":
           sendJson(
             200,
@@ -209,6 +215,10 @@ describe("end-to-end flow against a mock server", () => {
 
     const markets = await client.getMarkets();
     expect(markets[0]?.priceQuantum).toBe(1000000000000000000n);
+
+    const depth = await client.getDepth("ETH-USDT");
+    expect(depth.bids[0]).toEqual({ price: 2000n, quantity: 5n });
+    expect(depth.asks[0]).toEqual({ price: 2010n, quantity: 3n });
 
     const instruments = await client.getInstruments();
     expect(instruments[0]?.symbol).toBe("ETH");

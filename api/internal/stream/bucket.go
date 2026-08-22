@@ -22,14 +22,19 @@ func newGroupView(group uint64, c *bookCache) *groupView {
 // rebuild recomputes the bucketed book from the canonical cache (at creation and on resync). Clients
 // are left untouched.
 func (v *groupView) rebuild(c *bookCache) {
-	v.bids = make(map[uint64]uint64, len(c.bids))
-	v.asks = make(map[uint64]uint64, len(c.asks))
-	for p, q := range c.bids {
-		v.bids[bucketPrice("buy", p, v.group)] += q
+	v.bids = bucketAggregate(c.bids, "buy", v.group)
+	v.asks = bucketAggregate(c.asks, "sell", v.group)
+}
+
+// bucketAggregate aggregates a canonical price->quantity map into buckets of `group` price units.
+// Shared by the persistent groupView (rebuild) and the one-shot depth snapshot (Hub.Depth), which
+// bucket the same book the same way.
+func bucketAggregate(m map[uint64]uint64, side string, group uint64) map[uint64]uint64 {
+	out := make(map[uint64]uint64, len(m))
+	for p, q := range m {
+		out[bucketPrice(side, p, group)] += q
 	}
-	for p, q := range c.asks {
-		v.asks[bucketPrice("sell", p, v.group)] += q
-	}
+	return out
 }
 
 // applyDelta moves a bucket by a signed canonical change and returns the bucket's new aggregate

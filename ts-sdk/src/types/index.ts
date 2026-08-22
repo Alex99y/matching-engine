@@ -57,6 +57,25 @@ export interface Market {
   readonly maxOrderSize: bigint;
 }
 
+export interface GetDepthOptions {
+  /**
+   * Price-bucket grouping size in price units. Must be a positive multiple of
+   * the market's `priceQuantum`. Defaults to native resolution when omitted.
+   */
+  readonly group?: bigint;
+}
+
+/**
+ * One-shot order-book snapshot — the REST counterpart of {@link streamMarket}'s
+ * first frame. bids are sorted high-to-low, asks low-to-high; price/quantity
+ * are in the market's quantum units, same as {@link Order} amounts.
+ */
+export interface MarketDepth {
+  readonly market: string;
+  readonly bids: readonly BookLevel[];
+  readonly asks: readonly BookLevel[];
+}
+
 // ---- Private (authenticated) order params ----
 
 export interface CreateOrderParams {

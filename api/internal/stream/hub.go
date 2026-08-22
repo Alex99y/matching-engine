@@ -46,6 +46,7 @@ type Hub struct {
 	events       chan event
 	register     chan client
 	unregister   chan client
+	depthReq     chan depthRequest
 	done         chan struct{}
 }
 
@@ -87,6 +88,8 @@ func (h *Hub) loop(ctx context.Context) {
 			h.handleRegister(c)
 		case c := <-h.unregister:
 			h.removeClient(c)
+		case r := <-h.depthReq:
+			h.handleDepthRequest(r)
 		}
 	}
 }
@@ -415,6 +418,7 @@ func NewHub(rmqClient *rabbitmq.RabbitMQClient, markets []string, log *logger.Lo
 		events:       make(chan event, eventBuffer),
 		register:     make(chan client),
 		unregister:   make(chan client),
+		depthReq:     make(chan depthRequest),
 		done:         make(chan struct{}),
 	}
 	for _, market := range markets {

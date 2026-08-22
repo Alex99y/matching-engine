@@ -9,4 +9,5 @@ func RegisterMarketRoutes(app fiber.Router, marketHandler *MarketHandler) {
 	marketGroup.Get("/", marketHandler.GetMarkets)
 	marketGroup.Get("/prices", marketHandler.GetPrices)
 	marketGroup.Get("/:market", marketHandler.GetMarket)
+	marketGroup.Get("/:market/depth", marketHandler.GetDepth)
 }

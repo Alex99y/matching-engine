@@ -46,3 +46,28 @@ func TestSplitMergeRoundTrip(t *testing.T) {
 		t.Errorf("round trip = (%q, %q), want (\"ETH\", \"USDT\")", base, quote)
 	}
 }
+
+func TestParsePriceGroup(t *testing.T) {
+	cases := []struct {
+		raw          string
+		priceQuantum uint64
+		want         uint64
+		wantErr      error
+	}{
+		{"", 5, 5, nil},         // empty -> native resolution
+		{"5", 5, 5, nil},        // == quantum
+		{"25", 5, 25, nil},      // multiple of quantum
+		{"0", 5, 0, utils.ErrInvalidPriceGroup},
+		{"7", 5, 0, utils.ErrInvalidPriceGroup},  // not a multiple
+		{"-1", 5, 0, utils.ErrInvalidPriceGroup}, // not a valid uint64
+		{"abc", 5, 0, utils.ErrInvalidPriceGroup},
+		{"", 0, 1, nil}, // defensive: zero quantum treated as 1
+	}
+	for _, c := range cases {
+		got, err := utils.ParsePriceGroup(c.raw, c.priceQuantum)
+		if got != c.want || !errors.Is(err, c.wantErr) {
+			t.Errorf("ParsePriceGroup(%q, %d) = (%d, %v), want (%d, %v)",
+				c.raw, c.priceQuantum, got, err, c.want, c.wantErr)
+		}
+	}
+}
