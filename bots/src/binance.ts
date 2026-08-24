@@ -1,13 +1,5 @@
 import { logger } from "./logger.js";
-
-export interface DepthUpdate {
-  readonly lastUpdateId: number;
-  readonly bids: readonly [string, string][];
-  readonly asks: readonly [string, string][];
-}
-
-type DepthHandler = (update: DepthUpdate) => void;
-type ErrorHandler = (err: Error) => void;
+import type { DepthHandler, DepthStream, ErrorHandler } from "./depth-stream.js";
 
 interface RawDepthFrame {
   lastUpdateId: number;
@@ -34,7 +26,7 @@ const MAX_BACKOFF_MS = 30_000;
  * Automatically reconnects with exponential backoff on disconnect.
  * Uses Node's native globalThis.WebSocket (Node ≥ 22).
  */
-export class BinanceDepthStream {
+export class BinanceDepthStream implements DepthStream {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private backoffMs = 1_000;
