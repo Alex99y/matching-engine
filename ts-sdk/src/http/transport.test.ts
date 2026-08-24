@@ -54,7 +54,7 @@ describe("Transport.request — success paths", () => {
       (_url: string | URL | Request, _init?: RequestInit) =>
         Promise.resolve(jsonResponse("{}")),
     );
-    await makeTransport(fetchFn).request("POST", "/order/", {
+    await makeTransport(fetchFn).request("POST", "/orders/", {
       body: { price: 5n },
       token: "secret-token",
     });
@@ -70,7 +70,7 @@ describe("Transport.request — success paths", () => {
       (_url: string | URL | Request, _init?: RequestInit) =>
         Promise.resolve(jsonResponse("[]")),
     );
-    await makeTransport(fetchFn).request("GET", "/order/", {
+    await makeTransport(fetchFn).request("GET", "/orders/", {
       query: { market: "ETH-USDT", limit: 10, client_order_id: undefined, empty: "" },
     });
     const url = String(fetchFn.mock.calls[0]?.[0]);

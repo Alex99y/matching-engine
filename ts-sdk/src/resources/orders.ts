@@ -21,7 +21,7 @@ import {
   validateOrderId,
 } from "../utils/validation.js";
 
-const ORDERS_BASE = "/api/v1/order";
+const ORDERS_BASE = "/api/v1/orders";
 
 export async function getOrder(
   transport: Transport,

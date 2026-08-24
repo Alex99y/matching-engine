@@ -26,7 +26,7 @@ describe("orders.cancelOrders", () => {
   it("sends DELETE to the base endpoint with order_ids body", async () => {
     const { transport, request } = stubTransport({ results: [] });
     await cancelOrders(transport, TOKEN, ["o1", "o2"]);
-    expect(request).toHaveBeenCalledWith("DELETE", "/api/v1/order/", {
+    expect(request).toHaveBeenCalledWith("DELETE", "/api/v1/orders/", {
       token: TOKEN,
       body: { order_ids: ["o1", "o2"] },
     });
@@ -87,7 +87,7 @@ describe("orders.createOrders", () => {
         quantity: 5n,
       },
     ]);
-    expect(request).toHaveBeenCalledWith("POST", "/api/v1/order/", {
+    expect(request).toHaveBeenCalledWith("POST", "/api/v1/orders/", {
       token: TOKEN,
       body: [
         {
@@ -198,7 +198,7 @@ describe("orders.getOrder", () => {
   it("requests a single order with the token", async () => {
     const { transport, request } = stubTransport(orderRow);
     const order = await getOrder(transport, TOKEN, "o1");
-    expect(request).toHaveBeenCalledWith("GET", "/api/v1/order/o1", { token: TOKEN });
+    expect(request).toHaveBeenCalledWith("GET", "/api/v1/orders/o1", { token: TOKEN });
     expect(order.id).toBe("o1");
   });
 
@@ -219,7 +219,7 @@ describe("orders.getOrders", () => {
       limit: 25,
       showOpen: true,
     });
-    expect(request).toHaveBeenCalledWith("GET", "/api/v1/order/", {
+    expect(request).toHaveBeenCalledWith("GET", "/api/v1/orders/", {
       token: TOKEN,
       query: {
         client_order_id: undefined,

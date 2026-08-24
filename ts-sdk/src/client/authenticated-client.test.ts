@@ -92,7 +92,7 @@ describe("AuthenticatedClient", () => {
   it("cancelOrders sends DELETE with order_ids body and forwards the token", async () => {
     const { session, request } = client({ results: [{ order_id: "o1" }] });
     await session.cancelOrders(["o1"]);
-    expect(request).toHaveBeenCalledWith("DELETE", "/api/v1/order/", {
+    expect(request).toHaveBeenCalledWith("DELETE", "/api/v1/orders/", {
       token: "tok",
       body: { order_ids: ["o1"] },
     });

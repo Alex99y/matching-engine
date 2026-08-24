@@ -47,7 +47,7 @@ Recorded by the HTTP `AccessLog` middleware and the order publisher (`api/intern
 | `me_api_stream_private_users` | gauge | — | Distinct users with an active private binding on this instance (binding-churn signal) |
 | `me_api_stream_clients_dropped_total` | counter | `kind` | SSE clients dropped for lagging; `kind` = `public` \| `private` |
 
-`route` is the **matched route template** (`/api/v1/order/:id`), never the concrete path. Requests
+`route` is the **matched route template** (`/api/v1/orders/:id`), never the concrete path. Requests
 that 404/405 are not counted (no bounded template).
 
 > ⚠️ **`stream_events_received` vs core's `stream_events_published`:** they reconcile only **per API

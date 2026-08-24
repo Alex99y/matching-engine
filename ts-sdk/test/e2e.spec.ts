@@ -52,7 +52,7 @@ function startServer(): Promise<Server> {
 
       // Private routes require one of the tokens above.
       const isPrivate =
-        url.pathname.startsWith("/api/v1/order") ||
+        url.pathname.startsWith("/api/v1/orders") ||
         url.pathname === "/api/v1/users/balances" ||
         url.pathname === "/api/v1/users/operations" ||
         url.pathname === "/api/v1/stream/users" ||
@@ -66,8 +66,8 @@ function startServer(): Promise<Server> {
       }
       // Trading routes require a write-scoped token.
       if (
-        (route === "POST /api/v1/order/" ||
-          route === "DELETE /api/v1/order/" ||
+        (route === "POST /api/v1/orders/" ||
+          route === "DELETE /api/v1/orders/" ||
           route === "POST /api/v1/faucet") &&
         bearer &&
         tokenScope[bearer] !== "write"
@@ -135,17 +135,17 @@ function startServer(): Promise<Server> {
             '[{"name":"Ether","symbol":"ETH","decimals":18,"created_at":"2026-01-01T00:00:00Z"}]',
           );
           return;
-        case "POST /api/v1/order/":
+        case "POST /api/v1/orders/":
           lastCreateOrderRaw = await readBody(req);
           sendJson(202, '{"results":[{"index":0,"order_id":"order-1"}]}');
           return;
-        case "GET /api/v1/order/":
+        case "GET /api/v1/orders/":
           sendJson(
             200,
             '[{"id":"order-1","type":"limit","time_in_force":"gtc","have_quantity":5,"want_quantity":10000000000000000000,"created_at":1700000000,"open_order":{"price":2000,"side":"buy","remaining_have":5,"remaining_want":10}}]',
           );
           return;
-        case "GET /api/v1/order/order-1":
+        case "GET /api/v1/orders/order-1":
           sendJson(
             200,
             '{"id":"order-1","type":"limit","time_in_force":"gtc","have_quantity":5,"want_quantity":10,"created_at":1700000000}',
