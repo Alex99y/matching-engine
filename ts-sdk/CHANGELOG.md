@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking (server-side route, no SDK surface change):** the orders API
+  moved from `/api/v1/order` to `/api/v1/orders` (collection endpoints should
+  be plural). `createOrders`/`cancelOrders`/`getOrders`/`getOrder` are
+  unaffected — the path lives entirely behind the internal `ORDERS_BASE`
+  constant in `resources/orders.ts` — but a caller hitting the raw REST API
+  directly (bypassing this SDK) must update to `/orders`.
+
 ### Added
 
 - `MatchingEngineClient.getMatches(market, filter?)` — recent matches (trades)

@@ -8,7 +8,7 @@ import (
 
 func RegisterOrderRoutes(app fiber.Router, authMiddleware middleware.AuthMiddleware, orderHandler *OrderHandler) {
 	auth := fiber.Handler(authMiddleware)
-	userGroup := app.Group("/order")
+	userGroup := app.Group("/orders")
 	userGroup.Post(
 		"/",
 		validations.ValidateContentType(validations.ContentTypeJSON),

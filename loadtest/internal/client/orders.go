@@ -71,7 +71,7 @@ type batchCancelOrderResponse struct {
 // here since the caller inspects individual results anyway).
 func (c *Client) CreateOrders(ctx context.Context, token string, reqs []CreateOrderRequest) ([]BatchCreateOrderResult, error) {
 	var resp batchCreateOrderResponse
-	err := c.do(ctx, http.MethodPost, "/order/", token, reqs, &resp,
+	err := c.do(ctx, http.MethodPost, "/orders/", token, reqs, &resp,
 		http.StatusAccepted, http.StatusMultiStatus, http.StatusUnprocessableEntity)
 	if err != nil {
 		return nil, err
@@ -105,7 +105,7 @@ func (c *Client) CancelOrders(ctx context.Context, token string, orderIDs []uuid
 		raw[i] = id.String()
 	}
 	var resp batchCancelOrderResponse
-	err := c.do(ctx, http.MethodDelete, "/order/", token, cancelOrderRequest{OrderIDs: raw}, &resp, http.StatusAccepted)
+	err := c.do(ctx, http.MethodDelete, "/orders/", token, cancelOrderRequest{OrderIDs: raw}, &resp, http.StatusAccepted)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +135,7 @@ type openOrder struct {
 // test runs don't leave the book cluttered.
 func (c *Client) GetOpenOrderIDs(ctx context.Context, token, marketRef string) ([]uuid.UUID, error) {
 	var orders []openOrder
-	path := "/order/?show_open=true&market=" + marketRef
+	path := "/orders/?show_open=true&market=" + marketRef
 	if err := c.do(ctx, http.MethodGet, path, token, nil, &orders, http.StatusOK); err != nil {
 		return nil, err
 	}
