@@ -1,7 +1,7 @@
 import type { AuthenticatedClient, BatchCreateOrderResult, CreateOrderParams } from "ts-sdk";
 import { APIError, AuthenticationError, OrderSide, OrderType, TimeInForce } from "ts-sdk";
 import type { BotConfig } from "./config.js";
-import type { DepthUpdate } from "./binance.js";
+import type { DepthUpdate } from "./depth-stream.js";
 import { logger } from "./logger.js";
 import { capQtyToNotional, toMePrice, toMeQty, type ScaleFactors } from "./scale.js";
 

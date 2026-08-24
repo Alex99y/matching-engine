@@ -63,20 +63,20 @@ export function toMeQty(binanceQty: string, scale: ScaleFactors): bigint | null 
   return snapped;
 }
 
-// ME stores notional as price×qty/baseScale in a BIGINT column — hard ceiling is int64 max.
+// ME stores notional as the raw price×qty product in a BIGINT column — hard ceiling is int64
+// max. The ME validates this unscaled (see core/pkg/order_events_queue/utils.go
+// ValidateOrderEvent: `order.Price > maxStorableAmount/order.Quantity`) — no decimals
+// normalization on either side, so none belongs here either.
 const MAX_STORABLE = 9_223_372_036_854_775_807n; // math.MaxInt64
 
 /**
- * Cap qty so that (price×qty/baseScale) stays within the ME's storable maximum (int64 max).
- * baseScale = 10^baseDecimals normalises the product back to quote-quanta; without it the
- * cap was 10^baseDecimals times too tight (e.g. 0.144 BTC instead of ~144M BTC at $64k).
+ * Cap qty so that price×qty stays within the ME's storable maximum (int64 max).
  * Returns null if the capped value falls below the market's minOrderSize.
  */
 export function capQtyToNotional(price: bigint, qty: bigint, scale: ScaleFactors): bigint | null {
   if (price === 0n) return null;
-  const baseScale = 10n ** BigInt(scale.baseDecimals);
-  const maxByNotional = (MAX_STORABLE * baseScale) / price; // bigint floor division
-  if (qty <= maxByNotional) return qty;                      // already within limit
+  const maxByNotional = MAX_STORABLE / price; // bigint floor division
+  if (qty <= maxByNotional) return qty;        // already within limit
   const capped = snapToGrid(maxByNotional, scale.amountQuantum);
   if (capped < scale.minOrderSize) return null;
   return capped;

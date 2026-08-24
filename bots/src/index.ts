@@ -2,17 +2,20 @@ import { MatchingEngineClient } from "ts-sdk";
 import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
 import { buildScaleFactors } from "./scale.js";
+import type { DepthStream } from "./depth-stream.js";
 import { BinanceDepthStream } from "./binance.js";
+import { OkxDepthStream } from "./okx.js";
 import { BookMirror } from "./mirror.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
 
   logger.info("Starting ME liquidity bot", {
-    meMarket:      config.meMarket,
-    binanceSymbol: config.binanceSymbol,
-    botLevels:     config.botLevels,
-    depthLevels:   config.depthLevels,
+    meMarket:    config.meMarket,
+    provider:    config.provider,
+    symbol:      config.provider === "binance" ? config.binanceSymbol : config.okxInstId,
+    botLevels:   config.botLevels,
+    depthLevels: config.depthLevels,
   });
 
   // ── Connect to ME ───────────────────────────────────────────────────────────
@@ -67,14 +70,20 @@ async function main(): Promise<void> {
 
   mirror.startReconcileLoop();
 
-  // ── Start Binance depth stream ───────────────────────────────────────────────
+  // ── Start depth stream ────────────────────────────────────────────────────────
 
-  const stream = new BinanceDepthStream(
-    config.binanceSymbol,
-    config.depthLevels,
-    (update) => mirror.onDepth(update),
-    (err)    => logger.error("Binance stream error", { message: err.message }),
-  );
+  const stream: DepthStream = config.provider === "binance"
+    ? new BinanceDepthStream(
+        config.binanceSymbol,
+        config.depthLevels,
+        (update) => mirror.onDepth(update),
+        (err)    => logger.error("Binance stream error", { message: err.message }),
+      )
+    : new OkxDepthStream(
+        config.okxInstId,
+        (update) => mirror.onDepth(update),
+        (err)    => logger.error("OKX stream error", { message: err.message }),
+      );
   stream.start();
 
   // ── Graceful shutdown ────────────────────────────────────────────────────────
