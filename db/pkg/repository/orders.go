@@ -227,6 +227,13 @@ func (o *OrderRepository) GetOrdersByUser(
 	args := []any{userID}
 	sb.WriteString("\nWHERE orders.user_id = $1")
 
+	switch {
+	case showOpenOrders && !showCanceledOrders:
+		sb.WriteString("\nAND open_orders.order_id IS NOT NULL")
+	case showCanceledOrders && !showOpenOrders:
+		sb.WriteString("\nAND cancelled_orders.order_id IS NOT NULL")
+	}
+
 	if startDate != nil {
 		args = append(args, *startDate)
 		sb.WriteString(fmt.Sprintf("\nAND orders.created_at >= $%d", len(args)))
