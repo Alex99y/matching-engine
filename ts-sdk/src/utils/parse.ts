@@ -25,6 +25,7 @@ import type {
   Instrument,
   Market,
   MarketDepth,
+  Match,
   OpenOrder,
   Operation,
   OperationType,
@@ -144,6 +145,21 @@ export function parseMarketDepth(raw: unknown): MarketDepth {
     bids: asArray(o["bids"], "bids").map(parseDepthLevel),
     asks: asArray(o["asks"], "asks").map(parseDepthLevel),
   };
+}
+
+function parseMatch(raw: unknown): Match {
+  const o = asRecord(raw, "match");
+  return {
+    id: reqString(o, "id"),
+    price: reqBigInt(o, "price"),
+    quantity: reqBigInt(o, "quantity"),
+    takerSide: reqSide(o, "taker_side"),
+    matchTime: reqNumber(o, "match_time"),
+  };
+}
+
+export function parseMatches(raw: unknown): Match[] {
+  return asArray(raw, "matches").map(parseMatch);
 }
 
 function parseOpenOrder(raw: unknown): OpenOrder {

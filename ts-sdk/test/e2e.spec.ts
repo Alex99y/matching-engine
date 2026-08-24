@@ -123,6 +123,12 @@ function startServer(): Promise<Server> {
             '{"market":"ETH-USDT","bids":[{"price":2000,"quantity":5}],"asks":[{"price":2010,"quantity":3}]}',
           );
           return;
+        case "GET /api/v1/markets/ETH-USDT/matches":
+          sendJson(
+            200,
+            '[{"id":"m1","price":2010,"quantity":3,"taker_side":"buy","match_time":1700000000}]',
+          );
+          return;
         case "GET /api/v1/instruments/":
           sendJson(
             200,
@@ -219,6 +225,9 @@ describe("end-to-end flow against a mock server", () => {
     const depth = await client.getDepth("ETH-USDT");
     expect(depth.bids[0]).toEqual({ price: 2000n, quantity: 5n });
     expect(depth.asks[0]).toEqual({ price: 2010n, quantity: 3n });
+
+    const trades = await client.getMatches("ETH-USDT");
+    expect(trades[0]).toEqual({ id: "m1", price: 2010n, quantity: 3n, takerSide: "buy", matchTime: 1700000000 });
 
     const instruments = await client.getInstruments();
     expect(instruments[0]?.symbol).toBe("ETH");

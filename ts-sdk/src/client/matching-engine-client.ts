@@ -7,6 +7,7 @@ import {
 import * as candlesResource from "../resources/candles.js";
 import * as instrumentsResource from "../resources/instruments.js";
 import * as marketsResource from "../resources/markets.js";
+import * as matchesResource from "../resources/matches.js";
 import * as sessionsResource from "../resources/sessions.js";
 import * as streamResource from "../resources/stream.js";
 import * as usersResource from "../resources/users.js";
@@ -16,11 +17,13 @@ import type {
   GetCandlesParams,
   GetCandlesResponse,
   GetDepthOptions,
+  GetMatchesFilter,
   Instrument,
   LoginParams,
   Market,
   MarketDepth,
   MarketStreamOptions,
+  Match,
   RegisterParams,
   StreamMessage,
 } from "../types/index.js";
@@ -164,6 +167,22 @@ export class MatchingEngineClient {
    */
   async getDepth(market: string, options: GetDepthOptions = {}): Promise<MarketDepth> {
     return marketsResource.getDepth(this.transport, market, options);
+  }
+
+  /**
+   * Fetch recent matches (trades) for a market, newest first — the REST
+   * counterpart of {@link streamMarket}'s `"trade"` message, for callers that
+   * don't want to hold an SSE connection open.
+   *
+   * @param market - Market ref, e.g. `"ETH-USDT"`.
+   * @param filter - Optional startDate/endDate (YYYY-MM-DD, end exclusive) and limit (1-100, defaults to 100 server-side).
+   * @throws {@link ValidationError} for an empty market, a malformed date, or an out-of-range limit.
+   * @throws {@link APIError} (404) for an unknown market.
+   * @example
+   * const trades = await client.getMatches("ETH-USDT", { limit: 20 });
+   */
+  async getMatches(market: string, filter: GetMatchesFilter = {}): Promise<Match[]> {
+    return matchesResource.getMatches(this.transport, market, filter);
   }
 
   /**

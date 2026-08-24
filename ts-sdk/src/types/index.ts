@@ -76,6 +76,30 @@ export interface MarketDepth {
   readonly asks: readonly BookLevel[];
 }
 
+/**
+ * One historical trade — the REST counterpart of the `"trade"` message on
+ * {@link streamMarket}'s public feed. Deliberately has no order id fields:
+ * this is public, unauthenticated market data, and a match's buy/sell orders
+ * belong to two different users.
+ */
+export interface Match {
+  readonly id: string;
+  readonly price: bigint;
+  readonly quantity: bigint;
+  readonly takerSide: "buy" | "sell";
+  /** Unix seconds. */
+  readonly matchTime: number;
+}
+
+export interface GetMatchesFilter {
+  /** YYYY-MM-DD (inclusive lower bound). */
+  readonly startDate?: string;
+  /** YYYY-MM-DD (exclusive upper bound: returns matches where matchTime < endDate). */
+  readonly endDate?: string;
+  /** 1-100. The API defaults to 100 when omitted. */
+  readonly limit?: number;
+}
+
 // ---- Private (authenticated) order params ----
 
 export interface CreateOrderParams {
