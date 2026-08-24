@@ -381,6 +381,55 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /markets/{market}/matches:
+    get:
+      operationId: getMarketMatches
+      summary: List recent matches (trades) for a market
+      description: >-
+        Newest first. Same public trade-tape shape as the /stream/{market}
+        SSE stream's "trade" event — deliberately does not include the
+        underlying buy_order_id/sell_order_id, since this is a public,
+        unauthenticated endpoint and those belong to two different users'
+        orders. Defaults to the most recent 100 matches.
+      tags: [matches]
+      security: []
+      parameters:
+        - name: market
+          in: path
+          required: true
+          schema: { type: string }
+        - name: start_date
+          in: query
+          description: "Format: YYYY-MM-DD (inclusive lower bound)."
+          schema: { type: string, format: date }
+        - name: end_date
+          in: query
+          description: "Format: YYYY-MM-DD (exclusive upper bound)."
+          schema: { type: string, format: date }
+        - name: limit
+          in: query
+          description: Must be between 1 and 100. Defaults to 100.
+          schema: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: Matches for the market, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/MatchResponse" }
+        "400":
+          description: Invalid start_date, end_date, or limit.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: Unknown market.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /markets/{market}/candles:
     get:
       operationId: getCandles
@@ -893,6 +942,21 @@ components:
           type: array
           items: { $ref: "#/components/schemas/DepthLevel" }
       required: [market, bids, asks]
+
+    MatchResponse:
+      type: object
+      description: >-
+        Same public shape as the /stream/{market} SSE "trade" event.
+        Deliberately does not include buy_order_id/sell_order_id (this is a
+        public, unauthenticated endpoint — those reference two different
+        users' orders).
+      properties:
+        id: { type: string, format: uuid }
+        price: { type: integer, format: int64, minimum: 0 }
+        quantity: { type: integer, format: int64, minimum: 0 }
+        taker_side: { type: string, enum: [buy, sell] }
+        match_time: { type: integer, format: int64, description: unix seconds }
+      required: [id, price, quantity, taker_side, match_time]
 
     CreateOrderRequest:
       type: object
