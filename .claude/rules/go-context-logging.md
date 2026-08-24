@@ -1,7 +1,3 @@
----
-paths: ["**/*.go"]
----
-
 # Go — Context & Logging
 
 ## Context Propagation

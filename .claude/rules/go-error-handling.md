@@ -1,7 +1,3 @@
----
-paths: ["**/*.go"]
----
-
 # Go — Error Handling
 
 ## Never Ignore Errors

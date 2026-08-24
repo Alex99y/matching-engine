@@ -1,7 +1,3 @@
----
-paths: ["**/*.go"]
----
-
 # Go — Layer Architecture
 
 ## Call Chain

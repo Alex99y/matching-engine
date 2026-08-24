@@ -1,8 +1,4 @@
----
-paths: ["**/*.go"]
----
-
-# Go — Comment Minimalism
+# Comment Minimalism
 
 ## Comment the Why, Not the What
 
@@ -100,3 +96,9 @@ When generating Go code, the default is no comment on anything — exported or n
 when a future reader, with no extra context, would misunderstand the code or its failure modes
 without it. When in doubt, leave it out.
 </content>
+
+## Self-Check Before Finishing
+
+Before considering any .go file complete, scan every comment you just wrote and ask: 
+"if I delete this line, does the reader lose information the code doesn't already give them?" 
+If no, delete the comment. Do this pass even if you believe you followed the rule while writing.

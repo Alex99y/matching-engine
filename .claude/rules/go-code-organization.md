@@ -1,7 +1,3 @@
----
-paths: ["**/*.go"]
----
-
 # Go — Code Organization
 
 ## Utility Functions Belong in `pkg/utils`
