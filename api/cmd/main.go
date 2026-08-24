@@ -10,6 +10,7 @@ import (
 	"github.com/alex99y/matching-engine/api/internal/faucet"
 	"github.com/alex99y/matching-engine/api/internal/instruments"
 	"github.com/alex99y/matching-engine/api/internal/markets"
+	"github.com/alex99y/matching-engine/api/internal/matches"
 	"github.com/alex99y/matching-engine/api/internal/metrics"
 	"github.com/alex99y/matching-engine/api/internal/orders"
 	"github.com/alex99y/matching-engine/api/internal/server"
@@ -134,6 +135,10 @@ func main() {
 	marketService := markets.NewMarketService(log, marketRepository, streamHub)
 	marketHandler := markets.NewMarketHandler(log, marketService, marketQuanta)
 
+	matchRepository := repository.NewMatchRepository(log, postgresqlClient)
+	matchService := matches.NewMatchService(log, matchRepository)
+	matchHandler := matches.NewMatchHandler(log, matchService, marketIDs)
+
 	srv := server.NewServer(server.ServerDependencies{
 		Logger:             log,
 		AuthMiddleware:     authMiddleware,
@@ -142,6 +147,7 @@ func main() {
 		UsersHandler:       userHandler,
 		InstrumentsHandler: instrumentHandler,
 		MarketsHandler:     marketHandler,
+		MatchesHandler:     matchHandler,
 		OrdersHandler:      orderHandler,
 		CandleHandler:      candleHandler,
 		StreamHandler:      streamHandler,

@@ -12,6 +12,7 @@ import {
   type CreateTokenParams,
   type GetCandlesParams,
   type GetDepthOptions,
+  type GetMatchesFilter,
   type GetOrdersFilter,
   type GetUserOperationsFilter,
   type LoginParams,
@@ -182,6 +183,20 @@ export function validateCandleStreamInterval(interval: number): void {
 }
 
 export function validateGetOrdersFilter(filter: GetOrdersFilter): void {
+  if (filter.limit !== undefined) {
+    if (!Number.isInteger(filter.limit) || filter.limit < 1 || filter.limit > 100) {
+      throw new ValidationError("limit must be an integer between 1 and 100");
+    }
+  }
+  if (filter.startDate !== undefined && !DATE_PATTERN.test(filter.startDate)) {
+    throw new ValidationError("startDate must be in YYYY-MM-DD format");
+  }
+  if (filter.endDate !== undefined && !DATE_PATTERN.test(filter.endDate)) {
+    throw new ValidationError("endDate must be in YYYY-MM-DD format");
+  }
+}
+
+export function validateGetMatchesFilter(filter: GetMatchesFilter): void {
   if (filter.limit !== undefined) {
     if (!Number.isInteger(filter.limit) || filter.limit < 1 || filter.limit > 100) {
       throw new ValidationError("limit must be an integer between 1 and 100");

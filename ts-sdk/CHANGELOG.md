@@ -4,6 +4,14 @@
 
 ### Added
 
+- `MatchingEngineClient.getMatches(market, filter?)` — recent matches (trades)
+  for a market, newest first (`GET /api/v1/markets/:market/matches`), the REST
+  counterpart of `streamMarket`'s `"trade"` message. `filter` accepts
+  `startDate`/`endDate` (`YYYY-MM-DD`, end exclusive) and `limit` (1-100,
+  defaults to 100 server-side). Deliberately excludes the underlying
+  buy/sell order ids (public, unauthenticated endpoint; those belong to two
+  different users' orders). Returns `Match[]` (`id`, `price`, `quantity`,
+  `takerSide`, `matchTime`). New exported types: `Match`, `GetMatchesFilter`.
 - `MatchingEngineClient.getDepth(market, options?)` — one-shot order-book depth
   snapshot (`GET /api/v1/markets/:market/depth`), the REST counterpart of
   `streamMarket`'s first frame for callers that don't want to hold an SSE

@@ -8,6 +8,7 @@ import (
 	"github.com/alex99y/matching-engine/api/internal/faucet"
 	"github.com/alex99y/matching-engine/api/internal/instruments"
 	"github.com/alex99y/matching-engine/api/internal/markets"
+	"github.com/alex99y/matching-engine/api/internal/matches"
 	"github.com/alex99y/matching-engine/api/internal/metrics"
 	"github.com/alex99y/matching-engine/api/internal/openapi"
 	"github.com/alex99y/matching-engine/api/internal/orders"
@@ -31,6 +32,7 @@ type ServerDependencies struct {
 	UsersHandler       *users.UserHandler
 	InstrumentsHandler *instruments.InstrumentHandler
 	MarketsHandler     *markets.MarketHandler
+	MatchesHandler     *matches.MatchHandler
 	OrdersHandler      *orders.OrderHandler
 	CandleHandler      *candles.CandleHandler
 	StreamHandler      *stream.StreamHandler
@@ -67,6 +69,9 @@ func NewServer(dependencies ServerDependencies) *Server {
 	}
 	if dependencies.MarketsHandler == nil {
 		panic("markets handler cannot be nil")
+	}
+	if dependencies.MatchesHandler == nil {
+		panic("matches handler cannot be nil")
 	}
 	if dependencies.OrdersHandler == nil {
 		panic("orders handler cannot be nil")
@@ -117,6 +122,7 @@ func NewServer(dependencies ServerDependencies) *Server {
 	users.RegisterUserRoutes(apiV1, dependencies.AuthMiddleware, dependencies.UsersHandler)
 	instruments.RegisterInstrumentRoutes(apiV1, dependencies.InstrumentsHandler)
 	markets.RegisterMarketRoutes(apiV1, dependencies.MarketsHandler)
+	matches.RegisterMatchRoutes(apiV1, dependencies.MatchesHandler)
 	orders.RegisterOrderRoutes(apiV1, dependencies.AuthMiddleware, dependencies.OrdersHandler)
 	candles.RegisterCandleRoutes(apiV1, dependencies.CandleHandler)
 	stream.RegisterStreamRoutes(apiV1, dependencies.AuthMiddleware, dependencies.StreamHandler)
