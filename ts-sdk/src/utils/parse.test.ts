@@ -6,6 +6,7 @@ import {
   parseBatchCreateOrderResponse,
   parseInstruments,
   parseLoginToken,
+  parseMarketPrices,
   parseMarkets,
   parseOrder,
   parseOrders,
@@ -69,6 +70,55 @@ describe("parseMarkets", () => {
         },
       ]),
     ).toThrow(ParseError);
+  });
+});
+
+describe("parseMarketPrices", () => {
+  it("maps a full row to camelCase bigints and a string change percent", () => {
+    const prices = parseMarketPrices([
+      {
+        market: "BTC-USDT",
+        price: "11000",
+        min_price_24h: "9000",
+        max_price_24h: "12000",
+        volume_24h: "5",
+        change_percent_24h: "10.00",
+      },
+    ]);
+    expect(prices[0]).toEqual({
+      market: "BTC-USDT",
+      price: 11000n,
+      minPrice24h: 9000n,
+      maxPrice24h: 12000n,
+      volume24h: 5n,
+      changePercent24h: "10.00",
+    });
+  });
+
+  it("accepts price already revived as bigint by the BIGINT_WIRE_FIELDS reviver", () => {
+    const prices = parseMarketPrices([{ market: "BTC-USDT", price: 11000n }]);
+    expect(prices[0]).toEqual({ market: "BTC-USDT", price: 11000n });
+  });
+
+  it("omits stat fields that are null on the wire", () => {
+    const prices = parseMarketPrices([
+      { market: "ETH-USDT", price: null, min_price_24h: null, max_price_24h: null, volume_24h: null, change_percent_24h: null },
+    ]);
+    expect(prices[0]).toEqual({ market: "ETH-USDT" });
+  });
+
+  it("throws ParseError when not an array", () => {
+    expect(() => parseMarketPrices({})).toThrow(ParseError);
+  });
+
+  it("throws ParseError on a missing required field", () => {
+    expect(() => parseMarketPrices([{ price: "100" }])).toThrow(ParseError);
+  });
+
+  it("throws ParseError when a decimal-string amount is malformed", () => {
+    expect(() => parseMarketPrices([{ market: "ETH-USDT", price: "not-a-number" }])).toThrow(
+      ParseError,
+    );
   });
 });
 

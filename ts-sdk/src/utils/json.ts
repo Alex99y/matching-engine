@@ -1,7 +1,11 @@
-// The Go API serializes amount/price fields as JSON numbers backed by uint64.
-// JavaScript's `number` silently loses integer precision above 2^53, so we
-// decode those specific wire fields as `bigint` and re-encode bigints as
-// unquoted JSON integers on the way out. Pure functions only — no I/O.
+// The Go API serializes amount/price fields backed by uint64 either as a raw
+// JSON number (orders, matches, depth) or, for some endpoints, as a quoted
+// decimal string via strconv.FormatUint (candles, GetPrices) — the same key
+// name can carry either shape depending on the endpoint. JavaScript's
+// `number` silently loses integer precision above 2^53, so we decode
+// flagged wire fields as `bigint` regardless of which shape they arrive in,
+// and re-encode bigints as unquoted JSON integers on the way out. Pure
+// functions only — no I/O.
 
 /**
  * Raw wire field names (snake_case, as emitted by the API) that carry uint64
@@ -48,6 +52,12 @@ export function parseWithBigInts(text: string): unknown {
   const reviver: BigIntReviver = (key, value, context) => {
     if (!BIGINT_WIRE_FIELDS.has(key) || value === null || value === undefined) {
       return value;
+    }
+    // A quoted decimal string round-trips through JSON.parse without
+    // precision loss, so decode it directly — context.source for a string
+    // value includes the surrounding quotes and isn't valid BigInt() input.
+    if (typeof value === "string") {
+      return BigInt(value);
     }
     if (context && typeof context.source === "string") {
       return BigInt(context.source);

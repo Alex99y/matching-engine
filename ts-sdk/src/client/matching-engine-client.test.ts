@@ -130,4 +130,27 @@ describe("MatchingEngineClient public methods", () => {
     expect(markets[0]?.priceQuantum).toBe(1000n);
     expect(instruments[0]?.symbol).toBe("ETH");
   });
+
+  it("getPrices maps latest prices and 24h stats", async () => {
+    const { fetchFn } = routerFetch({
+      "GET /api/v1/markets/prices": () =>
+        jsonResponse(
+          '[{"market":"BTC-USDT","price":"11000","min_price_24h":"9000","max_price_24h":"12000","volume_24h":"5","change_percent_24h":"10.00"}]',
+        ),
+    });
+    const client = makeClient(fetchFn);
+
+    const prices = await client.getPrices();
+
+    expect(prices).toEqual([
+      {
+        market: "BTC-USDT",
+        price: 11000n,
+        minPrice24h: 9000n,
+        maxPrice24h: 12000n,
+        volume24h: 5n,
+        changePercent24h: "10.00",
+      },
+    ]);
+  });
 });

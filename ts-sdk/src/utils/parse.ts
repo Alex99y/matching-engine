@@ -25,6 +25,7 @@ import type {
   Instrument,
   Market,
   MarketDepth,
+  MarketPrice,
   Match,
   OpenOrder,
   Operation,
@@ -145,6 +146,52 @@ export function parseMarketDepth(raw: unknown): MarketDepth {
     bids: asArray(o["bids"], "bids").map(parseDepthLevel),
     asks: asArray(o["asks"], "asks").map(parseDepthLevel),
   };
+}
+
+// GetPrices amounts arrive as nullable decimal strings (FormatUint64Ptr in
+// Go) — same wire convention as candles, but optional since a market can have
+// no matches yet (ever, or just within the 24h window). "price" is also a
+// BIGINT_WIRE_FIELDS key (reused, as a raw number, by orders/matches/depth),
+// so transport.request's reviver already turns it into a bigint before this
+// runs; its siblings (min/max/volume) aren't flagged and arrive as plain
+// strings. Accept both shapes rather than picking one.
+function optBigIntStr(obj: Record<string, unknown>, key: string): bigint | undefined {
+  const v = obj[key];
+  if (v === undefined || v === null) {
+    return undefined;
+  }
+  if (typeof v === "bigint") {
+    return v;
+  }
+  if (typeof v !== "string" || v === "") {
+    throw new ParseError(`expected field "${key}" to be a decimal string`);
+  }
+  try {
+    return BigInt(v);
+  } catch {
+    throw new ParseError(`expected field "${key}" to be a valid integer string`);
+  }
+}
+
+function parseMarketPrice(raw: unknown): MarketPrice {
+  const o = asRecord(raw, "market price");
+  const price = optBigIntStr(o, "price");
+  const minPrice24h = optBigIntStr(o, "min_price_24h");
+  const maxPrice24h = optBigIntStr(o, "max_price_24h");
+  const volume24h = optBigIntStr(o, "volume_24h");
+  const changePercent24h = optString(o, "change_percent_24h");
+  return {
+    market: reqString(o, "market"),
+    ...(price !== undefined ? { price } : {}),
+    ...(minPrice24h !== undefined ? { minPrice24h } : {}),
+    ...(maxPrice24h !== undefined ? { maxPrice24h } : {}),
+    ...(volume24h !== undefined ? { volume24h } : {}),
+    ...(changePercent24h !== undefined ? { changePercent24h } : {}),
+  };
+}
+
+export function parseMarketPrices(raw: unknown): MarketPrice[] {
+  return asArray(raw, "market prices").map(parseMarketPrice);
 }
 
 function parseMatch(raw: unknown): Match {

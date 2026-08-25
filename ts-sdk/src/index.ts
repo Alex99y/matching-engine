@@ -56,6 +56,7 @@ export type {
   LoginParams,
   Market,
   MarketDepth,
+  MarketPrice,
   MarketStreamOptions,
   Match,
   OpenOrder,

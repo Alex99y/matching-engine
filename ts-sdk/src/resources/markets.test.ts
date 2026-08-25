@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ValidationError } from "../errors/index.js";
 import type { Transport } from "../http/transport.js";
-import { getDepth, getMarkets } from "./markets.js";
+import { getDepth, getMarkets, getPrices } from "./markets.js";
 
 describe("markets.getMarkets", () => {
   it("requests the markets endpoint and maps the response", async () => {
@@ -22,6 +22,47 @@ describe("markets.getMarkets", () => {
     expect(request).toHaveBeenCalledWith("GET", "/api/v1/markets/");
     expect(markets[0]?.baseSymbol).toBe("ETH");
     expect(markets[0]?.priceQuantum).toBe(1000n);
+  });
+});
+
+describe("markets.getPrices", () => {
+  it("requests the prices endpoint and maps a full row", async () => {
+    const request = vi.fn().mockResolvedValue([
+      {
+        market: "BTC-USDT",
+        // "price" is a BIGINT_WIRE_FIELDS key, so transport.request has
+        // already revived it as bigint by the time the resource sees it.
+        price: 11000n,
+        min_price_24h: "9000",
+        max_price_24h: "12000",
+        volume_24h: "5",
+        change_percent_24h: "10.00",
+      },
+    ]);
+    const transport = { request } as unknown as Transport;
+
+    const prices = await getPrices(transport);
+
+    expect(request).toHaveBeenCalledWith("GET", "/api/v1/markets/prices");
+    expect(prices).toEqual([
+      {
+        market: "BTC-USDT",
+        price: 11000n,
+        minPrice24h: 9000n,
+        maxPrice24h: 12000n,
+        volume24h: 5n,
+        changePercent24h: "10.00",
+      },
+    ]);
+  });
+
+  it("omits stat fields for a market with no matches", async () => {
+    const request = vi.fn().mockResolvedValue([{ market: "ETH-USDT" }]);
+    const transport = { request } as unknown as Transport;
+
+    const prices = await getPrices(transport);
+
+    expect(prices).toEqual([{ market: "ETH-USDT" }]);
   });
 });
 

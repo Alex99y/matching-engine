@@ -22,6 +22,7 @@ import type {
   LoginParams,
   Market,
   MarketDepth,
+  MarketPrice,
   MarketStreamOptions,
   Match,
   RegisterParams,
@@ -150,6 +151,18 @@ export class MatchingEngineClient {
    */
   async getMarkets(): Promise<Market[]> {
     return marketsResource.getMarkets(this.transport);
+  }
+
+  /**
+   * Fetch latest price and 24h stats (min/max/volume/change) for every market.
+   *
+   * @throws {@link APIError} on server-side failures.
+   * @example
+   * const prices = await client.getPrices();
+   * const btc = prices.find((p) => p.market === "BTC-USDT");
+   */
+  async getPrices(): Promise<MarketPrice[]> {
+    return marketsResource.getPrices(this.transport);
   }
 
   /**
