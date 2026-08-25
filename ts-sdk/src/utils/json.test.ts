@@ -30,6 +30,24 @@ describe("parseWithBigInts", () => {
     expect(out.price).toBeNull();
   });
 
+  it("decodes a flagged field carried as a quoted decimal string (GetPrices-style)", () => {
+    const out = parseWithBigInts('{"price":"11000","market":"BTC-USDT"}') as {
+      price: bigint;
+      market: string;
+    };
+    expect(out.price).toBe(11000n);
+    expect(out.market).toBe("BTC-USDT");
+  });
+
+  it("preserves precision for a large flagged field carried as a quoted string", () => {
+    const out = parseWithBigInts('{"price":"123456789012345678"}') as { price: bigint };
+    expect(out.price).toBe(123456789012345678n);
+  });
+
+  it("throws on a malformed quoted decimal string for a flagged field", () => {
+    expect(() => parseWithBigInts('{"price":"not-a-number"}')).toThrow(SyntaxError);
+  });
+
   it("revives bigint fields inside nested arrays", () => {
     const out = parseWithBigInts('[{"remaining_have":10},{"remaining_have":20}]') as Array<{
       remaining_have: bigint;

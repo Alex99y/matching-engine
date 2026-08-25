@@ -13,6 +13,13 @@
 
 ### Added
 
+- `MatchingEngineClient.getPrices()` — latest price and 24h stats for every
+  market (`GET /api/v1/markets/prices`). Returns `MarketPrice[]` (`market`,
+  `price?`, `minPrice24h?`, `maxPrice24h?`, `volume24h?` as `bigint`;
+  `changePercent24h?` as a string formatted to 2 decimals, e.g. `"-3.14"`).
+  Stat fields are undefined when the market has no matches within the last
+  24h; `price` is separately undefined only when it has never matched at all.
+  New exported type: `MarketPrice`.
 - `MatchingEngineClient.getMatches(market, filter?)` — recent matches (trades)
   for a market, newest first (`GET /api/v1/markets/:market/matches`), the REST
   counterpart of `streamMarket`'s `"trade"` message. `filter` accepts

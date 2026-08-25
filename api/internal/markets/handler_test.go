@@ -11,15 +11,21 @@ import (
 	"github.com/alex99y/matching-engine/api/internal/markets"
 	"github.com/alex99y/matching-engine/api/internal/stream"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	"github.com/alex99y/matching-engine/db/pkg/repository"
 	"github.com/gofiber/fiber/v3"
 )
 
 func newTestApp(depthSource markets.DepthSource, marketQuanta map[string]uint64) *fiber.App {
-	svc := markets.NewMarketService(logger.NewLogger(logger.Error), stubMarketRepository{}, depthSource)
+	return newTestAppWithRepo(stubMarketRepository{}, depthSource, marketQuanta)
+}
+
+func newTestAppWithRepo(repo markets.MarketRepository, depthSource markets.DepthSource, marketQuanta map[string]uint64) *fiber.App {
+	svc := markets.NewMarketService(logger.NewLogger(logger.Error), repo, depthSource)
 	h := markets.NewMarketHandler(logger.NewLogger(logger.Error), svc, marketQuanta)
 
 	app := fiber.New()
 	app.Get("/markets/:market/depth", h.GetDepth)
+	app.Get("/markets/prices", h.GetPrices)
 	return app
 }
 
@@ -114,5 +120,46 @@ func TestGetDepthHandlerServiceErrorMapsTo500WithoutLeakingDetail(t *testing.T) 
 	}
 	if strings.Contains(string(body), "10.0.0.5") {
 		t.Errorf("response leaked internal error detail: %s", body)
+	}
+}
+
+func TestGetPricesHandlerIncludesChangePercentButNotRawOpenPrice(t *testing.T) {
+	u64 := func(v uint64) *uint64 { return &v }
+	repo := stubMarketRepository{prices: []repository.MarketPrice{
+		{
+			BaseSymbol: "BTC", QuoteSymbol: "USDT",
+			Price: u64(110), MinPrice24h: u64(90), MaxPrice24h: u64(120),
+			Volume24h: u64(5), OpenPrice24h: u64(100),
+		},
+	}}
+	app := newTestAppWithRepo(repo, fakeDepthSource{}, nil)
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/markets/prices", nil))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	// The raw open price is used server-side to compute the percentage but must never reach
+	// the wire — check the actual JSON, not just the (compile-time-safe) Go struct shape.
+	if strings.Contains(string(body), "open_price") {
+		t.Fatalf("response leaked the raw open price: %s", body)
+	}
+
+	var got []markets.GetPriceResponse
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if got[0].ChangePercent24h == nil || *got[0].ChangePercent24h != "10.00" {
+		t.Fatalf("ChangePercent24h = %v, want \"10.00\"", got[0].ChangePercent24h)
 	}
 }

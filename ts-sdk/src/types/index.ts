@@ -77,6 +77,22 @@ export interface MarketDepth {
 }
 
 /**
+ * Latest price and 24h stats for one market. `price` is undefined when the
+ * market has never matched a trade; `minPrice24h`/`maxPrice24h`/`volume24h`/
+ * `changePercent24h` are undefined when it has no matches within the last 24h
+ * even if `price` is set (it can reflect an older trade).
+ */
+export interface MarketPrice {
+  readonly market: string;
+  readonly price?: bigint;
+  readonly minPrice24h?: bigint;
+  readonly maxPrice24h?: bigint;
+  readonly volume24h?: bigint;
+  /** Formatted to 2 decimals server-side, e.g. `"-3.14"`. */
+  readonly changePercent24h?: string;
+}
+
+/**
  * One historical trade — the REST counterpart of the `"trade"` message on
  * {@link streamMarket}'s public feed. Deliberately has no order id fields:
  * this is public, unauthenticated market data, and a match's buy/sell orders
