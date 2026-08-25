@@ -58,3 +58,25 @@ func TestStorableOverflow(t *testing.T) {
 		t.Fatalf("overflow market-sell quantity accepted: %v", err)
 	}
 }
+
+// A limit order's real notional is price * quantity / BaseScale, not the unscaled product — a
+// BTC order at a realistic price (9 decimals) must not be rejected just because the unscaled
+// product overflows uint64, and the check must still catch a notional that overflows even after
+// scaling down.
+func TestStorableOverflowRespectsBaseScale(t *testing.T) {
+	nineDecimals := MarketConstraints{BaseScale: 1_000_000_000}
+
+	// price 79200 USDT, quantity 0.5 BTC (9 decimals) — notional 39,600 USDT, well within range.
+	real := validLimit()
+	real.Price, real.Quantity = 79_200_000_000, 500_000_000
+	if err := ValidateOrderEvent(real, nineDecimals); err != nil {
+		t.Fatalf("realistic BTC order rejected: %v", err)
+	}
+
+	// same scale, but a notional that genuinely overflows even after dividing by BaseScale.
+	tooBig := validLimit()
+	tooBig.Price, tooBig.Quantity = math.MaxUint64, math.MaxUint64
+	if err := ValidateOrderEvent(tooBig, nineDecimals); !errors.Is(err, ErrInvalidOrderEvent) {
+		t.Fatalf("scaled overflow notional accepted: %v", err)
+	}
+}
