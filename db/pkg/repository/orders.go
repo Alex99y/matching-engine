@@ -37,14 +37,27 @@ type OrderRow struct {
 	ExpiresAt            *int64
 	Type                 string
 	TimeInForce          string
+	Side                 *string
 	Price                *uint64
 	MarketID             *int
-	Side                 *string
 	ORemainingHaveAmount *uint64
 	ORemainingWantAmount *uint64
 	CancelledAt          *int64
 	CRemainingHaveAmount *uint64
 	CRemainingWantAmount *uint64
+	Matches              []OrderMatch
+}
+
+type OrderMatch struct {
+	ID          uuid.UUID
+	Price       uint64
+	BaseAmount  uint64
+	QuoteAmount uint64
+	// Fee is denominated in whatever this order received in this match:
+	// base if it was the buyer, quote if it was the seller
+	Fee       uint64
+	IsTaker   bool
+	MatchTime int64
 }
 
 type InsertOrderParams struct {
@@ -168,6 +181,129 @@ func (o *OrderRepository) GetOrderByID(ctx context.Context, userID uuid.UUID, id
 
 func (o *OrderRepository) GetOrderByClientOrderID(ctx context.Context, userID uuid.UUID, clientOrderID string) (*OrderRow, error) {
 	return o.getOrder(ctx, "WHERE orders.user_id = $1 AND orders.client_order_id = $2", userID, clientOrderID)
+}
+
+func (o *OrderRepository) GetOrderByIDWithMatches(ctx context.Context, userID, orderID uuid.UUID) (_ *OrderRow, outErr error) {
+	defer o.metrics.ObserveQuery("get_order_with_matches", time.Now(), &outErr)
+	const query = `
+		SELECT
+			orders.id,
+			orders.client_order_id,
+			orders.user_id,
+			orders.have_instrument_id,
+			orders.want_instrument_id,
+			orders.have_quantity,
+			orders.want_quantity,
+			orders.created_at,
+			orders.expires_at,
+			orders.type,
+			orders.time_in_force,
+			open_orders.price,
+			open_orders.market_id,
+			open_orders.side,
+			open_orders.remaining_have_amount,
+			open_orders.remaining_want_amount,
+			cancelled_orders.remaining_have_amount,
+			cancelled_orders.remaining_want_amount,
+			cancelled_orders.cancelled_at,
+			matches.id,
+			matches.match_price,
+			matches.match_buy_amount,
+			matches.match_sell_amount,
+			CASE WHEN matches.buy_order_id = orders.id THEN matches.match_buy_fees ELSE matches.match_sell_fees END,
+			CASE WHEN matches.buy_order_id = orders.id THEN matches.buy_order_is_taker ELSE NOT matches.buy_order_is_taker END,
+			matches.match_time
+		FROM orders
+		LEFT JOIN open_orders      ON open_orders.order_id      = orders.id
+		LEFT JOIN cancelled_orders ON cancelled_orders.order_id = orders.id
+		LEFT JOIN matches          ON matches.buy_order_id = orders.id OR matches.sell_order_id = orders.id
+		WHERE orders.user_id = $1 AND orders.id = $2
+		ORDER BY matches.match_time ASC`
+
+	rows, err := o.psql.QueryContext(ctx, query, userID, orderID)
+	if err != nil {
+		o.logger.Error("GetOrderByIDWithMatches: " + err.Error())
+		return nil, fmt.Errorf("get order with matches: %w", err)
+	}
+	defer rows.Close()
+
+	var row OrderRow
+	found := false
+	matches := []OrderMatch{}
+
+	for rows.Next() {
+		found = true
+		var createdAt time.Time
+		var expiresAt sql.NullTime
+		var cancelledAt sql.NullTime
+		var clientOrderID sql.NullString
+		var haveQty, wantQty sql.NullInt64
+		var matchID uuid.NullUUID
+		var matchPrice, matchBaseAmount, matchQuoteAmount, matchFee sql.NullInt64
+		var matchIsTaker sql.NullBool
+		var matchTime sql.NullTime
+
+		if err := rows.Scan(
+			&row.ID, &clientOrderID, &row.UserID, &row.HaveInstrumentID, &row.WantInstrumentID,
+			&haveQty, &wantQty, &createdAt, &expiresAt, &row.Type, &row.TimeInForce,
+			&row.Price, &row.MarketID, &row.Side, &row.ORemainingHaveAmount, &row.ORemainingWantAmount,
+			&row.CRemainingHaveAmount, &row.CRemainingWantAmount, &cancelledAt,
+			&matchID, &matchPrice, &matchBaseAmount, &matchQuoteAmount, &matchFee, &matchIsTaker, &matchTime,
+		); err != nil {
+			o.logger.Error("GetOrderByIDWithMatches: scan: " + err.Error())
+			return nil, fmt.Errorf("get order with matches: scan: %w", err)
+		}
+
+		row.CreatedAt = createdAt.Unix()
+		row.ClientOrderID = clientOrderID.String
+		if row.HaveQuantity, err = safeUint64(haveQty, "have_quantity"); err != nil {
+			o.logger.Error("GetOrderByIDWithMatches: " + err.Error())
+			return nil, fmt.Errorf("get order with matches: %w", err)
+		}
+		if row.WantQuantity, err = safeUint64(wantQty, "want_quantity"); err != nil {
+			o.logger.Error("GetOrderByIDWithMatches: " + err.Error())
+			return nil, fmt.Errorf("get order with matches: %w", err)
+		}
+		if expiresAt.Valid {
+			v := expiresAt.Time.Unix()
+			row.ExpiresAt = &v
+		}
+		if cancelledAt.Valid {
+			v := cancelledAt.Time.Unix()
+			row.CancelledAt = &v
+		}
+
+		if matchID.Valid {
+			m := OrderMatch{ID: matchID.UUID, IsTaker: matchIsTaker.Bool, MatchTime: matchTime.Time.Unix()}
+			if m.Price, err = safeUint64(matchPrice, "match_price"); err != nil {
+				o.logger.Error("GetOrderByIDWithMatches: " + err.Error())
+				return nil, fmt.Errorf("get order with matches: %w", err)
+			}
+			if m.BaseAmount, err = safeUint64(matchBaseAmount, "match_buy_amount"); err != nil {
+				o.logger.Error("GetOrderByIDWithMatches: " + err.Error())
+				return nil, fmt.Errorf("get order with matches: %w", err)
+			}
+			if m.QuoteAmount, err = safeUint64(matchQuoteAmount, "match_sell_amount"); err != nil {
+				o.logger.Error("GetOrderByIDWithMatches: " + err.Error())
+				return nil, fmt.Errorf("get order with matches: %w", err)
+			}
+			if m.Fee, err = safeUint64(matchFee, "match_fee"); err != nil {
+				o.logger.Error("GetOrderByIDWithMatches: " + err.Error())
+				return nil, fmt.Errorf("get order with matches: %w", err)
+			}
+			matches = append(matches, m)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		o.logger.Error("GetOrderByIDWithMatches: " + err.Error())
+		return nil, fmt.Errorf("get order with matches: %w", err)
+	}
+	if !found {
+		return nil, ErrOrderNotFound
+	}
+
+	row.Matches = matches
+	return &row, nil
 }
 
 func (o *OrderRepository) GetOrdersByUser(
