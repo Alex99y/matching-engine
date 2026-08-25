@@ -9,3 +9,7 @@ export const BOOK_DEPTH = 15;
 
 // How many historical candles to fetch on load.
 export const CANDLE_HISTORY_BARS = 200;
+
+// GET /markets/prices has no SSE counterpart (unlike the order book), so the
+// price ticker polls instead of streaming.
+export const PRICE_TICKER_POLL_MS = 10_000;

@@ -56,6 +56,14 @@ export function marketRef(baseSymbol: string, quoteSymbol: string): string {
   return `${baseSymbol}-${quoteSymbol}`;
 }
 
+// change_percent_24h from GET /markets/prices arrives pre-formatted
+// server-side (2 decimals, "-" already included when negative) — it's a
+// display string, not a raw amount, so this only adds the "+" a negative
+// number already carries for itself.
+export function fmtPercentSigned(pct: string): string {
+  return pct.startsWith("-") || pct === "0.00" ? pct : `+${pct}`;
+}
+
 // A limit order's "have"/"want" legs map to base/quote by side — mirrors
 // limitHaveWant() in core/internal/orderbook/orderbook.go:
 //   buy:  have = quote (notional), want = base
