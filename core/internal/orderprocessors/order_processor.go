@@ -170,6 +170,7 @@ func NewOrderProcessor(
 			AmountQuantum: market.AmountQuantum,
 			MinOrderSize:  market.MinOrderSize,
 			MaxOrderSize:  market.MaxOrderSize,
+			BaseScale:     market.BaseScale,
 		},
 		ordersChannel: make(chan *queuedEvent, orderChannelBuffer),
 		failures:      make(map[uuid.UUID]int),

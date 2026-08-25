@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/bits"
 
 	"github.com/google/uuid"
 )
@@ -25,6 +26,28 @@ type MarketConstraints struct {
 	AmountQuantum uint64 // minimum quantity increment (lot size); 0 = unconstrained
 	MinOrderSize  uint64 // minimum base quantity; 0 = unconstrained
 	MaxOrderSize  uint64 // maximum base quantity; 0 = unconstrained
+	// BaseScale is 10^baseDecimals — needed to check the real notional (price * quantity /
+	// BaseScale, see quoteAmount in core/internal/orderbook/order.go), not the unscaled
+	// product. 0 is treated as 1 (unscaled); every real market has BaseScale >= 1.
+	BaseScale uint64
+}
+
+// notionalOverflows reports whether a limit order's real notional — price * quantity /
+// baseScale, what actually gets reserved and persisted — exceeds maxStorableAmount. The
+// unscaled price * quantity can overflow uint64 long before the scaled-down notional does
+// (baseScale is 10^baseDecimals, e.g. 10^9 for a 9-decimal asset), so this uses a 128-bit
+// intermediate (bits.Mul64/Div64) instead of a bare multiply — same pattern as feeOf in
+// core/internal/orderbook/orderbook.go.
+func notionalOverflows(price, quantity, baseScale uint64) bool {
+	if baseScale == 0 {
+		baseScale = 1
+	}
+	hi, lo := bits.Mul64(price, quantity)
+	if hi >= baseScale {
+		return true // quotient would not fit in 64 bits, let alone under maxStorableAmount
+	}
+	notional, _ := bits.Div64(hi, lo, baseScale)
+	return notional > maxStorableAmount
 }
 
 // ValidateOrderEvent checks structural correctness, market availability, and market
@@ -73,12 +96,12 @@ func ValidateOrderEvent(order *OpenOrderEvent, constraints MarketConstraints) er
 		if order.QuoteQty != nil {
 			return fmt.Errorf("%w: limit orders must not set quote_qty", ErrInvalidOrderEvent)
 		}
-		// The notional (price × quantity) is persisted as a BIGINT and used for the
-		// reservation; reject orders whose product overflows it even though price and
-		// quantity are each individually valid. Quantity is guaranteed non-zero above.
-		if order.Price > maxStorableAmount/order.Quantity {
-			return fmt.Errorf("%w: notional price*quantity overflows storable maximum (price %d, quantity %d)",
-				ErrInvalidOrderEvent, order.Price, order.Quantity)
+		// The notional (price × quantity ÷ BaseScale) is persisted as a BIGINT and used for
+		// the reservation; reject orders whose real notional overflows it even though price
+		// and quantity are each individually valid.
+		if notionalOverflows(order.Price, order.Quantity, constraints.BaseScale) {
+			return fmt.Errorf("%w: notional price*quantity/base_scale overflows storable maximum (price %d, quantity %d, base_scale %d)",
+				ErrInvalidOrderEvent, order.Price, order.Quantity, constraints.BaseScale)
 		}
 		if constraints.PriceQuantum > 0 && order.Price%constraints.PriceQuantum != 0 {
 			return fmt.Errorf("%w: price %d is not a multiple of tick size %d",
