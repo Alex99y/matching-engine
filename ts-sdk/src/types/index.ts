@@ -443,15 +443,35 @@ export interface CancelledOrder {
   readonly remainingWant: bigint;
 }
 
+/**
+ * One fill against an order. Amounts are symmetric (base/quote traded in that
+ * match, not oriented by the order's own side); `fee` is denominated in
+ * whatever the order received — base if it bought, quote if it sold.
+ */
+export interface OrderMatch {
+  readonly id: string;
+  readonly price: bigint;
+  readonly baseAmount: bigint;
+  readonly quoteAmount: bigint;
+  readonly fee: bigint;
+  readonly isTaker: boolean;
+  /** Unix seconds. */
+  readonly matchTime: number;
+}
+
 export interface Order {
   readonly id: string;
   readonly clientOrderId?: string;
   readonly type: string;
   readonly timeInForce: string;
+  /** "buy" or "sell". Absent only if the order's market has since been deleted. */
+  readonly side?: string;
   readonly haveQuantity: bigint;
   readonly wantQuantity: bigint;
   readonly createdAt: number;
   readonly expiresAt?: number;
   readonly openOrder?: OpenOrder;
   readonly cancelledOrder?: CancelledOrder;
+  /** Only populated by {@link getOrder} (single-order fetch), never by {@link getOrders}. */
+  readonly matches?: readonly OrderMatch[];
 }

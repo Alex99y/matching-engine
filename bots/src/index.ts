@@ -18,12 +18,13 @@ async function main(): Promise<void> {
     depthLevels: config.depthLevels,
   });
 
-  // ── Connect to ME ───────────────────────────────────────────────────────────
 
+  logger.info("Connecting to the ME ...")
   const client = new MatchingEngineClient(config.meHost, config.mePort, {
     allowInsecure: config.meInsecure,
   });
 
+  logger.info(`Logging in with ${config.meUsername}...`)
   let session = await client.login({
     username: config.meUsername,
     password: config.mePassword,

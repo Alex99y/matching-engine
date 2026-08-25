@@ -207,6 +207,37 @@ describe("orders.getOrder", () => {
     await expect(getOrder(transport, TOKEN, "")).rejects.toBeInstanceOf(ValidationError);
     expect(request).not.toHaveBeenCalled();
   });
+
+  it("maps side and matches, only present on the single-order fetch", async () => {
+    const { transport } = stubTransport({
+      ...orderRow,
+      side: "buy",
+      matches: [
+        {
+          id: "m1",
+          price: 100n,
+          base_amount: 5n,
+          quote_amount: 500n,
+          fee: 1n,
+          is_taker: false,
+          match_time: 1700000100,
+        },
+      ],
+    });
+    const order = await getOrder(transport, TOKEN, "o1");
+    expect(order.side).toBe("buy");
+    expect(order.matches).toEqual([
+      {
+        id: "m1",
+        price: 100n,
+        baseAmount: 5n,
+        quoteAmount: 500n,
+        fee: 1n,
+        isTaker: false,
+        matchTime: 1700000100,
+      },
+    ]);
+  });
 });
 
 // ---- getOrders ----

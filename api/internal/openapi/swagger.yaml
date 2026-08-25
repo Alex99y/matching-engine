@@ -583,7 +583,9 @@ paths:
           schema: { type: integer, minimum: 1, maximum: 100 }
       responses:
         "200":
-          description: Matching orders.
+          description: >-
+            Matching orders. `side` is included on every row; `matches` is
+            not — fetch GET /orders/{id} for one order's fill history.
           content:
             application/json:
               schema:
@@ -638,7 +640,7 @@ paths:
           schema: { type: string, format: uuid }
       responses:
         "200":
-          description: The order.
+          description: The order, including its full fill history in `matches`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OrderResponse" }
@@ -1066,6 +1068,23 @@ components:
         remaining_want: { type: integer, format: int64, minimum: 0 }
       required: [cancelled_at, remaining_have, remaining_want]
 
+    OrderMatch:
+      type: object
+      description: >-
+        One fill against the order. price/base_amount/quote_amount are
+        symmetric (the base/quote traded in that match), not oriented by this
+        order's own side. fee is denominated in whatever this order received
+        in this match — base if it bought, quote if it sold.
+      properties:
+        id: { type: string, format: uuid }
+        price: { type: integer, format: int64, minimum: 0 }
+        base_amount: { type: integer, format: int64, minimum: 0 }
+        quote_amount: { type: integer, format: int64, minimum: 0 }
+        fee: { type: integer, format: int64, minimum: 0 }
+        is_taker: { type: boolean }
+        match_time: { type: integer, format: int64, description: unix seconds }
+      required: [id, price, base_amount, quote_amount, fee, is_taker, match_time]
+
     OrderResponse:
       type: object
       properties:
@@ -1073,6 +1092,12 @@ components:
         client_order_id: { type: string }
         type: { type: string, enum: [limit, market] }
         time_in_force: { type: string, enum: [gtc, ioc, fok] }
+        side:
+          type: string
+          enum: [buy, sell]
+          description: >-
+            Populated for every order regardless of status. Absent only if
+            the order's market has since been deleted.
         have_quantity: { type: integer, format: int64, minimum: 0 }
         want_quantity: { type: integer, format: int64, minimum: 0 }
         created_at: { type: integer, format: int64, description: unix seconds }
@@ -1083,6 +1108,12 @@ components:
         cancelled_order:
           allOf: [{ $ref: "#/components/schemas/CancelledOrder" }]
           description: Present only if the order was cancelled.
+        matches:
+          type: array
+          items: { $ref: "#/components/schemas/OrderMatch" }
+          description: >-
+            Every fill against this order. Only present on GET /orders/{id};
+            GET /orders (the list endpoint) never populates this field.
       required: [id, type, time_in_force, have_quantity, want_quantity, created_at]
 
     CandleJSON:

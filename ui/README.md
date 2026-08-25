@@ -2,6 +2,16 @@
 
 React web frontend for visualizing the matching engine's order book and candle charts live.
 
+## Screenshots
+
+**Trading view** — order book, live price ticker, candle chart, and order entry:
+
+![Trading view](images/trading-view.png)
+
+**Order history** — click any order for a fill-by-fill breakdown with computed average price:
+
+![Order history detail](images/order-history-detail.png)
+
 ## Routes
 
 - `/` — trading view (order book, chart, order entry)

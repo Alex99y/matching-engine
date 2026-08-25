@@ -11,6 +11,7 @@ import { useToast } from "../contexts/ToastContext.tsx";
 import { useInstruments } from "../hooks/useInstruments.ts";
 import { AppHeader } from "../components/AppHeader.tsx";
 import { MarketSelector } from "../components/MarketSelector.tsx";
+import { OrderDetailModal } from "../components/OrderDetailModal.tsx";
 import { SignInRequired } from "../components/SignInRequired.tsx";
 import { SkeletonRows } from "../components/Skeleton.tsx";
 import { fmtBigInt, fmtDateTime, fmtUnits, shortId } from "../utils/format.ts";
@@ -19,12 +20,15 @@ type Tab = "orders" | "operations";
 
 // ── Orders tab ───────────────────────────────────────────────────────────
 //
-// NOTE: the API's order response never tells us which instrument was "have"
-// vs "want" for a filled or cancelled order (only open orders carry `side`,
-// via open_orders.side — see api/internal/orders/handler.go). So price and
-// a base/quote-scaled amount can only be shown for orders still resting in
-// the book; filled/cancelled rows fall back to raw have/want quantities.
-// Flagging this as a real API gap rather than guessing at an orientation.
+// order.side (top-level, from the API) is now populated for every order
+// regardless of status — not just open ones — so have/want can be split into
+// base/quote for filled and cancelled rows too, not only resting ones. It's
+// still only ever absent if the order's market was since deleted.
+//
+// Fill-level detail (per-match price/fee/taker role, avg price) is NOT in
+// this list response — only GET /orders/:id returns `matches` — so clicking
+// a row opens OrderDetailModal, which fetches the single order to fill that
+// in rather than bloating every row in this list.
 
 function orderStatus(order: Order): { label: string; color: string } {
   if (order.cancelledOrder) return { label: "Cancelled", color: "var(--red)" };
@@ -49,6 +53,7 @@ function OrdersTab({
   const [selectedMarket, setSelectedMarket] = useState<Market | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(false);
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
 
   const baseSymbol = selectedMarket?.baseSymbol ?? "";
   const quoteSymbol = selectedMarket?.quoteSymbol ?? "";
@@ -116,18 +121,15 @@ function OrdersTab({
           </div>
           {orders.map((order) => {
             const status = orderStatus(order);
-            const side = order.openOrder?.side;
+            const side = order.side;
 
-            // Split have/want into base/quote legs (see orderLegDecimals) — only
-            // possible when side is known, i.e. the order is still open. For a
-            // filled/cancelled order we genuinely don't know the orientation
-            // (a real API gap, not a UI shortcut — see the note at the top of
-            // this file), so both columns fall back to "—" per ui/CLAUDE.md
-            // rule 5 rather than guessing at a scale.
+            // Split have/want into base/quote legs — needs side, which is now known for
+            // every order (not just open ones). Only genuinely unknown if the order's
+            // market was since deleted (see the note above).
             let baseAmount = "—";
             let quoteAmount = "—";
             let rawTitle: string | undefined;
-            if (order.openOrder && side) {
+            if (side && order.openOrder) {
               const oo = order.openOrder;
               const baseRemaining = side === "buy" ? oo.remainingWant : oo.remainingHave;
               const baseOriginal = side === "buy" ? order.wantQuantity : order.haveQuantity;
@@ -135,12 +137,25 @@ function OrdersTab({
               const quoteOriginal = side === "buy" ? order.haveQuantity : order.wantQuantity;
               baseAmount = `${fmtUnits(baseRemaining, baseDecimals)} / ${fmtUnits(baseOriginal, baseDecimals)}`;
               quoteAmount = `${fmtUnits(quoteRemaining, quoteDecimals)} / ${fmtUnits(quoteOriginal, quoteDecimals)}`;
+            } else if (side) {
+              // Filled or cancelled: no per-leg "remaining" tracked at list level (that
+              // needs `matches`, only on the single-order fetch) — show the order's
+              // original size instead of "—".
+              const baseQty = side === "buy" ? order.wantQuantity : order.haveQuantity;
+              const quoteQty = side === "buy" ? order.haveQuantity : order.wantQuantity;
+              baseAmount = fmtUnits(baseQty, baseDecimals);
+              quoteAmount = fmtUnits(quoteQty, quoteDecimals);
             } else {
               rawTitle = `Orientation unknown — raw have→want: ${fmtBigInt(order.haveQuantity)} → ${fmtBigInt(order.wantQuantity)}`;
             }
 
             return (
-              <div key={order.id} style={s.row} title={rawTitle}>
+              <div
+                key={order.id}
+                style={{ ...s.row, ...s.clickableRow }}
+                title={rawTitle}
+                onClick={() => setSelectedOrderId(order.id)}
+              >
                 <span style={{ color: status.color, fontWeight: 600 }}>{status.label}</span>
                 <span style={{
                   color: side === "buy" ? "var(--green)" : side === "sell" ? "var(--red)" : "var(--text-muted)",
@@ -166,6 +181,18 @@ function OrdersTab({
             );
           })}
         </div>
+      )}
+
+      {selectedOrderId && (
+        <OrderDetailModal
+          session={session}
+          orderId={selectedOrderId}
+          baseSymbol={baseSymbol}
+          quoteSymbol={quoteSymbol}
+          baseDecimals={baseDecimals}
+          quoteDecimals={quoteDecimals}
+          onClose={() => setSelectedOrderId(null)}
+        />
       )}
     </div>
   );
@@ -383,6 +410,9 @@ const s = {
     fontSize: 12,
     borderBottom: "1px solid var(--border-subtle)",
     alignItems: "center",
+  },
+  clickableRow: {
+    cursor: "pointer",
   },
   opRow: {
     display: "grid",

@@ -177,6 +177,48 @@ describe("parseOrder", () => {
     });
   });
 
+  it("parses side and matches", () => {
+    const order = parseOrder({
+      ...base,
+      side: "sell",
+      matches: [
+        {
+          id: "m1",
+          price: 100n,
+          base_amount: 5n,
+          quote_amount: 500n,
+          fee: 1n,
+          is_taker: true,
+          match_time: 1700000100,
+        },
+      ],
+    });
+    expect(order.side).toBe("sell");
+    expect(order.matches).toEqual([
+      {
+        id: "m1",
+        price: 100n,
+        baseAmount: 5n,
+        quoteAmount: 500n,
+        fee: 1n,
+        isTaker: true,
+        matchTime: 1700000100,
+      },
+    ]);
+  });
+
+  it("omits side and matches when absent", () => {
+    const order = parseOrder(base);
+    expect(order.side).toBeUndefined();
+    expect(order.matches).toBeUndefined();
+  });
+
+  it("throws ParseError when a match field is malformed", () => {
+    expect(() =>
+      parseOrder({ ...base, matches: [{ id: "m1", price: 100n, is_taker: "yes" }] }),
+    ).toThrow(ParseError);
+  });
+
   it("parses a cancelled order", () => {
     const order = parseOrder({
       ...base,

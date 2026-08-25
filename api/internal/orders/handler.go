@@ -64,18 +64,30 @@ type CancelledOrder struct {
 	RemainingHave uint64 `json:"remaining_have"`
 	RemainingWant uint64 `json:"remaining_want"`
 }
+type OrderMatch struct {
+	ID          uuid.UUID `json:"id"`
+	Price       uint64    `json:"price"`
+	BaseAmount  uint64    `json:"base_amount"`
+	QuoteAmount uint64    `json:"quote_amount"`
+	Fee         uint64    `json:"fee"`
+	IsTaker     bool      `json:"is_taker"`
+	MatchTime   int64     `json:"match_time"`
+}
 
 type OrderResponse struct {
 	ID             uuid.UUID       `json:"id"`
 	ClientOrderID  string          `json:"client_order_id,omitempty"`
 	Type           string          `json:"type"`
 	TimeInForce    string          `json:"time_in_force"`
+	Side           *string         `json:"side,omitempty"`
 	HaveQuantity   uint64          `json:"have_quantity"`
 	WantQuantity   uint64          `json:"want_quantity"`
 	CreatedAt      int64           `json:"created_at"`
 	ExpiresAt      *int64          `json:"expires_at,omitempty"`
 	OpenOrder      *OpenOrder      `json:"open_order,omitempty"`
 	CancelledOrder *CancelledOrder `json:"cancelled_order,omitempty"`
+	// Matches is only populated by GET /orders/:id, never by the list endpoint.
+	Matches []OrderMatch `json:"matches,omitempty"`
 }
 
 func orderRowToResponse(row *repository.OrderRow) OrderResponse {
@@ -84,6 +96,7 @@ func orderRowToResponse(row *repository.OrderRow) OrderResponse {
 		ClientOrderID: row.ClientOrderID,
 		Type:          row.Type,
 		TimeInForce:   row.TimeInForce,
+		Side:          row.Side,
 		HaveQuantity:  row.HaveQuantity,
 		WantQuantity:  row.WantQuantity,
 		CreatedAt:     row.CreatedAt,
@@ -106,6 +119,21 @@ func orderRowToResponse(row *repository.OrderRow) OrderResponse {
 			CancelledAt:   *row.CancelledAt,
 			RemainingHave: *row.CRemainingHaveAmount,
 			RemainingWant: *row.CRemainingWantAmount,
+		}
+	}
+
+	if len(row.Matches) > 0 {
+		resp.Matches = make([]OrderMatch, len(row.Matches))
+		for i, m := range row.Matches {
+			resp.Matches[i] = OrderMatch{
+				ID:          m.ID,
+				Price:       m.Price,
+				BaseAmount:  m.BaseAmount,
+				QuoteAmount: m.QuoteAmount,
+				Fee:         m.Fee,
+				IsTaker:     m.IsTaker,
+				MatchTime:   m.MatchTime,
+			}
 		}
 	}
 

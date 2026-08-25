@@ -6,6 +6,7 @@ import { useToast } from "../contexts/ToastContext.tsx";
 import { useInstruments } from "../hooks/useInstruments.ts";
 import { AppHeader } from "../components/AppHeader.tsx";
 import { MarketSelector } from "../components/MarketSelector.tsx";
+import { PriceTicker } from "../components/PriceTicker.tsx";
 import { OrderBook } from "../components/OrderBook.tsx";
 import { CandleChart } from "../components/CandleChart.tsx";
 import { OrderForm } from "../components/OrderForm.tsx";
@@ -214,6 +215,12 @@ export function TradingPage() {
             onChange={(ref: string, m: Market) => { setMarket(ref); setSelectedMarket(m); }}
           />
         }
+      />
+
+      <PriceTicker
+        client={client}
+        activeMarket={market}
+        onSelect={(ref: string, m: Market) => { setMarket(ref); setSelectedMarket(m); }}
       />
 
       {/* ── Body ───────────────────────────────────────── */}

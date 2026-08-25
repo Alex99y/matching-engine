@@ -13,6 +13,16 @@
 
 ### Added
 
+- `Order.side` (`"buy"`/`"sell"`) — now populated for every order regardless
+  of status (previously only available via `openOrder.side` while the order
+  was still resting in the book). Absent only if the order's market has since
+  been deleted.
+- `Order.matches` — the fills against an order, as `OrderMatch[]` (`id`,
+  `price`, `baseAmount`, `quoteAmount`, `fee` as `bigint`; `isTaker` as
+  `boolean`; `matchTime` as unix seconds). Only populated by `getOrder`
+  (single-order fetch, `GET /orders/:id`) — `getOrders` (list) does not
+  include it. `fee` is denominated in whatever the order received in that
+  match (base if it bought, quote if it sold). New exported type: `OrderMatch`.
 - `MatchingEngineClient.getPrices()` — latest price and 24h stats for every
   market (`GET /api/v1/markets/prices`). Returns `MarketPrice[]` (`market`,
   `price?`, `minPrice24h?`, `maxPrice24h?`, `volume24h?` as `bigint`;

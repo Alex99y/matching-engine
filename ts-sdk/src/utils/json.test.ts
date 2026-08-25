@@ -48,6 +48,16 @@ describe("parseWithBigInts", () => {
     expect(() => parseWithBigInts('{"price":"not-a-number"}')).toThrow(SyntaxError);
   });
 
+  it("decodes order match fields (base_amount, quote_amount, fee) as bigint", () => {
+    const out = parseWithBigInts(
+      '{"base_amount":5,"quote_amount":500,"fee":1,"is_taker":true}',
+    ) as { base_amount: bigint; quote_amount: bigint; fee: bigint; is_taker: boolean };
+    expect(out.base_amount).toBe(5n);
+    expect(out.quote_amount).toBe(500n);
+    expect(out.fee).toBe(1n);
+    expect(out.is_taker).toBe(true);
+  });
+
   it("revives bigint fields inside nested arrays", () => {
     const out = parseWithBigInts('[{"remaining_have":10},{"remaining_have":20}]') as Array<{
       remaining_have: bigint;
