@@ -31,6 +31,7 @@ import type {
   Operation,
   OperationType,
   Order,
+  OrderMatch,
   OrderMessage,
   RefreshSessionResult,
   Session,
@@ -87,6 +88,14 @@ function optNumber(obj: Record<string, unknown>, key: string): number | undefine
   }
   if (typeof v !== "number" || !Number.isFinite(v)) {
     throw new ParseError(`expected field "${key}" to be a number`);
+  }
+  return v;
+}
+
+function reqBool(obj: Record<string, unknown>, key: string): boolean {
+  const v = obj[key];
+  if (typeof v !== "boolean") {
+    throw new ParseError(`expected field "${key}" to be a boolean`);
   }
   return v;
 }
@@ -228,6 +237,19 @@ function parseCancelledOrder(raw: unknown): CancelledOrder {
   };
 }
 
+function parseOrderMatch(raw: unknown): OrderMatch {
+  const o = asRecord(raw, "order match");
+  return {
+    id: reqString(o, "id"),
+    price: reqBigInt(o, "price"),
+    baseAmount: reqBigInt(o, "base_amount"),
+    quoteAmount: reqBigInt(o, "quote_amount"),
+    fee: reqBigInt(o, "fee"),
+    isTaker: reqBool(o, "is_taker"),
+    matchTime: reqNumber(o, "match_time"),
+  };
+}
+
 export function parseOrder(raw: unknown): Order {
   const o = asRecord(raw, "order");
   const order: Order = {
@@ -240,17 +262,21 @@ export function parseOrder(raw: unknown): Order {
   };
 
   const clientOrderId = optString(o, "client_order_id");
+  const side = optString(o, "side");
   const expiresAt = optNumber(o, "expires_at");
   const openOrder = o["open_order"] != null ? parseOpenOrder(o["open_order"]) : undefined;
   const cancelledOrder =
     o["cancelled_order"] != null ? parseCancelledOrder(o["cancelled_order"]) : undefined;
+  const matches = o["matches"] != null ? asArray(o["matches"], "matches").map(parseOrderMatch) : undefined;
 
   return {
     ...order,
     ...(clientOrderId !== undefined ? { clientOrderId } : {}),
+    ...(side !== undefined ? { side } : {}),
     ...(expiresAt !== undefined ? { expiresAt } : {}),
     ...(openOrder !== undefined ? { openOrder } : {}),
     ...(cancelledOrder !== undefined ? { cancelledOrder } : {}),
+    ...(matches !== undefined ? { matches } : {}),
   };
 }
 

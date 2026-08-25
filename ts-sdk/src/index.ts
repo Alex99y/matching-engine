@@ -62,6 +62,7 @@ export type {
   OpenOrder,
   Operation,
   Order,
+  OrderMatch,
   OrderMessage,
   RefreshSessionResult,
   RegisterParams,
