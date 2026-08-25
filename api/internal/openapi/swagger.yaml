@@ -15,6 +15,8 @@ servers:
 
 paths:
   /health:
+    servers:
+      - url: /
     get:
       operationId: healthCheck
       summary: Liveness check
@@ -23,6 +25,25 @@ paths:
       responses:
         "200":
           description: Service is up.
+
+  /openapi.yaml:
+    servers:
+      - url: /
+    get:
+      operationId: getOpenAPISpec
+      summary: Fetch this OpenAPI document
+      description: >-
+        Served from an embedded copy of this file (go:embed) — reflects
+        whatever was baked into the currently deployed api binary, which can
+        lag the source repo until the next build/deploy.
+      tags: [health]
+      security: []
+      responses:
+        "200":
+          description: The OpenAPI document, as YAML.
+          content:
+            text/yaml:
+              schema: { type: string }
 
   /sessions:
     post:
@@ -309,7 +330,11 @@ paths:
       security: []
       responses:
         "200":
-          description: Prices for all markets. Fields are null for a market with no trades in the last 24h.
+          description: >-
+            Prices for all markets. price is null only for a market that has
+            never matched a trade; min_price_24h/max_price_24h/volume_24h/
+            change_percent_24h are null whenever there are no matches within
+            the last 24h, even if price is set (it can reflect an older trade).
           content:
             application/json:
               schema:
@@ -497,6 +522,7 @@ paths:
           application/json:
             schema:
               type: array
+              minItems: 1
               maxItems: 500
               items: { $ref: "#/components/schemas/CreateOrderRequest" }
       responses:
@@ -553,7 +579,7 @@ paths:
           schema: { type: string, format: date }
         - name: limit
           in: query
-          description: Must be between 1 and 100.
+          description: Must be between 1 and 100. Defaults to 10.
           schema: { type: integer, minimum: 1, maximum: 100 }
       responses:
         "200":
@@ -690,12 +716,12 @@ paths:
       summary: SSE stream of public order book deltas and trades for a market
       description: >-
         Server-Sent Events, long-lived connection. First frame is a full
-        snapshot of the cached book, then live deltas/trades/heartbeats. The
-        connection is authenticated (so a user id is available if this
-        client also wants /stream/users), but the book/trade data itself is
-        public. See docs/event-log.md.
+        snapshot of the cached book, then live deltas/trades/heartbeats.
+        Public — unlike /stream/users, this route has no auth middleware in
+        router.go, despite MarketStream's own doc comment claiming the
+        connection is authenticated. See docs/event-log.md.
       tags: [stream]
-      security: [{ bearerAuth: [] }]
+      security: []
       parameters:
         - name: market
           in: path
@@ -844,15 +870,15 @@ components:
     CreateUserRequest:
       type: object
       properties:
-        username: { type: string }
-        email: { type: string }
+        username: { type: string, maxLength: 25 }
+        email: { type: string, maxLength: 100 }
         password: { type: string, minLength: 10 }
       required: [username, email, password]
 
     UsernameAvailableRequest:
       type: object
       properties:
-        username: { type: string }
+        username: { type: string, maxLength: 25 }
       required: [username]
 
     UsernameAvailableResponse:
@@ -908,15 +934,18 @@ components:
     GetPriceResponse:
       type: object
       description: >-
-        price/min_price_24h/max_price_24h/volume_24h are decimal strings
-        (JS safe-integer limits), null when the market has had no trades in
-        the last 24h.
+        price/min_price_24h/max_price_24h/volume_24h are decimal strings (JS
+        safe-integer limits); change_percent_24h is the percentage change
+        from the first match in the last 24h to price, formatted to 2
+        decimals (e.g. "-3.14"). See the 200 response description for the
+        nullability rule.
       properties:
         market: { type: string }
         price: { type: string, nullable: true }
         min_price_24h: { type: string, nullable: true }
         max_price_24h: { type: string, nullable: true }
         volume_24h: { type: string, nullable: true }
+        change_percent_24h: { type: string, nullable: true }
       required: [market]
 
     DepthLevel:
@@ -1000,6 +1029,7 @@ components:
       properties:
         order_ids:
           type: array
+          minItems: 1
           maxItems: 500
           items: { type: string, format: uuid }
       required: [order_ids]

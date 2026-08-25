@@ -67,11 +67,12 @@ func (h *MarketHandler) GetMarkets(c fiber.Ctx) error {
 }
 
 type GetPriceResponse struct {
-	Market      string  `json:"market"`
-	Price       *string `json:"price"`
-	MinPrice24h *string `json:"min_price_24h"`
-	MaxPrice24h *string `json:"max_price_24h"`
-	Volume24h   *string `json:"volume_24h"`
+	Market           string  `json:"market"`
+	Price            *string `json:"price"`
+	MinPrice24h      *string `json:"min_price_24h"`
+	MaxPrice24h      *string `json:"max_price_24h"`
+	Volume24h        *string `json:"volume_24h"`
+	ChangePercent24h *string `json:"change_percent_24h"`
 }
 
 func (h *MarketHandler) GetPrices(c fiber.Ctx) error {
@@ -83,11 +84,12 @@ func (h *MarketHandler) GetPrices(c fiber.Ctx) error {
 	response := make([]GetPriceResponse, len(prices))
 	for i, p := range prices {
 		response[i] = GetPriceResponse{
-			Market:      commonutils.MergeMarketRef(p.BaseSymbol, p.QuoteSymbol),
-			Price:       commonutils.FormatUint64Ptr(p.Price),
-			MinPrice24h: commonutils.FormatUint64Ptr(p.MinPrice24h),
-			MaxPrice24h: commonutils.FormatUint64Ptr(p.MaxPrice24h),
-			Volume24h:   commonutils.FormatUint64Ptr(p.Volume24h),
+			Market:           commonutils.MergeMarketRef(p.BaseSymbol, p.QuoteSymbol),
+			Price:            commonutils.FormatUint64Ptr(p.Price),
+			MinPrice24h:      commonutils.FormatUint64Ptr(p.MinPrice24h),
+			MaxPrice24h:      commonutils.FormatUint64Ptr(p.MaxPrice24h),
+			Volume24h:        commonutils.FormatUint64Ptr(p.Volume24h),
+			ChangePercent24h: commonutils.PercentChangePtr(p.Price, p.OpenPrice24h),
 		}
 	}
 

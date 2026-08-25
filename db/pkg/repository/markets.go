@@ -28,12 +28,13 @@ var (
 const MarketBaseQuoteUniqueConstraint = "markets_base_quote_uk"
 
 type MarketPrice struct {
-	BaseSymbol  string
-	QuoteSymbol string
-	Price       *uint64 // nil when the market has no matches yet
-	MinPrice24h *uint64
-	MaxPrice24h *uint64
-	Volume24h   *uint64
+	BaseSymbol   string
+	QuoteSymbol  string
+	Price        *uint64 // nil when the market has no matches yet
+	MinPrice24h  *uint64
+	MaxPrice24h  *uint64
+	Volume24h    *uint64
+	OpenPrice24h *uint64 // nil when the market has no matches within the last 24h
 }
 
 type Market struct {
@@ -171,10 +172,26 @@ func (r *MarketRepository) GetMarkets(ctx context.Context) ([]Market, error) {
 }
 
 func (r *MarketRepository) GetLatestPrices(ctx context.Context, windowStart time.Time) ([]MarketPrice, error) {
+	tx, rollback, err := dbutils.BeginTx(ctx, r.psql, r.logger, "GetLatestPrices")
+	if err != nil {
+		return nil, fmt.Errorf("%s %w", marketErrPrefix, ErrMarketGetFailed)
+	}
+	defer rollback()
+
+	// This query's cost estimate crosses jit_above_cost even though it only ever returns a
+	// handful of rows; SET LOCAL (not SET) keeps the exemption from leaking onto whatever
+	// unrelated query next borrows this pooled connection.
+	if _, err := tx.ExecContext(ctx, "SET LOCAL jit = off"); err != nil {
+		r.logger.Error("error disabling jit for latest prices query")
+		r.logger.ErrorO(err)
+		return nil, fmt.Errorf("%s %w", marketErrPrefix, ErrMarketGetFailed)
+	}
+
 	query := `
 		SELECT bi.symbol, qi.symbol,
 		       lp.match_price,
-		       stats.min_price, stats.max_price, stats.volume
+		       stats.min_price, stats.max_price, stats.volume,
+		       openp.match_price
 		FROM markets m
 		JOIN instruments bi ON bi.id = m.base_instrument_id
 		JOIN instruments qi ON qi.id = m.quote_instrument_id
@@ -182,7 +199,7 @@ func (r *MarketRepository) GetLatestPrices(ctx context.Context, windowStart time
 			SELECT match_price
 			FROM matches
 			WHERE matches.market_id = m.id
-			ORDER BY match_time DESC
+			ORDER BY match_time DESC, id DESC
 			LIMIT 1
 		) lp ON true
 		LEFT JOIN LATERAL (
@@ -191,9 +208,16 @@ func (r *MarketRepository) GetLatestPrices(ctx context.Context, windowStart time
 			FROM matches
 			WHERE matches.market_id = m.id AND match_time >= $1
 		) stats ON true
+		LEFT JOIN LATERAL (
+			SELECT match_price
+			FROM matches
+			WHERE matches.market_id = m.id AND match_time >= $1
+			ORDER BY match_time ASC, id ASC
+			LIMIT 1
+		) openp ON true
 		ORDER BY bi.symbol ASC, qi.symbol ASC
 	`
-	rows, err := r.psql.QueryContext(ctx, query, windowStart)
+	rows, err := tx.QueryContext(ctx, query, windowStart)
 	if err != nil {
 		r.logger.Error("error querying latest prices")
 		r.logger.ErrorO(err)
@@ -204,8 +228,8 @@ func (r *MarketRepository) GetLatestPrices(ctx context.Context, windowStart time
 	prices := []MarketPrice{}
 	for rows.Next() {
 		var p MarketPrice
-		var price, minPrice, maxPrice, volume sql.NullInt64
-		if err := rows.Scan(&p.BaseSymbol, &p.QuoteSymbol, &price, &minPrice, &maxPrice, &volume); err != nil {
+		var price, minPrice, maxPrice, volume, openPrice sql.NullInt64
+		if err := rows.Scan(&p.BaseSymbol, &p.QuoteSymbol, &price, &minPrice, &maxPrice, &volume, &openPrice); err != nil {
 			r.logger.Error("error scanning latest price row")
 			r.logger.ErrorO(err)
 			return nil, fmt.Errorf("%s %w", marketErrPrefix, ErrMarketGetFailed)
@@ -214,6 +238,7 @@ func (r *MarketRepository) GetLatestPrices(ctx context.Context, windowStart time
 		p.MinPrice24h = dbutils.NullInt64ToUint64(minPrice)
 		p.MaxPrice24h = dbutils.NullInt64ToUint64(maxPrice)
 		p.Volume24h = dbutils.NullInt64ToUint64(volume)
+		p.OpenPrice24h = dbutils.NullInt64ToUint64(openPrice)
 		prices = append(prices, p)
 	}
 	if err := rows.Err(); err != nil {

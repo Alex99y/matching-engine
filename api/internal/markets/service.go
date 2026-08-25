@@ -33,12 +33,13 @@ type Market struct {
 }
 
 type MarketPrice struct {
-	BaseSymbol  string
-	QuoteSymbol string
-	Price       *uint64
-	MinPrice24h *uint64
-	MaxPrice24h *uint64
-	Volume24h   *uint64
+	BaseSymbol   string
+	QuoteSymbol  string
+	Price        *uint64
+	MinPrice24h  *uint64
+	MaxPrice24h  *uint64
+	Volume24h    *uint64
+	OpenPrice24h *uint64
 }
 
 // DepthLevel is one price level of a depth snapshot.
@@ -149,12 +150,13 @@ func (s *MarketService) GetPrices(ctx context.Context) ([]MarketPrice, error) {
 	prices := make([]MarketPrice, len(repoPrices))
 	for i, p := range repoPrices {
 		prices[i] = MarketPrice{
-			BaseSymbol:  p.BaseSymbol,
-			QuoteSymbol: p.QuoteSymbol,
-			Price:       p.Price,
-			MinPrice24h: p.MinPrice24h,
-			MaxPrice24h: p.MaxPrice24h,
-			Volume24h:   p.Volume24h,
+			BaseSymbol:   p.BaseSymbol,
+			QuoteSymbol:  p.QuoteSymbol,
+			Price:        p.Price,
+			MinPrice24h:  p.MinPrice24h,
+			MaxPrice24h:  p.MaxPrice24h,
+			Volume24h:    p.Volume24h,
+			OpenPrice24h: p.OpenPrice24h,
 		}
 	}
 	return prices, nil
