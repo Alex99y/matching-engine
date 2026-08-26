@@ -367,14 +367,22 @@ func insertOrders(ctx context.Context, tx *sql.Tx, orders []InsertOrderParams) e
 	const cols = 11
 	args := make([]any, 0, len(orders)*cols)
 	for _, o := range orders {
+		haveQty, err := nullU64(o.HaveQuantity, "have_quantity")
+		if err != nil {
+			return fmt.Errorf("insert orders: %w", err)
+		}
+		wantQty, err := nullU64(o.WantQuantity, "want_quantity")
+		if err != nil {
+			return fmt.Errorf("insert orders: %w", err)
+		}
 		args = append(args,
 			o.ID,
 			nullVal(o.ClientOrderID),
 			o.UserID,
 			o.HaveInstrumentID,
 			o.WantInstrumentID,
-			nullU64(o.HaveQuantity),
-			nullU64(o.WantQuantity),
+			haveQty,
+			wantQty,
 			o.Status,
 			o.Type,
 			o.TimeInForce,
@@ -713,11 +721,11 @@ func nullVal(s *string) any {
 	return *s
 }
 
-func nullU64(v *uint64) any {
+func nullU64(v *uint64, field string) (any, error) {
 	if v == nil {
-		return nil
+		return nil, nil
 	}
-	return int64(*v)
+	return safeInt64(*v, field)
 }
 
 func nullTime(t *time.Time) any {
