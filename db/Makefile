@@ -4,13 +4,18 @@ CMD     := ./cmd
 -include .env
 export
 
-.PHONY: build migrate test clean
+STEPS ?= 1
+
+.PHONY: build migrate migrate-down test clean
 
 build:
 	go build -o bin/$(BINARY) $(CMD)
 
 migrate: build
 	cd bin && ./$(BINARY)
+
+migrate-down: build
+	cd bin && ./$(BINARY) down $(STEPS)
 
 test:
 	go test ./...
