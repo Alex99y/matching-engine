@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/alex99y/matching-engine/common/pkg/config"
@@ -12,10 +13,32 @@ import (
 	"github.com/alex99y/matching-engine/db/pkg/repository"
 )
 
+type instrumentRepository interface {
+	CreateNewInstrument(ctx context.Context, name, symbol string, decimals int) error
+	GetInstrument(ctx context.Context, symbol string) (*repository.Instrument, error)
+	GetInstruments(ctx context.Context) ([]repository.Instrument, error)
+}
+
+type marketRepository interface {
+	CreateMarket(ctx context.Context, baseSymbol, quoteSymbol string, priceQuantum, amountQuantum, minOrderSize, maxOrderSize, takerFeeBps, makerFeeBps int64) error
+	GetMarket(ctx context.Context, baseSymbol, quoteSymbol string) (*repository.Market, error)
+	GetMarkets(ctx context.Context) ([]repository.Market, error)
+}
+
+type userRepository interface {
+	GetUserByUsername(ctx context.Context, username string) (*repository.User, error)
+	FreezeUser(ctx context.Context, userID uuid.UUID) error
+	UnfreezeUser(ctx context.Context, userID uuid.UUID) error
+	AddUserBalance(ctx context.Context, userID uuid.UUID, instrumentID int, amount int64, reason *string) error
+	RemoveUserBalance(ctx context.Context, userID uuid.UUID, instrumentID int, amount int64, reason *string) error
+	FreezeUserBalance(ctx context.Context, userID uuid.UUID, instrumentID int, amount int64, reason *string) error
+	UnfreezeUserBalance(ctx context.Context, userID uuid.UUID, instrumentID int, amount int64, reason *string) error
+}
+
 var (
-	instrumentRepo *repository.InstrumentRepository
-	marketRepo     *repository.MarketRepository
-	userRepo       *repository.UserRepository
+	instrumentRepo instrumentRepository
+	marketRepo     marketRepository
+	userRepo       userRepository
 )
 
 var rootCmd = &cobra.Command{
