@@ -85,13 +85,27 @@ func (s *FaucetService) Request(ctx context.Context, userID uuid.UUID, symbol st
 // bits.Mul64/Div64 (128-bit-safe intermediate) rather than a raw uint64 multiply, since
 // Pow10Uint64(decimals) * tenths can exceed uint64 range before the /10 brings it back down
 // (e.g. an 18-decimal instrument at 10000 tenths) — same pattern as feeOf() in
-// core/internal/orderbook/orderbook.go.
+// core/internal/orderbook/match.go.
+//
+// decimals comes from the instruments.decimals DB column, which has no CHECK constraint, so it
+// isn't guaranteed to be in the 0-18 range the CLI's own instrument-creation validation allows.
+// Two panics guarded against below: Pow10Uint64 panics for decimals > 19, and bits.Div64 panics
+// (rather than returning a value ErrAmountOverflow could catch) once the Mul64 product's high
+// word reaches the divisor — unlike feeOf, whose clamped bps keeps that word provably small,
+// unitAmount's tenths can be large enough (USDT: 10000) that this triggers well within the
+// instrument-creation-allowed decimals range, so it must be checked explicitly.
 func unitAmount(symbol string, decimals int) (int64, error) {
+	if decimals < 0 || decimals > 19 {
+		return 0, ErrAmountOverflow
+	}
 	tenths, ok := faucetAmountTenths[symbol]
 	if !ok {
 		tenths = defaultFaucetAmountTenths
 	}
 	hi, lo := bits.Mul64(utils.Pow10Uint64(decimals), tenths)
+	if hi >= 10 {
+		return 0, ErrAmountOverflow
+	}
 	scaled, _ := bits.Div64(hi, lo, 10)
 	if scaled > math.MaxInt64 {
 		return 0, ErrAmountOverflow
