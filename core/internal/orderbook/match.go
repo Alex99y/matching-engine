@@ -15,20 +15,37 @@ import (
 func (o *OrderBook) MatchOrder(event *oeq.OpenOrderEvent, result *repository.BatchResult) {
 	taker := newOrder(event, o.market.BaseScale)
 
+	postOnlyReject := false
 	switch {
 	case !guardsOK(taker):
 		// Defensive: ValidateOrderEvent should already reject these. Skip matching;
 		// completion below releases the reservation and records a cancellation.
 		o.logger.Warn("orderbook: order failed defensive guards, rejecting")
+	case taker.OpenOrder.PostOnly && o.crossesBook(taker):
+		// A post-only order that would take liquidity is cancelled untouched — it may
+		// only rest. Skip matching; completion below releases the reservation.
+		postOnlyReject = true
 	case taker.OpenOrder.TimeInForce == oeq.FillOrKill && !o.canFill(taker):
 		// FOK that cannot fully fill is killed untouched — skip matching.
 	default:
 		o.match(taker, result)
 	}
 
-	rests := o.takerRests(taker)
+	rests := o.takerRests(taker) && !postOnlyReject
 	o.settleTakerCompletion(taker, rests, result)
 	o.emitTakerOutcome(taker, rests, result)
+}
+
+// crossesBook reports whether the order would trade against the resting book right now: the
+// best price on the opposite side is within its limit. Only the best level matters — if it
+// does not cross, nothing deeper does. Used to reject a post-only order before it can take.
+func (o *OrderBook) crossesBook(order *Order) bool {
+	crossed := false
+	o.eachOppositeLevel(order, func(lvl *PriceLevel) bool {
+		crossed = crosses(order, lvl.Price)
+		return false
+	})
+	return crossed
 }
 
 // match walks the opposite side price-time-first, filling the taker against each resting

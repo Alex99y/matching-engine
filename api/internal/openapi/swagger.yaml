@@ -1008,6 +1008,11 @@ components:
         quantity: { type: integer, format: int64, minimum: 0, description: In the market's amount_quantum units. }
         quote_qty: { type: integer, format: int64, minimum: 0 }
         expires_at: { type: integer, format: int64, description: unix seconds. Only meaningful for gtc orders. }
+        post_only:
+          type: boolean
+          description: >-
+            Reject the order instead of matching it if it would take liquidity on arrival.
+            Valid only for limit gtc orders. Not returned on order reads.
       required: [order_side, order_type, order_tif, market]
 
     BatchCreateOrderResult:

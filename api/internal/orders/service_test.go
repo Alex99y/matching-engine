@@ -244,6 +244,43 @@ func TestPublishOrderToQueueSuccess(t *testing.T) {
 	}
 }
 
+func TestPublishOrderToQueuePostOnlyFlagReachesEvent(t *testing.T) {
+	pub := &fakePublisher{}
+	svc := newTestService(&fakeOrderRepository{}, btcUsdtCache(), pub)
+
+	_, err := svc.PublishOrderToQueue(context.Background(), uuid.New(), &orders.OrderToPublish{
+		MarketID: "BTC-USDT", Side: oeq.BuyOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+		Price: 100, Quantity: 5, PostOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("PublishOrderToQueue: %v", err)
+	}
+	open, err := pub.calls[0].event.DecodeOpenOrder()
+	if err != nil {
+		t.Fatalf("DecodeOpenOrder: %v", err)
+	}
+	if !open.PostOnly {
+		t.Fatalf("decoded event = %+v, want PostOnly true", open)
+	}
+}
+
+func TestPublishOrderToQueuePostOnlyMarketRejectedBeforePublish(t *testing.T) {
+	pub := &fakePublisher{}
+	svc := newTestService(&fakeOrderRepository{}, btcUsdtCache(), pub)
+
+	budget := uint64(1000)
+	_, err := svc.PublishOrderToQueue(context.Background(), uuid.New(), &orders.OrderToPublish{
+		MarketID: "BTC-USDT", Side: oeq.BuyOrder, Type: oeq.MarketOrder, TimeInForce: oeq.ImmediateOrCancel,
+		QuoteQty: &budget, PostOnly: true,
+	})
+	if !errors.Is(err, orders.ErrInvalidOrder) {
+		t.Fatalf("err = %v, want ErrInvalidOrder", err)
+	}
+	if len(pub.calls) != 0 {
+		t.Fatalf("published %d events, want 0", len(pub.calls))
+	}
+}
+
 func TestPublishOrderToQueueUnknownMarket(t *testing.T) {
 	svc := newTestService(&fakeOrderRepository{}, btcUsdtCache(), &fakePublisher{})
 

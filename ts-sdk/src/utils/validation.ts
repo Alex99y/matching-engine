@@ -100,6 +100,14 @@ export function validateCreateOrderParams(params: CreateOrderParams): void {
   if (params.quoteQty !== undefined) {
     requireNonNegative(params.quoteQty, "quoteQty");
   }
+
+  if (
+    params.postOnly === true &&
+    (params.type !== OrderType.Limit ||
+      params.timeInForce !== TimeInForce.GoodTillCancel)
+  ) {
+    throw new ValidationError("postOnly requires a limit gtc order");
+  }
 }
 
 export function validateBatchCreateOrderParams(params: CreateOrderParams[]): void {

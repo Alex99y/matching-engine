@@ -94,6 +94,29 @@ describe("validateCreateOrderParams", () => {
     ).toThrow(ValidationError);
   });
 
+  it("throws when postOnly is set on a non-limit or non-gtc order", () => {
+    expect(() =>
+      validateCreateOrderParams({
+        ...validCreate,
+        type: OrderType.Market,
+        postOnly: true,
+      }),
+    ).toThrow(ValidationError);
+    expect(() =>
+      validateCreateOrderParams({
+        ...validCreate,
+        timeInForce: TimeInForce.ImmediateOrCancel,
+        postOnly: true,
+      }),
+    ).toThrow(ValidationError);
+  });
+
+  it("accepts postOnly on a limit gtc order", () => {
+    expect(() =>
+      validateCreateOrderParams({ ...validCreate, postOnly: true }),
+    ).not.toThrow();
+  });
+
   it("throws when clientOrderId length is out of range", () => {
     expect(() =>
       validateCreateOrderParams({ ...validCreate, clientOrderId: "short" }),

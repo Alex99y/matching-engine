@@ -47,6 +47,21 @@ func restSellExpiring(o *OrderBook, user uuid.UUID, price, base uint64, expiresA
 	return id
 }
 
+func restBuy(o *OrderBook, user uuid.UUID, price, base uint64) uuid.UUID {
+	id := uuid.New()
+	o.Hydrate([]repository.OpenOrderHydration{{
+		OrderID:             id,
+		UserID:              user,
+		Side:                "buy",
+		Price:               price,
+		Type:                "limit",
+		TimeInForce:         "GTC",
+		RemainingHaveAmount: price * base, // buy: have = quote
+		RemainingWantAmount: base,         // buy: want = base
+	}})
+	return id
+}
+
 func unixPtr(t int64) *int64 { return &t }
 
 func delta(t *testing.T, r *repository.BatchResult, user uuid.UUID, instr int) repository.BalanceDelta {

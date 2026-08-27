@@ -59,6 +59,7 @@ type OpenOrderEvent struct {
 	Quantity      uint64      `json:"quantity"`
 	QuoteQty      *uint64     `json:"quote_qty,omitempty"`
 	ExpiresAt     *int64      `json:"expires_at,omitempty"`
+	PostOnly      bool        `json:"post_only,omitempty"`
 }
 
 // CancelOrderEvent requests cancellation of an existing open order.

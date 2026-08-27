@@ -204,3 +204,135 @@ func TestFeeOfClampsOutOfRangeBps(t *testing.T) {
 		})
 	}
 }
+
+func postOnlyBuy(id, user uuid.UUID, price, qty uint64) *oeq.OpenOrderEvent {
+	return &oeq.OpenOrderEvent{
+		OrderID: id, UserID: user, MarketID: 1,
+		Side: oeq.BuyOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+		Price: price, Quantity: qty, PostOnly: true,
+	}
+}
+
+// A post-only buy priced below the best ask does not cross, so it rests like any GTC limit
+// and releases nothing.
+func TestPostOnlyRestsWhenItDoesNotCross(t *testing.T) {
+	o := testBook()
+	buyer := uuid.New()
+	restSell(o, uuid.New(), 100, 10)
+
+	id := uuid.New()
+	r := repository.NewBatchResult()
+	o.MatchOrder(postOnlyBuy(id, buyer, 95, 4), r)
+
+	if len(r.Matches) != 0 {
+		t.Fatalf("post-only order traded: %+v", r.Matches)
+	}
+	if len(r.OpenOrders) != 1 || r.OpenOrders[0].OrderID != id {
+		t.Fatalf("post-only order did not rest: %+v", r.OpenOrders)
+	}
+	if len(r.CancelledOrders) != 0 {
+		t.Fatalf("resting post-only order recorded a cancellation: %+v", r.CancelledOrders)
+	}
+	if got := r.NewOrders[0].Status; got != repository.OrderStatusOpen {
+		t.Fatalf("taker status=%q want open", got)
+	}
+	if bq := delta(t, r, buyer, quoteInstr); bq.BlockedDelta != 0 || bq.BalanceDelta != 0 {
+		t.Fatalf("buyer quote: balance=%d blocked=%d (want 0, 0 — nothing released)", bq.BalanceDelta, bq.BlockedDelta)
+	}
+	if s := o.Stats(); s.BidOrders != 1 {
+		t.Fatalf("book has %d resting bids, want 1", s.BidOrders)
+	}
+	if upd := findOrderUpdate(o.DrainStream(), id); upd == nil || upd.Status != repository.OrderStatusOpen {
+		t.Fatalf("stream status = %+v, want open", upd)
+	}
+}
+
+// A post-only buy that crosses the best ask is cancelled untouched: no fill, nothing rests,
+// the full reservation is released.
+func TestPostOnlyRejectedWhenItWouldCross(t *testing.T) {
+	o := testBook()
+	buyer := uuid.New()
+	restSell(o, uuid.New(), 100, 10)
+
+	id := uuid.New()
+	r := repository.NewBatchResult()
+	o.MatchOrder(postOnlyBuy(id, buyer, 105, 4), r)
+
+	if len(r.Matches) != 0 {
+		t.Fatalf("post-only order traded: %+v", r.Matches)
+	}
+	if len(r.OpenOrders) != 0 {
+		t.Fatalf("rejected post-only order rested: %+v", r.OpenOrders)
+	}
+	if len(r.CancelledOrders) != 1 || r.CancelledOrders[0].OrderID != id {
+		t.Fatalf("CancelledOrders = %+v, want one for %s", r.CancelledOrders, id)
+	}
+	if cr := r.CancelledOrders[0]; cr.RemainingHaveAmount != 420 || cr.RemainingWantAmount != 4 {
+		t.Fatalf("cancelled remainder have=%d want=%d (want 420, 4)", cr.RemainingHaveAmount, cr.RemainingWantAmount)
+	}
+	if got := r.NewOrders[0].Status; got != repository.OrderStatusCancelled {
+		t.Fatalf("taker DB status=%q want cancelled", got)
+	}
+	if bq := delta(t, r, buyer, quoteInstr); bq.BalanceDelta != 420 || bq.BlockedDelta != -420 {
+		t.Fatalf("buyer quote: balance=%d blocked=%d (want 420, -420 — full release)", bq.BalanceDelta, bq.BlockedDelta)
+	}
+	if s := o.Stats(); s.BidOrders != 0 || s.AskOrders != 1 {
+		t.Fatalf("book changed: bids=%d asks=%d (want 0, 1)", s.BidOrders, s.AskOrders)
+	}
+	if upd := findOrderUpdate(o.DrainStream(), id); upd == nil || upd.Status != repository.OrderStatusCancelled {
+		t.Fatalf("stream status = %+v, want cancelled", upd)
+	}
+}
+
+// A limit priced exactly at the best opposite level is marketable (crosses uses >=/<=), so a
+// post-only order at the touch is rejected, not rested.
+func TestPostOnlyRejectedAtExactTouchPrice(t *testing.T) {
+	o := testBook()
+	restSell(o, uuid.New(), 100, 10)
+
+	r := repository.NewBatchResult()
+	o.MatchOrder(postOnlyBuy(uuid.New(), uuid.New(), 100, 4), r)
+
+	if len(r.OpenOrders) != 0 || len(r.CancelledOrders) != 1 {
+		t.Fatalf("touch-priced post-only not rejected: open=%d cancelled=%d", len(r.OpenOrders), len(r.CancelledOrders))
+	}
+}
+
+// With no liquidity on the opposite side nothing can be crossed, so a post-only order rests.
+func TestPostOnlyRestsAgainstEmptyOppositeBook(t *testing.T) {
+	o := testBook()
+
+	r := repository.NewBatchResult()
+	o.MatchOrder(postOnlyBuy(uuid.New(), uuid.New(), 100, 4), r)
+
+	if len(r.OpenOrders) != 1 || len(r.CancelledOrders) != 0 {
+		t.Fatalf("post-only order against empty book not rested: open=%d cancelled=%d", len(r.OpenOrders), len(r.CancelledOrders))
+	}
+}
+
+// The reject check is side-aware: a post-only sell that undercuts the best bid crosses and is
+// rejected, releasing its base reservation.
+func TestPostOnlySellRejectedWhenItWouldCross(t *testing.T) {
+	o := testBook()
+	seller := uuid.New()
+	restBuy(o, uuid.New(), 100, 10)
+
+	id := uuid.New()
+	r := repository.NewBatchResult()
+	o.MatchOrder(&oeq.OpenOrderEvent{
+		OrderID: id, UserID: seller, MarketID: 1,
+		Side: oeq.SellOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+		Price: 95, Quantity: 4, PostOnly: true,
+	}, r)
+
+	if len(r.Matches) != 0 || len(r.OpenOrders) != 0 || len(r.CancelledOrders) != 1 {
+		t.Fatalf("post-only sell not rejected: matches=%d open=%d cancelled=%d",
+			len(r.Matches), len(r.OpenOrders), len(r.CancelledOrders))
+	}
+	if sb := delta(t, r, seller, baseInstr); sb.BalanceDelta != 4 || sb.BlockedDelta != -4 {
+		t.Fatalf("seller base: balance=%d blocked=%d (want 4, -4)", sb.BalanceDelta, sb.BlockedDelta)
+	}
+	if upd := findOrderUpdate(o.DrainStream(), id); upd == nil || upd.Status != repository.OrderStatusCancelled {
+		t.Fatalf("stream status = %+v, want cancelled", upd)
+	}
+}

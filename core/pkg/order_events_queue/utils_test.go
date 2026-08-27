@@ -80,3 +80,33 @@ func TestStorableOverflowRespectsBaseScale(t *testing.T) {
 		t.Fatalf("scaled overflow notional accepted: %v", err)
 	}
 }
+
+// Post-only may only sit in the book, so it is accepted for a limit GTC order and rejected
+// for anything that cannot rest: market orders and non-GTC time-in-force.
+func TestPostOnlyRequiresLimitGTC(t *testing.T) {
+	none := MarketConstraints{}
+
+	ok := validLimit()
+	ok.PostOnly = true
+	if err := ValidateOrderEvent(ok, none); err != nil {
+		t.Fatalf("post-only limit GTC rejected: %v", err)
+	}
+
+	for _, tif := range []TimeInForce{ImmediateOrCancel, FillOrKill} {
+		bad := validLimit()
+		bad.PostOnly, bad.TimeInForce = true, tif
+		if err := ValidateOrderEvent(bad, none); !errors.Is(err, ErrInvalidOrderEvent) {
+			t.Fatalf("post-only %s accepted: %v", tif, err)
+		}
+	}
+
+	budget := uint64(1000)
+	marketBuy := &OpenOrderEvent{
+		OrderID: uuid.New(), UserID: uuid.New(), MarketID: 1,
+		Side: BuyOrder, Type: MarketOrder, TimeInForce: ImmediateOrCancel,
+		QuoteQty: &budget, PostOnly: true,
+	}
+	if err := ValidateOrderEvent(marketBuy, none); !errors.Is(err, ErrInvalidOrderEvent) {
+		t.Fatalf("post-only market order accepted: %v", err)
+	}
+}

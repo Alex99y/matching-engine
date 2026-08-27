@@ -27,6 +27,7 @@ type CreateOrderRequest struct {
 	Quantity      uint64                         `json:"quantity"`
 	QuoteQty      *uint64                        `json:"quote_qty,omitempty"`
 	ExpiresAt     *int64                         `json:"expires_at,omitempty"`
+	PostOnly      bool                           `json:"post_only,omitempty"`
 }
 
 type BatchCreateOrderResult struct {
@@ -246,6 +247,7 @@ func (o *OrderHandler) CreateOrder(c fiber.Ctx) error {
 				Quantity:      req.Quantity,
 				QuoteQty:      req.QuoteQty,
 				ExpiresAt:     req.ExpiresAt,
+				PostOnly:      req.PostOnly,
 			},
 		)
 		if err != nil {

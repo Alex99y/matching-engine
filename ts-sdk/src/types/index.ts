@@ -133,6 +133,11 @@ export interface CreateOrderParams {
   readonly quoteQty?: bigint;
   /** Unix seconds; only valid together with a non-GTC time-in-force. */
   readonly expiresAt?: number;
+  /**
+   * Reject the order instead of matching it if it would take liquidity on arrival.
+   * Valid only for limit GTC orders.
+   */
+  readonly postOnly?: boolean;
 }
 
 // ---- Batch order results ----

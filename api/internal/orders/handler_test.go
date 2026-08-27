@@ -194,6 +194,33 @@ func TestCreateOrderHandlerAllSucceedReturns202(t *testing.T) {
 	}
 }
 
+func TestCreateOrderHandlerForwardsPostOnly(t *testing.T) {
+	pub := &fakePublisher{}
+	app := newTestApp(&fakeOrderRepository{}, btcUsdtCache(), pub)
+
+	body := []map[string]any{{
+		"order_side": "buy", "order_type": "limit", "order_tif": "gtc",
+		"market": "BTC-USDT", "price": 100, "quantity": 5, "post_only": true,
+	}}
+	resp, err := app.Test(jsonRequest("POST", "/orders/", body))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+	if len(pub.calls) != 1 {
+		t.Fatalf("published %d events, want 1", len(pub.calls))
+	}
+	open, err := pub.calls[0].event.DecodeOpenOrder()
+	if err != nil {
+		t.Fatalf("DecodeOpenOrder: %v", err)
+	}
+	if !open.PostOnly {
+		t.Fatalf("published event PostOnly = false, want true")
+	}
+}
+
 func TestCreateOrderHandlerAllFailReturns422(t *testing.T) {
 	app := newTestApp(&fakeOrderRepository{}, btcUsdtCache(), &fakePublisher{})
 
