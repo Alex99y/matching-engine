@@ -85,6 +85,7 @@ export async function createOrders(
     if (p.quantity !== undefined) item["quantity"] = p.quantity;
     if (p.quoteQty !== undefined) item["quote_qty"] = p.quoteQty;
     if (p.expiresAt !== undefined) item["expires_at"] = p.expiresAt;
+    if (p.postOnly !== undefined) item["post_only"] = p.postOnly;
     return item;
   });
 

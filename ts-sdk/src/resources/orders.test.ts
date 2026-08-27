@@ -124,6 +124,26 @@ describe("orders.createOrders", () => {
     expect(body[0]?.["quote_qty"]).toBe(9n);
     expect(body[0]?.["expires_at"]).toBe(1700000900);
     expect(body[0]).not.toHaveProperty("price");
+    expect(body[0]).not.toHaveProperty("post_only");
+  });
+
+  it("sends post_only when set on a limit gtc order", async () => {
+    const { transport, request } = stubTransport({
+      results: [{ index: 0, order_id: "x" }],
+    });
+    await createOrders(transport, TOKEN, [
+      {
+        market: "ETH-USDT",
+        side: OrderSide.Buy,
+        type: OrderType.Limit,
+        timeInForce: TimeInForce.GoodTillCancel,
+        price: 2000n,
+        quantity: 5n,
+        postOnly: true,
+      },
+    ]);
+    const body = request.mock.calls[0]?.[2]?.body as Record<string, unknown>[];
+    expect(body[0]?.["post_only"]).toBe(true);
   });
 
   it("returns per-item error for failed items", async () => {

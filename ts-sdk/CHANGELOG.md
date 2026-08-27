@@ -13,6 +13,10 @@
 
 ### Added
 
+- `CreateOrderParams.postOnly` (`boolean`, optional) — rejects the order
+  instead of matching it if it would take liquidity on arrival. Sent as
+  `post_only` only when set. Valid only for limit GTC orders; the SDK rejects
+  other combinations client-side. Not returned on order reads.
 - `Order.side` (`"buy"`/`"sell"`) — now populated for every order regardless
   of status (previously only available via `openOrder.side` while the order
   was still resting in the book). Absent only if the order's market has since
