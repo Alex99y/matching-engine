@@ -84,6 +84,13 @@ func ValidateOrderEvent(order *OpenOrderEvent, constraints MarketConstraints) er
 		return fmt.Errorf("%w: market orders cannot be GoodTillCancel", ErrInvalidOrderEvent)
 	}
 
+	// Post-only is a resting-only modifier: the order must be able to sit in the book, so
+	// it is confined to limit GTC. The non-zero price it also needs is enforced by the
+	// LimitOrder rules below.
+	if order.PostOnly && (order.Type != LimitOrder || order.TimeInForce != GoodTillCancel) {
+		return fmt.Errorf("%w: post_only requires a limit GTC order", ErrInvalidOrderEvent)
+	}
+
 	// Price, quantity, and market constraint rules per order type
 	switch order.Type {
 	case LimitOrder:

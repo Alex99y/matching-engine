@@ -31,6 +31,7 @@ type OrderToPublish struct {
 	Quantity      uint64
 	QuoteQty      *uint64
 	ExpiresAt     *int64
+	PostOnly      bool
 }
 
 type GetOrdersFilter struct {
@@ -156,6 +157,7 @@ func (o *OrderService) PublishOrderToQueue(
 		Quantity:      order.Quantity,
 		QuoteQty:      order.QuoteQty,
 		ExpiresAt:     order.ExpiresAt,
+		PostOnly:      order.PostOnly,
 	}
 
 	if err := order_events_queue.ValidateOrderEvent(
