@@ -24,8 +24,11 @@ func newTestAppWithRepo(repo markets.MarketRepository, depthSource markets.Depth
 	h := markets.NewMarketHandler(logger.NewLogger(logger.Error), svc, marketQuanta)
 
 	app := fiber.New()
-	app.Get("/markets/:market/depth", h.GetDepth)
+	// Mirrors router.go's actual route order (/:market must come after the literal paths).
+	app.Get("/markets/", h.GetMarkets)
 	app.Get("/markets/prices", h.GetPrices)
+	app.Get("/markets/:market", h.GetMarket)
+	app.Get("/markets/:market/depth", h.GetDepth)
 	return app
 }
 
@@ -161,5 +164,96 @@ func TestGetPricesHandlerIncludesChangePercentButNotRawOpenPrice(t *testing.T) {
 	}
 	if got[0].ChangePercent24h == nil || *got[0].ChangePercent24h != "10.00" {
 		t.Fatalf("ChangePercent24h = %v, want \"10.00\"", got[0].ChangePercent24h)
+	}
+}
+
+func TestGetMarketHandlerNotFound(t *testing.T) {
+	app := newTestAppWithRepo(&spyMarketRepository{marketErr: repository.ErrMarketNotFound}, fakeDepthSource{}, nil)
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/markets/BTC-USDT", nil))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestGetMarketHandlerReturnsMarket(t *testing.T) {
+	repo := &spyMarketRepository{market: &repository.Market{
+		BaseSymbol: "BTC", QuoteSymbol: "USDT", PriceQuantum: 1, AmountQuantum: 1000, MinOrderSize: 1000, MaxOrderSize: 1000000000,
+	}}
+	app := newTestAppWithRepo(repo, fakeDepthSource{}, nil)
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/markets/BTC-USDT", nil))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var got markets.GetMarketResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.BaseSymbol != "BTC" || got.QuoteSymbol != "USDT" {
+		t.Fatalf("body = %+v, unexpected shape", got)
+	}
+}
+
+func TestGetMarketHandlerServiceErrorMapsTo500WithoutLeakingDetail(t *testing.T) {
+	repo := &spyMarketRepository{marketErr: errors.New("dial tcp 10.0.0.5:5432: connection refused")}
+	app := newTestAppWithRepo(repo, fakeDepthSource{}, nil)
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/markets/BTC-USDT", nil))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), "10.0.0.5") {
+		t.Errorf("response leaked internal error detail: %s", body)
+	}
+}
+
+func TestGetMarketsHandlerReturnsList(t *testing.T) {
+	repo := &spyMarketRepository{markets: []repository.Market{
+		{BaseSymbol: "BTC", QuoteSymbol: "USDT"},
+		{BaseSymbol: "ETH", QuoteSymbol: "USDT"},
+	}}
+	app := newTestAppWithRepo(repo, fakeDepthSource{}, nil)
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/markets/", nil))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var got []markets.GetMarketResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 2 || got[0].BaseSymbol != "BTC" || got[1].BaseSymbol != "ETH" {
+		t.Fatalf("body = %+v, want [BTC ETH]", got)
+	}
+}
+
+func TestGetMarketsHandlerServiceErrorMapsTo500WithoutLeakingDetail(t *testing.T) {
+	repo := &spyMarketRepository{marketsErr: errors.New("dial tcp 10.0.0.5:5432: connection refused")}
+	app := newTestAppWithRepo(repo, fakeDepthSource{}, nil)
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/markets/", nil))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), "10.0.0.5") {
+		t.Errorf("response leaked internal error detail: %s", body)
 	}
 }
