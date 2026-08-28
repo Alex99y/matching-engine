@@ -13,6 +13,7 @@ Matching Engine project is a proof of concept for a high-performance order match
 - `ts-sdk` - TypeScript SDK for the API, used by trading bots to interact with the engine
 - `ui` - React web frontend for visualizing the matching engine's order book and candle charts live
 - `infra` - deployment: `local-deploy` (Docker Compose for local dev + `docker-compose-deps.yml` for the e2e stack) and `gcp-deploy`
+- `e2e` - end-to-end tests against a running stack (see `e2e/PLAN.md`)
 - `loadtest` - Go load-testing suite measuring order ack/match/cancel latency under configurable background load (see `loadtest/README.md`)
 
 ## Software Requirements
