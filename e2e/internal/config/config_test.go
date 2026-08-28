@@ -24,7 +24,7 @@ func TestLoadDefaults(t *testing.T) {
 	if len(cfg.Markets) != 3 || cfg.Markets[0] != "ETH-USDT" {
 		t.Fatalf("Markets = %v", cfg.Markets)
 	}
-	if cfg.ReadyTimeout != defaultReadyTimeout || cfg.SettleTimeout != defaultSettleTimeout {
+	if cfg.ReadyTimeout != 60*time.Second || cfg.SettleTimeout != 15*time.Second {
 		t.Fatalf("timeout defaults not applied: %+v", cfg)
 	}
 }

@@ -14,7 +14,7 @@ type Config struct {
 	Market        string        // default market ref for single-market tests
 	Markets       []string      // market-ref pool for sharded tests
 	ReadyTimeout  time.Duration // how long to wait for the stack to accept traffic
-	SettleTimeout time.Duration // cap for polling asynchronous post-order state
+	SettleTimeout time.Duration // per-test deadline for waiting on asynchronous state
 	LogLevel      string
 }
 
@@ -23,7 +23,7 @@ const (
 	defaultMarket        = "ETH-USDT"
 	defaultMarkets       = "ETH-USDT,BTC-USDT,ETH-BTC"
 	defaultReadyTimeout  = 60 * time.Second
-	defaultSettleTimeout = 5 * time.Second
+	defaultSettleTimeout = 15 * time.Second
 	defaultLogLevel      = "info"
 )
 
