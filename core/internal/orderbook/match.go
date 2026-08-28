@@ -32,8 +32,21 @@ func (o *OrderBook) MatchOrder(event *oeq.OpenOrderEvent, result *repository.Bat
 	}
 
 	rests := o.takerRests(taker) && !postOnlyReject
+	filled := o.takerFilled(taker)
 	o.settleTakerCompletion(taker, rests, result)
-	o.emitTakerOutcome(taker, rests, result)
+	o.emitTakerOutcome(taker, rests, filled, result)
+}
+
+// takerFilled reports whether the taker got everything it could. Beyond an exact fill this
+// covers a quote-denominated market buy that spent its budget down to a sub-quantum
+// remainder it can no longer trade with, while the book still holds asks it could not
+// afford: the dust is refunded at settlement, so the order is filled, not partially filled.
+func (o *OrderBook) takerFilled(t *Order) bool {
+	if t.fullyFilled() {
+		return true
+	}
+	return t.quoteDenom && t.filledBase > 0 &&
+		o.oppositeTree(t.OpenOrder.Side).Len() > 0
 }
 
 // crossesBook reports whether the order would trade against the resting book right now: the
@@ -60,7 +73,7 @@ func (o *OrderBook) match(taker *Order, result *repository.BatchResult) {
 			return false
 		}
 
-		for lvl.Orders.Len() > 0 && taker.canTrade(lvl.Price) {
+		for lvl.Orders.Len() > 0 && taker.canTrade(lvl.Price, o.market.BaseScale) {
 			front := lvl.Orders.Front()
 			maker, ok := front.Value.(*Order)
 			if !ok {
@@ -69,7 +82,7 @@ func (o *OrderBook) match(taker *Order, result *repository.BatchResult) {
 				continue
 			}
 
-			qty := fillQty(taker, maker, lvl.Price)
+			qty := fillQty(taker, maker, lvl.Price, o.market.BaseScale)
 			if qty == 0 {
 				// Quote-denominated taker can no longer afford a single unit here.
 				break
@@ -109,25 +122,22 @@ func (o *OrderBook) match(taker *Order, result *repository.BatchResult) {
 // canFill reports whether the crossing liquidity can fully satisfy a FOK taker.
 func (o *OrderBook) canFill(taker *Order) bool {
 	if taker.quoteDenom {
-		// Market buy FOK: is there enough ask value to spend the whole budget?
-		var value uint64
-		budget := taker.RemainingQuote
+		// Market buy FOK: can the crossing asks absorb the entire quote budget?
+		remaining := taker.RemainingQuote
+		filled := false
 		o.eachOppositeLevel(taker, func(lvl *PriceLevel) bool {
 			if !crosses(taker, lvl.Price) {
 				return false
 			}
-			remaining := budget - value
-			// Ceiling division avoids uint64 overflow in lvl.Price*lvl.TotalQty when the
-			// per-level notional is large. If this level's quantity alone covers the rest
-			// of the budget, saturate and stop — no need to keep accumulating.
-			if lvl.Price > 0 && lvl.TotalQty >= (remaining+lvl.Price-1)/lvl.Price {
-				value = budget
+			v := quoteValue(lvl.Price, lvl.TotalQty, o.market.BaseScale)
+			if v >= remaining {
+				filled = true
 				return false
 			}
-			value += lvl.Price * lvl.TotalQty
-			return value < budget
+			remaining -= v
+			return true
 		})
-		return value >= taker.RemainingQuote
+		return filled
 	}
 
 	var avail uint64
@@ -264,10 +274,12 @@ func (o *OrderBook) settleTakerCompletion(t *Order, rests bool, result *reposito
 }
 
 // emitTakerOutcome writes the taker's orders row with its final status and either rests
-// it (GTC limit remainder) or records its cancelled remainder.
-func (o *OrderBook) emitTakerOutcome(t *Order, rests bool, result *repository.BatchResult) {
+// it (GTC limit remainder) or records its cancelled remainder. filled is the completion
+// verdict from takerFilled — a filled order records no cancelled remainder even if a dust
+// budget was refunded.
+func (o *OrderBook) emitTakerOutcome(t *Order, rests, filled bool, result *repository.BatchResult) {
 	insert := DeriveInsertParams(t.OpenOrder, o.market)
-	status := takerStatus(t, rests)
+	status := takerStatus(t, rests, filled)
 	insert.Status = status
 	result.NewOrders = append(result.NewOrders, insert)
 
@@ -293,7 +305,7 @@ func (o *OrderBook) emitTakerOutcome(t *Order, rests bool, result *repository.Ba
 		return
 	}
 
-	if !t.fullyFilled() {
+	if !filled {
 		have, want := canceledRemaining(t, o.market.BaseScale)
 		result.CancelledOrders = append(result.CancelledOrders, repository.InsertCancelledOrderParams{
 			OrderID:             t.OpenOrder.OrderID,
