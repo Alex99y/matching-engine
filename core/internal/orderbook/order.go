@@ -1,6 +1,9 @@
 package orderbook
 
 import (
+	"math"
+	"math/bits"
+
 	oeq "github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
 )
@@ -33,9 +36,9 @@ type Order struct {
 	spentQuote uint64 // total quote traded
 }
 
-func (ord *Order) canTrade(price uint64) bool {
+func (ord *Order) canTrade(price, baseScale uint64) bool {
 	if ord.quoteDenom {
-		return ord.RemainingQuote >= price // need at least `price` quote to buy one base unit
+		return affordableBase(ord.RemainingQuote, price, baseScale) > 0
 	}
 	return ord.Remaining > 0
 }
@@ -99,15 +102,19 @@ func guardsOK(t *Order) bool {
 	return true
 }
 
-func fillQty(taker, maker *Order, price uint64) uint64 {
+func fillQty(taker, maker *Order, price, baseScale uint64) uint64 {
 	if taker.quoteDenom {
-		return min(taker.RemainingQuote/price, maker.Remaining)
+		return min(affordableBase(taker.RemainingQuote, price, baseScale), maker.Remaining)
 	}
 	return min(taker.Remaining, maker.Remaining)
 }
 
-func takerStatus(t *Order, rests bool) string {
-	if t.fullyFilled() {
+// takerStatus derives the taker's terminal status. filled is the caller's verdict on
+// completion — an exact fill, or a quote-denominated market buy that spent its budget down
+// to unspendable dust (see OrderBook.takerFilled) — since fullyFilled alone almost never
+// holds for a market buy.
+func takerStatus(t *Order, rests, filled bool) string {
+	if filled {
 		return repository.OrderStatusFilled
 	}
 	if rests {
@@ -124,6 +131,40 @@ func takerStatus(t *Order, rests bool) string {
 // dividing by baseScale (= 10^baseDecimals) normalises the product.
 func quoteAmount(price, qty, baseScale uint64) uint64 {
 	return price * qty / baseScale
+}
+
+// affordableBase is the inverse of quoteAmount: the base-quanta a quote budget buys at
+// price. Because price is quote-quanta per whole base coin, the budget is scaled up by
+// baseScale before dividing — the same normalisation quoteAmount does, reversed. A market
+// buy is quote-denominated, so this (not a bare quantity) is what caps each fill; the
+// 128-bit intermediate keeps budget*baseScale from overflowing uint64.
+func affordableBase(quote, price, baseScale uint64) uint64 {
+	if price == 0 {
+		return 0
+	}
+	if baseScale == 0 {
+		baseScale = 1
+	}
+	hi, lo := bits.Mul64(quote, baseScale)
+	if hi >= price {
+		return math.MaxUint64 // quotient exceeds uint64; the maker's size caps it downstream
+	}
+	base, _ := bits.Div64(hi, lo, price)
+	return base
+}
+
+// quoteValue is quoteAmount with a 128-bit intermediate, for callers that value a whole
+// price level (canFill), where price*qty can overflow uint64 before the divide.
+func quoteValue(price, qty, baseScale uint64) uint64 {
+	if baseScale == 0 {
+		baseScale = 1
+	}
+	hi, lo := bits.Mul64(price, qty)
+	if hi >= baseScale {
+		return math.MaxUint64 // already far past any realistic budget
+	}
+	v, _ := bits.Div64(hi, lo, baseScale)
+	return v
 }
 
 // limitHaveWant maps a limit order's notional and remaining base quantity to the

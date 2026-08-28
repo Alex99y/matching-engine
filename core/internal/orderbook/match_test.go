@@ -140,6 +140,153 @@ func TestMarketBuyQuoteBudget(t *testing.T) {
 	assertConserved(t, r)
 }
 
+// price is quote-quanta per whole base coin, so on a market with baseDecimals > 0 a market
+// buy whose budget is smaller than one whole coin's price must still trade — the affordable
+// base quantity is budget * baseScale / price. Regression for canTrade/fillQty treating
+// price as quote-per-quantum, which cancelled every such order with zero fills.
+func TestMarketBuyBudgetBelowUnitPriceStillFills(t *testing.T) {
+	const baseScale = 1_000
+	o := NewOrderBook(logger.NewLogger(logger.Error), &repository.Market{
+		ID: 1, BaseInstrumentID: baseInstr, QuoteInstrumentID: quoteInstr, BaseScale: baseScale,
+	})
+	seller := uuid.New()
+	buyer := uuid.New()
+	restSell(o, seller, 2000, 5000) // price 2000/coin, 5000 base-quanta resting
+
+	budget := uint64(500) // less than price (2000) but buys 500*1000/2000 = 250 base-quanta
+	r := repository.NewBatchResult()
+	o.MatchOrder(&oeq.OpenOrderEvent{
+		OrderID: uuid.New(), UserID: buyer, MarketID: 1,
+		Side: oeq.BuyOrder, Type: oeq.MarketOrder, TimeInForce: oeq.ImmediateOrCancel,
+		QuoteQty: &budget,
+	}, r)
+
+	if len(r.Matches) != 1 || r.Matches[0].MatchBuyAmount != 250 {
+		t.Fatalf("want 1 match of 250 base, got %+v", r.Matches)
+	}
+	if r.Matches[0].MatchSellAmount != 500 {
+		t.Fatalf("quote spent = %d, want 500", r.Matches[0].MatchSellAmount)
+	}
+	if got := r.NewOrders[0].Status; got != repository.OrderStatusFilled {
+		t.Fatalf("taker status = %q, want filled (budget fully spent)", got)
+	}
+	if bq := delta(t, r, buyer, quoteInstr); bq.BlockedDelta != -500 || bq.BalanceDelta != 0 {
+		t.Fatalf("buyer quote: blocked=%d balance=%d (want -500, 0)", bq.BlockedDelta, bq.BalanceDelta)
+	}
+	if bb := delta(t, r, buyer, baseInstr); bb.BalanceDelta != 250 {
+		t.Fatalf("buyer base credit = %d, want 250", bb.BalanceDelta)
+	}
+	assertConserved(t, r)
+}
+
+// A market buy almost never spends its budget to zero (integer division on both the
+// affordable quantity and the fill cost). When the leftover is unspendable dust and the
+// book still holds asks it could not afford, the order is filled — the dust is refunded,
+// not recorded as a cancellation.
+func TestMarketBuyDustRemainderCountsAsFilled(t *testing.T) {
+	const baseScale = 1_000
+	o := NewOrderBook(logger.NewLogger(logger.Error), &repository.Market{
+		ID: 1, BaseInstrumentID: baseInstr, QuoteInstrumentID: quoteInstr, BaseScale: baseScale,
+	})
+	buyer := uuid.New()
+	restSell(o, uuid.New(), 2000, 5000)
+
+	budget := uint64(501) // buys 501*1000/2000 = 250 base for 500 quote; 1 quantum dust left
+	r := repository.NewBatchResult()
+	o.MatchOrder(&oeq.OpenOrderEvent{
+		OrderID: uuid.New(), UserID: buyer, MarketID: 1,
+		Side: oeq.BuyOrder, Type: oeq.MarketOrder, TimeInForce: oeq.ImmediateOrCancel,
+		QuoteQty: &budget,
+	}, r)
+
+	if len(r.Matches) != 1 || r.Matches[0].MatchBuyAmount != 250 {
+		t.Fatalf("want 1 match of 250 base, got %+v", r.Matches)
+	}
+	if got := r.NewOrders[0].Status; got != repository.OrderStatusFilled {
+		t.Fatalf("taker status = %q, want filled", got)
+	}
+	if len(r.CancelledOrders) != 0 {
+		t.Fatalf("dust remainder recorded a cancellation: %+v", r.CancelledOrders)
+	}
+	// 500 spent, 1 dust refunded from the 501 reserved.
+	if bq := delta(t, r, buyer, quoteInstr); bq.BlockedDelta != -501 || bq.BalanceDelta != 1 {
+		t.Fatalf("buyer quote: blocked=%d balance=%d (want -501, 1)", bq.BlockedDelta, bq.BalanceDelta)
+	}
+	assertConserved(t, r)
+}
+
+// When the book genuinely runs dry with real budget left, the market buy is partially
+// filled and the unspent budget is recorded as a cancelled remainder.
+func TestMarketBuyPartialWhenBookRunsDry(t *testing.T) {
+	const baseScale = 1_000
+	o := NewOrderBook(logger.NewLogger(logger.Error), &repository.Market{
+		ID: 1, BaseInstrumentID: baseInstr, QuoteInstrumentID: quoteInstr, BaseScale: baseScale,
+	})
+	buyer := uuid.New()
+	restSell(o, uuid.New(), 2000, 100) // only 100 base for sale, worth 200 quote
+
+	budget := uint64(1000)
+	r := repository.NewBatchResult()
+	o.MatchOrder(&oeq.OpenOrderEvent{
+		OrderID: uuid.New(), UserID: buyer, MarketID: 1,
+		Side: oeq.BuyOrder, Type: oeq.MarketOrder, TimeInForce: oeq.ImmediateOrCancel,
+		QuoteQty: &budget,
+	}, r)
+
+	if len(r.Matches) != 1 || r.Matches[0].MatchBuyAmount != 100 {
+		t.Fatalf("want 1 match of 100 base, got %+v", r.Matches)
+	}
+	if got := r.NewOrders[0].Status; got != repository.OrderStatusPartiallyFilled {
+		t.Fatalf("taker status = %q, want partially_filled", got)
+	}
+	if len(r.CancelledOrders) != 1 || r.CancelledOrders[0].RemainingHaveAmount != 800 {
+		t.Fatalf("unspent budget not recorded: %+v", r.CancelledOrders)
+	}
+	assertConserved(t, r)
+}
+
+// canFill (the FOK pre-check) must value each ask level as price*qty/baseScale too — a
+// market-buy FOK that the book cannot fully absorb is killed untouched, and one it can is
+// filled.
+func TestMarketBuyFillOrKillRespectsBaseScale(t *testing.T) {
+	const baseScale = 1_000
+	newBook := func() *OrderBook {
+		o := NewOrderBook(logger.NewLogger(logger.Error), &repository.Market{
+			ID: 1, BaseInstrumentID: baseInstr, QuoteInstrumentID: quoteInstr, BaseScale: baseScale,
+		})
+		restSell(o, uuid.New(), 2000, 100) // level worth 2000*100/1000 = 200 quote
+		return o
+	}
+
+	tooBig := uint64(500) // > 200 available → cannot fully fill
+	r := repository.NewBatchResult()
+	newBook().MatchOrder(&oeq.OpenOrderEvent{
+		OrderID: uuid.New(), UserID: uuid.New(), MarketID: 1,
+		Side: oeq.BuyOrder, Type: oeq.MarketOrder, TimeInForce: oeq.FillOrKill,
+		QuoteQty: &tooBig,
+	}, r)
+	if len(r.Matches) != 0 {
+		t.Fatalf("FOK that cannot fully fill traded: %+v", r.Matches)
+	}
+	if got := r.NewOrders[0].Status; got != repository.OrderStatusCancelled {
+		t.Fatalf("killed FOK status = %q, want cancelled", got)
+	}
+
+	ok := uint64(150) // buys 75 base for 150 quote, within the 200 available
+	r2 := repository.NewBatchResult()
+	newBook().MatchOrder(&oeq.OpenOrderEvent{
+		OrderID: uuid.New(), UserID: uuid.New(), MarketID: 1,
+		Side: oeq.BuyOrder, Type: oeq.MarketOrder, TimeInForce: oeq.FillOrKill,
+		QuoteQty: &ok,
+	}, r2)
+	if len(r2.Matches) != 1 || r2.Matches[0].MatchBuyAmount != 75 {
+		t.Fatalf("want 1 match of 75 base, got %+v", r2.Matches)
+	}
+	if got := r2.NewOrders[0].Status; got != repository.OrderStatusFilled {
+		t.Fatalf("filled FOK status = %q, want filled", got)
+	}
+}
+
 // Fees are charged on the asset each party receives, at the taker rate for the taker
 // and the maker rate for the resting maker, and deducted from the credited amount.
 func TestTakerMakerFees(t *testing.T) {
