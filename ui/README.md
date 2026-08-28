@@ -36,5 +36,5 @@ Then open http://localhost:5173.
 From the repo root:
 
 ```sh
-docker compose -f local-deploy/docker-compose.yml up -d ui
+docker compose -f infra/local-deploy/docker-compose.yml up -d ui
 ```

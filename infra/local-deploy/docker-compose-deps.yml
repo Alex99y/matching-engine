@@ -1,0 +1,41 @@
+# Dependency services only: PostgreSQL + RabbitMQ — everything the matching engine needs to
+# run. Split out of docker-compose.yml (which imports this file) so the e2e suite and CI can
+# bring up just this, without Prometheus / Grafana / UI.
+#
+#   docker compose -f infra/local-deploy/docker-compose-deps.yml up -d
+
+services:
+  rabbitmq:
+    image: rabbitmq:4.2.4-management
+    container_name: me-rabbitmq
+    hostname: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+      - "15692:15692"
+    environment:
+      - RABBITMQ_DEFAULT_USER=admin
+      - RABBITMQ_DEFAULT_PASS=admin
+    volumes:
+      - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  postgres:
+    image: postgres:18.4
+    container_name: me-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=admin
+      - POSTGRES_DB=matching-engine
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d matching-engine"]
+      interval: 5s
+      timeout: 5s
+      retries: 20

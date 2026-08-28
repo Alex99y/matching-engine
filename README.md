@@ -12,7 +12,7 @@ Matching Engine project is a proof of concept for a high-performance order match
 - `bots` - Node.js bots for testing and simulating order flow against the engine
 - `ts-sdk` - TypeScript SDK for the API, used by trading bots to interact with the engine
 - `ui` - React web frontend for visualizing the matching engine's order book and candle charts live
-- `local-deploy` - Docker and local deployment scripts
+- `infra` - deployment: `local-deploy` (Docker Compose for local dev + `docker-compose-deps.yml` for the e2e stack) and `gcp-deploy`
 - `loadtest` - Go load-testing suite measuring order ack/match/cancel latency under configurable background load (see `loadtest/README.md`)
 
 ## Software Requirements
@@ -48,7 +48,7 @@ Bring the pieces up in this order: infrastructure, database migrations, `core`, 
 Start Postgres, RabbitMQ, Prometheus, and Grafana:
 
 ```sh
-docker compose -f local-deploy/docker-compose.yml up -d
+docker compose -f infra/local-deploy/docker-compose.yml up -d
 ```
 
 ### 2. Database migrations
@@ -78,7 +78,7 @@ make -C api run
 Either as a container:
 
 ```sh
-docker compose -f local-deploy/docker-compose.yml up -d ui
+docker compose -f infra/local-deploy/docker-compose.yml up -d ui
 ```
 
 or directly on the host:

@@ -1,33 +1,12 @@
-services:
-  rabbitmq:
-    image: rabbitmq:4.2.4-management
-    container_name: me-rabbitmq
-    hostname: rabbitmq
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-      - "15692:15692"
-    environment:
-      - RABBITMQ_DEFAULT_USER=admin
-      - RABBITMQ_DEFAULT_PASS=admin
-    volumes:
-      - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
-      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
+# Full local stack. PostgreSQL + RabbitMQ come from docker-compose-deps.yml (imported below,
+# and reused on its own by the e2e suite / CI); this file adds observability and the UI.
+#
+#   docker compose -f infra/local-deploy/docker-compose.yml up -d
 
-  postgres:
-    image: postgres:18.4
-    container_name: me-postgres
-    ports:
-      - "5432:5432"
-    environment:
-      - POSTGRES_USER=admin
-      - POSTGRES_PASSWORD=admin
-      - POSTGRES_DB=matching-engine
+include:
+  - docker-compose-deps.yml
+
+services:
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
@@ -71,11 +50,12 @@ services:
     ports:
       - "5173:5173"
     volumes:
-      - ../ui:/workspace/ui
+      # This compose file now lives at infra/local-deploy/, so the repo root is two up.
+      - ../../ui:/workspace/ui
       # ts-sdk is imported straight from source (see ui/vite.config.ts
       # alias) — no build step, just needs to be present on the same
       # relative path as on the host.
-      - ../ts-sdk:/workspace/ts-sdk
+      - ../../ts-sdk:/workspace/ts-sdk
       # Named volume so container-installed (musl/alpine) native deps
       # never overwrite the host's own node_modules, and vice versa.
       - ui_node_modules:/workspace/ui/node_modules
