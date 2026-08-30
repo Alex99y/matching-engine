@@ -16,6 +16,12 @@ type Config struct {
 	ReadyTimeout  time.Duration // how long to wait for the stack to accept traffic
 	SettleTimeout time.Duration // per-test deadline for waiting on asynchronous state
 	LogLevel      string
+
+	// CLIBin and PostgresURL back the few admin actions the API does not expose — today
+	// only the account freeze/unfreeze the frozen-account test needs mid-run. Seeding is
+	// NOT done through these (it has to happen before the API boots — see PLAN.md §2).
+	CLIBin      string
+	PostgresURL string
 }
 
 const (
@@ -25,6 +31,8 @@ const (
 	defaultReadyTimeout  = 60 * time.Second
 	defaultSettleTimeout = 15 * time.Second
 	defaultLogLevel      = "info"
+	defaultCLIBin        = "../../../cli/bin/cli"
+	defaultPostgresURL   = "postgres://admin:admin@localhost:5432/matching-engine?sslmode=disable"
 )
 
 // Load returns an error only when a variable is set to an unparseable value; an unset
@@ -46,6 +54,8 @@ func Load() (*Config, error) {
 		ReadyTimeout:  ready,
 		SettleTimeout: settle,
 		LogLevel:      stringEnv("E2E_LOG_LEVEL", defaultLogLevel),
+		CLIBin:        stringEnv("E2E_CLI_BIN", defaultCLIBin),
+		PostgresURL:   stringEnv("E2E_POSTGRES_URL", defaultPostgresURL),
 	}, nil
 }
 

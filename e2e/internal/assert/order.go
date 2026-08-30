@@ -2,6 +2,7 @@ package assert
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/alex99y/matching-engine/e2e/internal/client"
@@ -44,6 +45,49 @@ func Traded(t testing.TB, o client.Order) {
 	if len(o.Matches) == 0 {
 		t.Fatalf("assert.Traded: order %s has no matches (%s)", o.ID, describe(o))
 	}
+}
+
+// EventuallyResting polls until orderID is readable and sitting in the book, and returns it.
+// POST /orders only queues the order, so this is how a test waits for the matching engine to
+// have accepted and rested it.
+func EventuallyResting(t testing.TB, ctx context.Context, c *client.Client, token, orderID string) client.Order {
+	t.Helper()
+	return eventuallyOrder(t, ctx, c, token, orderID, func(o client.Order) error {
+		if o.OpenOrder == nil {
+			return fmt.Errorf("order %s is not resting (%s)", o.ID, describe(o))
+		}
+		return nil
+	})
+}
+
+// EventuallyNotResting polls until orderID has left the book (filled, cancelled, or expired),
+// and returns it.
+func EventuallyNotResting(t testing.TB, ctx context.Context, c *client.Client, token, orderID string) client.Order {
+	t.Helper()
+	return eventuallyOrder(t, ctx, c, token, orderID, func(o client.Order) error {
+		if o.OpenOrder != nil {
+			return fmt.Errorf("order %s is still resting: %+v", o.ID, *o.OpenOrder)
+		}
+		return nil
+	})
+}
+
+func eventuallyOrder(t testing.TB, ctx context.Context, c *client.Client, token, orderID string, ok func(client.Order) error) client.Order {
+	t.Helper()
+
+	var order client.Order
+	Eventually(t, ctx, func() error {
+		o, err := c.GetOrder(ctx, token, orderID)
+		if err != nil {
+			return err
+		}
+		if err := ok(o); err != nil {
+			return err
+		}
+		order = o
+		return nil
+	})
+	return order
 }
 
 // StreamStatus waits for the next event for orderID on s to reach one of want, failing the

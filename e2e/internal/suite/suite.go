@@ -78,6 +78,21 @@ func (e *Env) Context(t *testing.T) context.Context {
 	return ctx
 }
 
+// NewAccount registers and logs in a fresh account, without funding it. Use it for tests
+// that never place an order; NewFundedAccount otherwise.
+func (e *Env) NewAccount(t *testing.T) *harness.Account {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	acc, err := harness.NewAccount(ctx, e.Client)
+	if err != nil {
+		t.Fatalf("suite: new account: %v", err)
+	}
+	return acc
+}
+
 // NewFundedAccount creates a fresh account, funds both legs of the market, and registers a
 // t.Cleanup that sweeps any orders it leaves resting. It fails the test on any error.
 func (e *Env) NewFundedAccount(t *testing.T) *harness.Account {
@@ -86,10 +101,7 @@ func (e *Env) NewFundedAccount(t *testing.T) *harness.Account {
 	setupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	acc, err := harness.NewAccount(setupCtx, e.Client)
-	if err != nil {
-		t.Fatalf("suite: new account: %v", err)
-	}
+	acc := e.NewAccount(t)
 	if err := acc.FundMarket(setupCtx, e.Client, e.Market, fixtures.FundingCalls); err != nil {
 		t.Fatalf("suite: fund %s: %v", acc.Username, err)
 	}
@@ -102,4 +114,16 @@ func (e *Env) NewFundedAccount(t *testing.T) *harness.Account {
 		}
 	})
 	return acc
+}
+
+// Admin returns the cli-backed admin helper, or skips the test when the binary is missing
+// (the account freeze has no REST route — see PLAN.md §8).
+func (e *Env) Admin(t *testing.T) *harness.Admin {
+	t.Helper()
+
+	admin, err := harness.NewAdmin(e.Cfg)
+	if err != nil {
+		t.Skipf("suite: admin actions unavailable: %v", err)
+	}
+	return admin
 }

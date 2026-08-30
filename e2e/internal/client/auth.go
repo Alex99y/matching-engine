@@ -21,6 +21,14 @@ type tokenResponse struct {
 	Token string `json:"token"`
 }
 
+type checkUsernameRequest struct {
+	Username string `json:"username"`
+}
+
+type checkUsernameResponse struct {
+	Available bool `json:"available"`
+}
+
 // Register creates a user. It maps a 409 to ErrUsernameTaken; every other unexpected status
 // comes back as *HTTPError.
 func (c *Client) Register(ctx context.Context, username, email, password string) error {
@@ -31,6 +39,14 @@ func (c *Client) Register(ctx context.Context, username, email, password string)
 		return ErrUsernameTaken
 	}
 	return err
+}
+
+// CheckUsername reports whether username is still free to register.
+func (c *Client) CheckUsername(ctx context.Context, username string) (bool, error) {
+	var resp checkUsernameResponse
+	err := c.do(ctx, http.MethodPost, "/users/check-username", "",
+		checkUsernameRequest{Username: username}, &resp, http.StatusOK)
+	return resp.Available, err
 }
 
 // Login exchanges credentials for a write-scoped login-session token (usable directly for

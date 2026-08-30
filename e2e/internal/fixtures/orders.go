@@ -47,6 +47,46 @@ func MaxLots(m harness.MarketRules) uint64 {
 	return m.MaxOrderSize / m.AmountQuantum
 }
 
+// RestingBidPrice is the lowest buy price at which a minimum-size order still reserves a
+// non-zero quote notional (price × qty ÷ BaseScale >= 1). It is orders of magnitude below any
+// real quote, so such an order rests at the bottom of the book instead of crossing — the
+// cheapest way for a test to get something resting without caring about the current market.
+func RestingBidPrice(m harness.MarketRules) uint64 {
+	qty := Qty(m, MinLots(m))
+	if qty == 0 {
+		return m.PriceQuantum
+	}
+	price := ceilDiv(m.BaseScale, qty)
+	return ceilDiv(price, m.PriceQuantum) * m.PriceQuantum // round up onto the tick grid
+}
+
+// minAssertableNotional is the quote notional a minimum-size order needs before
+// basis-point fees stop flooring to zero: at 1 bp the fee is notional/10000, so a million
+// quanta leaves room for every fee tier the markets use.
+const minAssertableNotional = 1_000_000
+
+// TradablePrice is a price at which a minimum-size order carries a notional big enough to
+// assert on (fills, fees, released reservations all round to non-zero). Tests offset from it
+// to claim a price band of their own rather than hard-coding a number per market.
+func TradablePrice(m harness.MarketRules) uint64 {
+	qty := Qty(m, MinLots(m))
+	if qty == 0 {
+		return m.PriceQuantum
+	}
+	price := ceilDiv(minAssertableNotional*m.BaseScale, qty)
+	return ceilDiv(price, m.PriceQuantum) * m.PriceQuantum
+}
+
+func ceilDiv(a, b uint64) uint64 {
+	if b == 0 {
+		return a
+	}
+	if a == 0 {
+		return 1
+	}
+	return (a + b - 1) / b
+}
+
 // LimitBuy / LimitSell default to GTC. price and qty are raw quanta — use Price/Qty.
 func LimitBuy(m harness.MarketRules, price, qty uint64, opts ...OrderOpt) client.NewOrder {
 	return limit(m, client.Buy, price, qty, opts)

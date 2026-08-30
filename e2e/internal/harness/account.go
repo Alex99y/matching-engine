@@ -10,12 +10,13 @@ import (
 	"github.com/alex99y/matching-engine/e2e/internal/client"
 )
 
-// testPassword is shared by every account the suite creates — these are disposable sandbox
-// accounts. It is >= 10 chars (the API minimum).
-const testPassword = "e2e-test-password"
+// TestPassword is shared by every account the suite creates — these are disposable sandbox
+// accounts, so it needs no secrecy, only the API's 10-character minimum.
+const TestPassword = "e2e-test-password"
 
 type Account struct {
 	Username   string
+	Password   string
 	LoginToken string // write-scoped login session token
 }
 
@@ -23,14 +24,14 @@ type Account struct {
 // is never touched and leftovers are identifiable) and logs it in.
 func NewAccount(ctx context.Context, c *client.Client) (*Account, error) {
 	name := "e2e-" + randSuffix()
-	if err := c.Register(ctx, name, name+"@e2e.local", testPassword); err != nil && !errors.Is(err, client.ErrUsernameTaken) {
+	if err := c.Register(ctx, name, name+"@e2e.local", TestPassword); err != nil && !errors.Is(err, client.ErrUsernameTaken) {
 		return nil, fmt.Errorf("register %s: %w", name, err)
 	}
-	token, err := c.Login(ctx, name, testPassword)
+	token, err := c.Login(ctx, name, TestPassword)
 	if err != nil {
 		return nil, fmt.Errorf("login %s: %w", name, err)
 	}
-	return &Account{Username: name, LoginToken: token}, nil
+	return &Account{Username: name, Password: TestPassword, LoginToken: token}, nil
 }
 
 // Fund adds `calls` faucet credits of symbol to the account.
