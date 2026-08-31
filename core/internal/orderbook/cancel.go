@@ -25,8 +25,7 @@ func (o *OrderBook) CancelOrder(event *oeq.CancelOrderEvent, result *repository.
 
 // ExpireOrder has the same book/fund/persistence effects as CancelOrder — only the live
 // stream's reported reason differs (statusExpired), so a subscriber can tell a TTL reap
-// apart from a user cancel. A miss (order filled/cancelled between ExpireDue collecting its
-// id and this call) is an idempotent no-op, same as CancelOrder.
+// apart from a user cancel. A miss is an idempotent no-op, same as CancelOrder.
 func (o *OrderBook) ExpireOrder(orderID uuid.UUID, result *repository.BatchResult) {
 	stored, ok := o.removeResting(orderID)
 	if !ok {
@@ -67,12 +66,7 @@ func (o *OrderBook) removeResting(orderID uuid.UUID) (*Order, bool) {
 // filled/remaining amounts are unaffected either way.
 func (o *OrderBook) closeResting(stored *Order, result *repository.BatchResult, streamReason string) {
 	have, want := restingRemaining(stored, o.market.BaseScale)
-
-	if stored.OpenOrder.Side == oeq.BuyOrder {
-		result.AddBalanceDelta(stored.OpenOrder.UserID, o.quoteInstr(), int64(have), -int64(have))
-	} else {
-		result.AddBalanceDelta(stored.OpenOrder.UserID, o.baseInstr(), int64(have), -int64(have))
-	}
+	releaseBlocked(result, stored.OpenOrder.UserID, o.haveInstr(stored.OpenOrder.Side), have)
 
 	result.ClosedOpenOrders = append(result.ClosedOpenOrders, stored.OpenOrder.OrderID)
 	result.CancelledOrders = append(result.CancelledOrders, repository.InsertCancelledOrderParams{

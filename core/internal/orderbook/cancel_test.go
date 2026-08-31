@@ -113,3 +113,33 @@ func TestCancelOrder_UnindexesExpiryAndKeepsPlainStatus(t *testing.T) {
 		t.Fatalf("stream status = %+v, want plain %q", upd, repository.OrderStatusCancelled)
 	}
 }
+
+// Cancelling one of two orders sharing a price must leave the level in the tree carrying the
+// survivor's quantity — removeResting only deletes a level once it is empty.
+func TestCancelOrder_LeavesSharedLevelIntact(t *testing.T) {
+	o := testBook()
+	restSell(o, uuid.New(), 100, 4)
+	victim := restSell(o, uuid.New(), 100, 6)
+
+	o.CancelOrder(&oeq.CancelOrderEvent{OrderID: victim}, repository.NewBatchResult())
+
+	_, asks := o.SnapshotLevels()
+	if len(asks) != 1 || asks[0].Price != 100 || asks[0].Quantity != 4 {
+		t.Fatalf("asks = %+v, want the 100 level surviving with qty 4", asks)
+	}
+	if s := o.Stats(); s.AskOrders != 1 {
+		t.Fatalf("askOrders = %d, want 1", s.AskOrders)
+	}
+}
+
+// A cancel for an order that is not resting (already filled, already cancelled, or never
+// existed) is a normal logical race and must be an idempotent no-op, same as ExpireOrder's miss.
+func TestCancelOrder_UnknownOrderIsNoop(t *testing.T) {
+	o := testBook()
+	r := repository.NewBatchResult()
+	o.CancelOrder(&oeq.CancelOrderEvent{OrderID: uuid.New()}, r)
+
+	if len(r.ClosedOpenOrders) != 0 || len(r.StatusUpdates) != 0 || len(r.BalanceDeltas()) != 0 {
+		t.Fatalf("CancelOrder on an unknown id mutated the result: %+v", r)
+	}
+}

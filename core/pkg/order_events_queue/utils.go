@@ -37,7 +37,7 @@ type MarketConstraints struct {
 // unscaled price * quantity can overflow uint64 long before the scaled-down notional does
 // (baseScale is 10^baseDecimals, e.g. 10^9 for a 9-decimal asset), so this uses a 128-bit
 // intermediate (bits.Mul64/Div64) instead of a bare multiply — same pattern as feeOf in
-// core/internal/orderbook/orderbook.go.
+// core/internal/orderbook/match.go.
 func notionalOverflows(price, quantity, baseScale uint64) bool {
 	if baseScale == 0 {
 		baseScale = 1
