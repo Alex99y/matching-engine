@@ -136,6 +136,8 @@ export function parseMarket(raw: unknown): Market {
     amountQuantum: reqBigInt(o, "amount_quantum"),
     minOrderSize: reqBigInt(o, "min_order_size"),
     maxOrderSize: reqBigInt(o, "max_order_size"),
+    takerFeeBps: reqBigInt(o, "taker_fee_bps"),
+    makerFeeBps: reqBigInt(o, "maker_fee_bps"),
   };
 }
 

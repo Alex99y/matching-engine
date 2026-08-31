@@ -119,7 +119,7 @@ describe("MatchingEngineClient public methods", () => {
     const { fetchFn } = routerFetch({
       "GET /api/v1/markets/": () =>
         jsonResponse(
-          '[{"base_symbol":"ETH","quote_symbol":"USDT","price_quantum":1000,"amount_quantum":100,"min_order_size":1,"max_order_size":5}]',
+          '[{"base_symbol":"ETH","quote_symbol":"USDT","price_quantum":1000,"amount_quantum":100,"min_order_size":1,"max_order_size":5,"taker_fee_bps":100,"maker_fee_bps":50}]',
         ),
       "GET /api/v1/instruments/": () =>
         jsonResponse('[{"name":"Ether","symbol":"ETH","decimals":18,"created_at":"t"}]'),

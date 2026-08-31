@@ -23,6 +23,8 @@ describe("parseMarkets", () => {
         amount_quantum: 100n,
         min_order_size: 1n,
         max_order_size: 1000000n,
+        taker_fee_bps: 100n,
+        maker_fee_bps: 50n,
       },
     ]);
     expect(markets[0]).toEqual({
@@ -32,6 +34,8 @@ describe("parseMarkets", () => {
       amountQuantum: 100n,
       minOrderSize: 1n,
       maxOrderSize: 1000000n,
+      takerFeeBps: 100n,
+      makerFeeBps: 50n,
     });
   });
 
@@ -44,6 +48,8 @@ describe("parseMarkets", () => {
         amount_quantum: 100,
         min_order_size: 1,
         max_order_size: 1000,
+        taker_fee_bps: 100,
+        maker_fee_bps: 50,
       },
     ]);
     expect(markets[0]?.priceQuantum).toBe(1000n);
