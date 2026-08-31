@@ -183,6 +183,21 @@ func (o *OrderRepository) GetOrderByClientOrderID(ctx context.Context, userID uu
 	return o.getOrder(ctx, "WHERE orders.user_id = $1 AND orders.client_order_id = $2", userID, clientOrderID)
 }
 
+func (o *OrderRepository) ClientOrderIDExists(ctx context.Context, userID uuid.UUID, clientOrderID string) (_ bool, outErr error) {
+	defer o.metrics.ObserveQuery("client_order_id_exists", time.Now(), &outErr)
+
+	const query = `SELECT EXISTS (
+		SELECT 1 FROM orders WHERE user_id = $1 AND client_order_id = $2
+	)`
+
+	var exists bool
+	if err := o.psql.QueryRowContext(ctx, query, userID, clientOrderID).Scan(&exists); err != nil {
+		o.logger.Error("ClientOrderIDExists: " + err.Error())
+		return false, fmt.Errorf("client order id exists: %w", err)
+	}
+	return exists, nil
+}
+
 func (o *OrderRepository) GetOrderByIDWithMatches(ctx context.Context, userID, orderID uuid.UUID) (_ *OrderRow, outErr error) {
 	defer o.metrics.ObserveQuery("get_order_with_matches", time.Now(), &outErr)
 	const query = `
