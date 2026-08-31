@@ -27,25 +27,29 @@ func TestMarketListingAndLookupAgree(t *testing.T) {
 
 	var listed *client.MarketInfo
 	for i, m := range markets {
-		ref := m.BaseSymbol + "-" + m.QuoteSymbol
-		if ref == env.Market.Ref {
+		if m.BaseSymbol+"-"+m.QuoteSymbol == env.Market.Ref {
 			listed = &markets[i]
-		}
-		if m.BaseSymbol == m.QuoteSymbol {
-			t.Fatalf("market %s trades an instrument against itself", ref)
-		}
-		// A market with a zero quantum has no grid to round to, and one whose maximum is
-		// below its minimum can never accept an order at all.
-		if m.PriceQuantum == 0 || m.AmountQuantum == 0 {
-			t.Fatalf("market %s has a zero quantum: price=%d amount=%d", ref, m.PriceQuantum, m.AmountQuantum)
-		}
-		if m.MaxOrderSize < m.MinOrderSize {
-			t.Fatalf("market %s accepts nothing: max_order_size=%d < min_order_size=%d",
-				ref, m.MaxOrderSize, m.MinOrderSize)
 		}
 	}
 	if listed == nil {
 		t.Fatalf("market %s under test is missing from the listing", env.Market.Ref)
+	}
+
+	// Only the market under test is held to these — the suite may be pointed at a database
+	// carrying markets someone else created, and their configuration is not this test's
+	// business.
+	if listed.BaseSymbol == listed.QuoteSymbol {
+		t.Fatalf("market %s trades an instrument against itself", env.Market.Ref)
+	}
+	// A zero quantum leaves no grid to round to, and a maximum below the minimum means the
+	// market can never accept an order at all.
+	if listed.PriceQuantum == 0 || listed.AmountQuantum == 0 {
+		t.Fatalf("market %s has a zero quantum: price=%d amount=%d",
+			env.Market.Ref, listed.PriceQuantum, listed.AmountQuantum)
+	}
+	if listed.MaxOrderSize < listed.MinOrderSize {
+		t.Fatalf("market %s accepts nothing: max_order_size=%d < min_order_size=%d",
+			env.Market.Ref, listed.MaxOrderSize, listed.MinOrderSize)
 	}
 
 	fetched, err := env.Client.GetMarket(ctx, env.Market.Ref)

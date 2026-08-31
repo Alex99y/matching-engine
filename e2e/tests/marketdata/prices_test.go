@@ -34,6 +34,8 @@ func TestPricesFollowTheLastTrade(t *testing.T) {
 		if after.Price == nil {
 			return errNoPriceYet{}
 		}
+		// This assumes nothing else trades this market meanwhile — true while the suite runs
+		// serially against a stack with no bots attached.
 		if got := parseAmount(t, *after.Price); got != price {
 			return errPriceStale{got: got, want: price}
 		}

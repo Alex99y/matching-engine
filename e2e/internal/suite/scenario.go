@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/alex99y/matching-engine/e2e/internal/assert"
 	"github.com/alex99y/matching-engine/e2e/internal/client"
@@ -21,9 +22,19 @@ var (
 	bandSalt = uint64(rand.Intn(64))
 )
 
-// Band returns a price no other test in this run is using — bands are one percent apart, so
-// one test's orders can never cross another's. The base is high enough that a minimum-size
-// order still carries a notional worth asserting on (fees included).
+// bandWindow is how many ticks either side of a band price a test may use (the widest is the
+// depth test, which walks three ticks down). A band is only handed out if that whole window
+// is safe to trade in.
+const bandWindow = 8
+
+// Band returns a price no other test in this run is using, and that is safe to both buy and
+// sell at: strictly inside the current spread, so an order placed there rests instead of
+// crossing something already on the book. That last part is what lets the suite run against a
+// database that is not empty — a market with leftover orders from an earlier run, from the
+// UI, or from another user.
+//
+// Bands are a percent apart so two tests can never reach each other. The base is high enough
+// that a minimum-size order still carries a notional worth asserting on, fees included.
 func (e *Env) Band(t *testing.T) uint64 {
 	t.Helper()
 
@@ -34,7 +45,53 @@ func (e *Env) Band(t *testing.T) uint64 {
 	}
 	step = (step / e.Market.PriceQuantum) * e.Market.PriceQuantum
 
-	return base + (bandSalt+bandSeq.Add(1))*step
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	depth, err := e.Client.GetDepth(ctx, e.Market.Ref, 0)
+	if err != nil {
+		t.Fatalf("suite: read depth to pick a price band: %v", err)
+	}
+	bestBid, bestAsk := spread(depth)
+
+	// Anchor above whatever is already resting rather than at the bare base: on a market
+	// that has traded, the base can sit well below the best bid, where a sell would cross
+	// instead of resting.
+	margin := bandWindow*e.Market.PriceQuantum + step
+	floor := base
+	if bestBid > 0 && bestBid+margin > floor {
+		floor = bestBid + margin
+	}
+	floor = ((floor + e.Market.PriceQuantum - 1) / e.Market.PriceQuantum) * e.Market.PriceQuantum
+
+	// ...and stay below the best ask, where a buy would cross.
+	ceiling := ^uint64(0)
+	if bestAsk > margin {
+		ceiling = bestAsk - margin
+	}
+	if floor >= ceiling {
+		t.Fatalf("suite: no room for a price band on %s — the spread is %d..%d, too narrow for "+
+			"a %d-wide band. Cancel the resting orders around there, or point E2E_MARKET at a "+
+			"quieter market.", e.Market.Ref, bestBid, bestAsk, margin)
+	}
+
+	// Spread the bands across the room available, wrapping rather than walking off the top.
+	slots := (ceiling - floor) / step
+	if slots == 0 {
+		slots = 1
+	}
+	return floor + ((bandSalt+bandSeq.Add(1))%slots)*step
+}
+
+// spread returns the best bid and best ask, or 0 for a side that is empty.
+func spread(d client.Depth) (bestBid, bestAsk uint64) {
+	if len(d.Bids) > 0 {
+		bestBid = d.Bids[0].Price // bids arrive high → low
+	}
+	if len(d.Asks) > 0 {
+		bestAsk = d.Asks[0].Price // asks arrive low → high
+	}
+	return bestBid, bestAsk
 }
 
 // MinQty is the market's smallest legal order quantity.

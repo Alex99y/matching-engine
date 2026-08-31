@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/alex99y/matching-engine/e2e/internal/client"
+	"github.com/google/uuid"
 )
 
 // A2 — usernames are unique.
@@ -33,8 +34,9 @@ func TestDuplicateUsernameIsRejected(t *testing.T) {
 	}
 
 	// A name nobody has claimed must still read as available, so the check is not simply
-	// answering "unavailable" to everything.
-	free := acc.Username + "-unused"
+	// answering "unavailable" to everything. Usernames are capped at 25 characters, so build
+	// a fresh short one rather than extending the account's.
+	free := "e2e-free-" + uuid.NewString()[:12]
 	available, err := env.Client.CheckUsername(ctx, free)
 	if err != nil {
 		t.Fatalf("check-username for an unused name: %v", err)

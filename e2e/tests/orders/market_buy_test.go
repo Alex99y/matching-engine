@@ -75,6 +75,18 @@ func TestMarketBuySpendsBudgetAndReportsFilled(t *testing.T) {
 // remainder and returned to the balance, and the stream reports partially_filled.
 func TestMarketBuyAgainstThinBookIsPartiallyFilled(t *testing.T) {
 	ctx := env.Context(t)
+
+	// A market buy has no limit price, so it walks the whole ask side — a price band cannot
+	// isolate it the way it isolates a limit order. This test's premise is that the book runs
+	// dry with budget to spare, which only holds when the only ask is the one placed below.
+	if depth, err := env.Client.GetDepth(ctx, env.Market.Ref, 0); err != nil {
+		t.Fatalf("read depth: %v", err)
+	} else if len(depth.Asks) > 0 {
+		t.Skipf("%s already has %d resting ask level(s); a market buy would sweep into them "+
+			"instead of exhausting the book, so 'budget left over' cannot be arranged",
+			env.Market.Ref, len(depth.Asks))
+	}
+
 	maker := env.NewFundedAccount(t)
 	taker := env.NewFundedAccount(t)
 

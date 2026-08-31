@@ -11,10 +11,12 @@ import (
 	"github.com/alex99y/matching-engine/e2e/internal/harness"
 )
 
-// FundingCalls is the default per-symbol faucet-credit count for a test account. At the
-// hardcoded faucet amounts (ETH 0.5, BTC 0.1, USDT 1000 per call) that is ~10 ETH / 2 BTC /
-// 20k USDT — ample for any single test.
-const FundingCalls = 20
+// FundingCalls is the per-symbol faucet-credit count for a test account. Four calls is ~2 ETH
+// / 0.4 BTC / 4000 USDT at the hardcoded faucet amounts — orders of magnitude more than any
+// single test spends, while staying far below the point where an 18-decimal balance overflows
+// the BIGINT it is stored in (an ETH balance passes int64 max on the 19th call, and the
+// faucet answers 500 rather than refusing cleanly — see TODO-internal.MD).
+const FundingCalls = 4
 
 type OrderOpt func(*client.NewOrder)
 
