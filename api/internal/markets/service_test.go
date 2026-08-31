@@ -249,6 +249,7 @@ func TestCreateMarketRepositoryErrorDoesNotLeak(t *testing.T) {
 func TestGetMarketSuccess(t *testing.T) {
 	repo := &spyMarketRepository{market: &repository.Market{
 		BaseSymbol: "BTC", QuoteSymbol: "USDT", PriceQuantum: 1, AmountQuantum: 1000, MinOrderSize: 1000, MaxOrderSize: 1000000000,
+		TakerFeeBps: 100, MakerFeeBps: 50,
 	}}
 	svc := newTestServiceWithRepo(repo, fakeDepthSource{})
 
@@ -256,8 +257,31 @@ func TestGetMarketSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMarket: %v", err)
 	}
-	if got.BaseSymbol != "BTC" || got.QuoteSymbol != "USDT" || got.PriceQuantum != 1 {
-		t.Fatalf("got = %+v, unexpected mapping", got)
+	want := markets.Market{
+		BaseSymbol: "BTC", QuoteSymbol: "USDT", PriceQuantum: 1, AmountQuantum: 1000,
+		MinOrderSize: 1000, MaxOrderSize: 1000000000, TakerFeeBps: 100, MakerFeeBps: 50,
+	}
+	if *got != want {
+		t.Fatalf("got = %+v, want %+v", *got, want)
+	}
+}
+
+func TestGetMarketsCarriesFees(t *testing.T) {
+	repo := &spyMarketRepository{markets: []repository.Market{{
+		BaseSymbol: "BTC", QuoteSymbol: "USDT", PriceQuantum: 1, AmountQuantum: 1000, MinOrderSize: 1000, MaxOrderSize: 1000000000,
+		TakerFeeBps: 100, MakerFeeBps: 50,
+	}}}
+	svc := newTestServiceWithRepo(repo, fakeDepthSource{})
+
+	got, err := svc.GetMarkets(context.Background())
+	if err != nil {
+		t.Fatalf("GetMarkets: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d markets, want 1", len(got))
+	}
+	if got[0].TakerFeeBps != 100 || got[0].MakerFeeBps != 50 {
+		t.Fatalf("fees = %d/%d, want 100/50", got[0].TakerFeeBps, got[0].MakerFeeBps)
 	}
 }
 

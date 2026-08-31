@@ -51,6 +51,18 @@ func TestMarketListingAndLookupAgree(t *testing.T) {
 		t.Fatalf("market %s accepts nothing: max_order_size=%d < min_order_size=%d",
 			env.Market.Ref, listed.MaxOrderSize, listed.MinOrderSize)
 	}
+	for name, bps := range map[string]uint64{
+		"taker_fee_bps": listed.TakerFeeBps,
+		"maker_fee_bps": listed.MakerFeeBps,
+	} {
+		if bps > 10000 {
+			t.Fatalf("market %s reports %s = %d, above the 10000 bps cap", env.Market.Ref, name, bps)
+		}
+	}
+	if listed.TakerFeeBps != env.Market.TakerFeeBps || listed.MakerFeeBps != env.Market.MakerFeeBps {
+		t.Fatalf("fees disagree with what the harness resolved: listing %d/%d, harness %d/%d",
+			listed.TakerFeeBps, listed.MakerFeeBps, env.Market.TakerFeeBps, env.Market.MakerFeeBps)
+	}
 
 	fetched, err := env.Client.GetMarket(ctx, env.Market.Ref)
 	if err != nil {

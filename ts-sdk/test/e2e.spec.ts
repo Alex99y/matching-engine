@@ -114,7 +114,7 @@ function startServer(): Promise<Server> {
         case "GET /api/v1/markets/":
           sendJson(
             200,
-            '[{"base_symbol":"ETH","quote_symbol":"USDT","price_quantum":1000000000000000000,"amount_quantum":1000,"min_order_size":1,"max_order_size":1000000}]',
+            '[{"base_symbol":"ETH","quote_symbol":"USDT","price_quantum":1000000000000000000,"amount_quantum":1000,"min_order_size":1,"max_order_size":1000000,"taker_fee_bps":100,"maker_fee_bps":50}]',
           );
           return;
         case "GET /api/v1/markets/ETH-USDT/depth":

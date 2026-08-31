@@ -55,6 +55,10 @@ export interface Market {
   readonly amountQuantum: bigint;
   readonly minOrderSize: bigint;
   readonly maxOrderSize: bigint;
+  /** Basis points charged to the taker, on the asset it receives. 0-10000. */
+  readonly takerFeeBps: bigint;
+  /** Basis points charged to the maker, on the asset it receives. 0-10000. */
+  readonly makerFeeBps: bigint;
 }
 
 export interface GetDepthOptions {

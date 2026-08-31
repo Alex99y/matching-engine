@@ -30,6 +30,8 @@ type Market struct {
 	AmountQuantum uint64
 	MinOrderSize  uint64
 	MaxOrderSize  uint64
+	TakerFeeBps   uint64
+	MakerFeeBps   uint64
 }
 
 type MarketPrice struct {
@@ -119,6 +121,8 @@ func (s *MarketService) GetMarket(ctx context.Context, marketRef string) (*Marke
 		AmountQuantum: m.AmountQuantum,
 		MinOrderSize:  m.MinOrderSize,
 		MaxOrderSize:  m.MaxOrderSize,
+		TakerFeeBps:   m.TakerFeeBps,
+		MakerFeeBps:   m.MakerFeeBps,
 	}, nil
 }
 
@@ -136,6 +140,8 @@ func (s *MarketService) GetMarkets(ctx context.Context) ([]Market, error) {
 			AmountQuantum: m.AmountQuantum,
 			MinOrderSize:  m.MinOrderSize,
 			MaxOrderSize:  m.MaxOrderSize,
+			TakerFeeBps:   m.TakerFeeBps,
+			MakerFeeBps:   m.MakerFeeBps,
 		}
 	}
 	return markets, nil

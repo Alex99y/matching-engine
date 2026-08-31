@@ -13,6 +13,8 @@ describe("markets.getMarkets", () => {
         amount_quantum: 100n,
         min_order_size: 1n,
         max_order_size: 5n,
+        taker_fee_bps: 100n,
+        maker_fee_bps: 50n,
       },
     ]);
     const transport = { request } as unknown as Transport;

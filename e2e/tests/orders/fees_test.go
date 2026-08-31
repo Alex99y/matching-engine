@@ -3,19 +3,20 @@
 package orders
 
 import (
+	"math/bits"
 	"testing"
 
 	"github.com/alex99y/matching-engine/e2e/internal/assert"
 	"github.com/alex99y/matching-engine/e2e/internal/fixtures"
 )
 
-// O16 — fees are taken out of what each side receives, at the taker's expense.
+// O16 — fees are charged at the market's published rates, on what each side receives.
 //
-// Crosses one maker with one taker and inspects both sides of the same match. The API does
-// not publish a market's fee rates, so this asserts the shape rather than the numbers.
-// Expect: each party's fee is charged in the asset it received (base for the buyer, quote for
-// the seller), the credit is the fill minus that fee, and the taker's effective rate is no
-// better than the maker's.
+// Crosses one maker with one taker and checks both sides of the same match against the
+// taker_fee_bps / maker_fee_bps the market advertises.
+// Expect: the buyer pays its rate in base and the seller pays its rate in quote, each fee is
+// the received amount times the rate in basis points (floored), and each party is credited
+// the fill minus exactly that.
 func TestFeesAreChargedOnWhatEachSideReceives(t *testing.T) {
 	ctx := env.Context(t)
 	maker := env.NewFundedAccount(t)
@@ -49,8 +50,16 @@ func TestFeesAreChargedOnWhatEachSideReceives(t *testing.T) {
 	makerMoved := diffAgainst(t, ctx, maker.LoginToken, makerBefore)
 	takerMoved := diffAgainst(t, ctx, taker.LoginToken, takerBefore)
 
-	// The buyer received base; the seller received quote. Each is credited the fill minus
-	// the fee charged in that same asset.
+	// The buyer received base and the seller quote, each taxed at its own published rate.
+	if want := feeOf(qty, env.Market.TakerFeeBps); takerFill.Fee != want {
+		t.Fatalf("buyer's fee = %d, want %d (%d base at %d bps)",
+			takerFill.Fee, want, qty, env.Market.TakerFeeBps)
+	}
+	if want := feeOf(notional, env.Market.MakerFeeBps); makerFill.Fee != want {
+		t.Fatalf("seller's fee = %d, want %d (%d quote at %d bps)",
+			makerFill.Fee, want, notional, env.Market.MakerFeeBps)
+	}
+
 	if got, want := takerMoved[env.Market.BaseSymbol].Balance, int64(qty-takerFill.Fee); got != want {
 		t.Fatalf("buyer credited %d %s, want %d (%d filled less a %d fee)",
 			got, env.Market.BaseSymbol, want, qty, takerFill.Fee)
@@ -60,21 +69,17 @@ func TestFeesAreChargedOnWhatEachSideReceives(t *testing.T) {
 			got, env.Market.QuoteSymbol, want, notional, makerFill.Fee)
 	}
 
-	// A fee only ever reduces what you receive; it is never charged on top.
-	if takerFill.Fee > qty {
-		t.Fatalf("buyer's fee %d exceeds the %d base it bought", takerFill.Fee, qty)
-	}
-	if makerFill.Fee > notional {
-		t.Fatalf("seller's fee %d exceeds the %d quote it earned", makerFill.Fee, notional)
-	}
-
-	// Compare the two rates without knowing either denomination:
-	//   takerFee/qty >= makerFee/notional  ⟺  takerFee*notional >= makerFee*qty
-	if takerFill.Fee*notional < makerFill.Fee*qty {
-		t.Fatalf("the taker was charged a better rate than the maker (taker %d/%d vs maker %d/%d)",
-			takerFill.Fee, qty, makerFill.Fee, notional)
-	}
-
 	assert.Conserved(t, env.Market.BaseSymbol, env.Market.QuoteSymbol,
 		[]map[string]assert.Move{makerMoved, takerMoved}, makerOrder, takerOrder)
+}
+
+// feeOf mirrors the engine's own rounding: amount x bps / 10000, floored, through a 128-bit
+// intermediate so a large quote notional cannot overflow the multiply.
+func feeOf(amount, bps uint64) uint64 {
+	if bps == 0 {
+		return 0
+	}
+	hi, lo := bits.Mul64(amount, bps)
+	fee, _ := bits.Div64(hi, lo, 10000)
+	return fee
 }

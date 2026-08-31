@@ -20,6 +20,8 @@ type MarketRules struct {
 	AmountQuantum uint64
 	MinOrderSize  uint64
 	MaxOrderSize  uint64
+	TakerFeeBps   uint64
+	MakerFeeBps   uint64
 }
 
 // ResolveMarket reads a market's rules and its base/quote instrument decimals.
@@ -47,6 +49,8 @@ func ResolveMarket(ctx context.Context, c *client.Client, ref string) (MarketRul
 		AmountQuantum: m.AmountQuantum,
 		MinOrderSize:  m.MinOrderSize,
 		MaxOrderSize:  m.MaxOrderSize,
+		TakerFeeBps:   m.TakerFeeBps,
+		MakerFeeBps:   m.MakerFeeBps,
 	}, nil
 }
 
