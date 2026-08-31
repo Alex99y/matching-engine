@@ -14,11 +14,12 @@ import (
 )
 
 var (
-	ErrMarketNotFound = errors.New("market not found")
-	ErrInvalidOrder   = errors.New("invalid order")
-	ErrCreatingUUID   = errors.New("could not create uuid for order")
-	ErrOrderNotFound  = errors.New("order not found")
-	ErrInvalidLimit   = errors.New("limit must be between 1 and 100")
+	ErrMarketNotFound         = errors.New("market not found")
+	ErrInvalidOrder           = errors.New("invalid order")
+	ErrCreatingUUID           = errors.New("could not create uuid for order")
+	ErrOrderNotFound          = errors.New("order not found")
+	ErrInvalidLimit           = errors.New("limit must be between 1 and 100")
+	ErrDuplicateClientOrderID = errors.New("client_order_id already used")
 )
 
 type OrderToPublish struct {
@@ -55,6 +56,7 @@ type OrderRepository interface {
 	GetOrderByClientOrderID(ctx context.Context, userID uuid.UUID, clientOrderID string) (*repository.OrderRow, error)
 	GetOrdersByUser(ctx context.Context, userID uuid.UUID, showOpenOrders bool, showCancelledOrders bool, baseInstrumentID, quoteInstrumentID *int, startDate, endDate *time.Time, limit int) ([]repository.OrderRow, error)
 	GetOrdersByIDs(ctx context.Context, userID uuid.UUID, ids []uuid.UUID) ([]repository.OrderRow, error)
+	ClientOrderIDExists(ctx context.Context, userID uuid.UUID, clientOrderID string) (bool, error)
 }
 
 type BatchCancelResult struct {
@@ -171,6 +173,16 @@ func (o *OrderService) PublishOrderToQueue(
 		},
 	); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidOrder, err)
+	}
+
+	if order.ClientOrderID != "" {
+		exists, err := o.orderRepository.ClientOrderIDExists(ctx, userID, order.ClientOrderID)
+		if err != nil {
+			return nil, fmt.Errorf("check client order id: %w", err)
+		}
+		if exists {
+			return nil, ErrDuplicateClientOrderID
+		}
 	}
 
 	event, err := order_events_queue.NewOpenOrderEvent(openEvent)
