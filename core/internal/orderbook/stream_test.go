@@ -162,3 +162,32 @@ func TestDrainStreamOrdersBookDeterministically(t *testing.T) {
 		}
 	}
 }
+
+// SnapshotLevels feeds the L2 snapshot the live stream sequences against, so its ordering is a
+// contract, not an incidental: bids best-first (high→low), asks best-first (low→high).
+func TestSnapshotLevelsOrdering(t *testing.T) {
+	o := testBook()
+	u := uuid.New()
+	for _, p := range []uint64{99, 101, 100} {
+		restBuy(o, u, p, 1)
+	}
+	for _, p := range []uint64{105, 103, 104} {
+		restSell(o, u, p, 1)
+	}
+
+	bids, asks := o.SnapshotLevels()
+	wantBids, wantAsks := []uint64{101, 100, 99}, []uint64{103, 104, 105}
+	if len(bids) != len(wantBids) || len(asks) != len(wantAsks) {
+		t.Fatalf("got %d bids and %d asks, want %d and %d", len(bids), len(asks), len(wantBids), len(wantAsks))
+	}
+	for i, p := range wantBids {
+		if bids[i].Price != p {
+			t.Fatalf("bids = %+v, want prices %v (high→low)", bids, wantBids)
+		}
+	}
+	for i, p := range wantAsks {
+		if asks[i].Price != p {
+			t.Fatalf("asks = %+v, want prices %v (low→high)", asks, wantAsks)
+		}
+	}
+}

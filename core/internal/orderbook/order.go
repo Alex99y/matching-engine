@@ -126,18 +126,26 @@ func takerStatus(t *Order, rests, filled bool) string {
 	return repository.OrderStatusCancelled
 }
 
-// quoteAmount converts a fill or reservation into quote-quanta.
-// Price is in quote-quanta per whole base coin; qty is in base-quanta;
-// dividing by baseScale (= 10^baseDecimals) normalises the product.
+// quoteAmount converts a fill, a reservation, or a whole price level into quote-quanta.
+// Price is in quote-quanta per whole base coin; qty is in base-quanta; dividing by
+// baseScale (= 10^baseDecimals) normalises the product. The 128-bit intermediate is not
+// optional: price*qty overflows uint64 well before the scaled-down result does, and a
+// bare multiply would wrap silently.
 func quoteAmount(price, qty, baseScale uint64) uint64 {
-	return price * qty / baseScale
+	if baseScale == 0 {
+		baseScale = 1
+	}
+	hi, lo := bits.Mul64(price, qty)
+	if hi >= baseScale {
+		return math.MaxUint64 // already far past any storable amount
+	}
+	v, _ := bits.Div64(hi, lo, baseScale)
+	return v
 }
 
 // affordableBase is the inverse of quoteAmount: the base-quanta a quote budget buys at
-// price. Because price is quote-quanta per whole base coin, the budget is scaled up by
-// baseScale before dividing — the same normalisation quoteAmount does, reversed. A market
-// buy is quote-denominated, so this (not a bare quantity) is what caps each fill; the
-// 128-bit intermediate keeps budget*baseScale from overflowing uint64.
+// price. A market buy is quote-denominated, so this (not a bare quantity) is what caps
+// each fill; the 128-bit intermediate keeps budget*baseScale from overflowing uint64.
 func affordableBase(quote, price, baseScale uint64) uint64 {
 	if price == 0 {
 		return 0
@@ -151,20 +159,6 @@ func affordableBase(quote, price, baseScale uint64) uint64 {
 	}
 	base, _ := bits.Div64(hi, lo, price)
 	return base
-}
-
-// quoteValue is quoteAmount with a 128-bit intermediate, for callers that value a whole
-// price level (canFill), where price*qty can overflow uint64 before the divide.
-func quoteValue(price, qty, baseScale uint64) uint64 {
-	if baseScale == 0 {
-		baseScale = 1
-	}
-	hi, lo := bits.Mul64(price, qty)
-	if hi >= baseScale {
-		return math.MaxUint64 // already far past any realistic budget
-	}
-	v, _ := bits.Div64(hi, lo, baseScale)
-	return v
 }
 
 // limitHaveWant maps a limit order's notional and remaining base quantity to the
@@ -190,5 +184,5 @@ func canceledRemaining(t *Order, baseScale uint64) (have, want uint64) {
 	if t.quoteDenom {
 		return t.RemainingQuote, 0
 	}
-	return limitHaveWant(t.OpenOrder.Side, quoteAmount(t.OpenOrder.Price, t.Remaining, baseScale), t.Remaining)
+	return restingRemaining(t, baseScale)
 }

@@ -40,7 +40,6 @@ func (o *OrderBook) ExpireDue(now int64) []uuid.UUID {
 	return due
 }
 
-// indexExpiry adds a just-rested order to the expiry index, if it carries a TTL.
 func (o *OrderBook) indexExpiry(order *Order) {
 	if order.OpenOrder.ExpiresAt == nil {
 		return
@@ -48,7 +47,6 @@ func (o *OrderBook) indexExpiry(order *Order) {
 	o.expiries.ReplaceOrInsert(&expiryEntry{expiresAt: *order.OpenOrder.ExpiresAt, orderID: order.OpenOrder.OrderID})
 }
 
-// unindexExpiry removes an order leaving the book from the expiry index, if it carries a TTL.
 func (o *OrderBook) unindexExpiry(order *Order) {
 	if order.OpenOrder.ExpiresAt == nil {
 		return
