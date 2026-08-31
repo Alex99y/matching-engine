@@ -15,23 +15,26 @@ import (
 func (o *OrderBook) MatchOrder(event *oeq.OpenOrderEvent, result *repository.BatchResult) {
 	taker := newOrder(event, o.market.BaseScale)
 
-	postOnlyReject := false
+	// mayRest is cleared by the paths that must not leave the order in the book even
+	// though it looks restable: completion then releases the reservation and records a
+	// cancellation. A FOK kill needs no such flag — takerRests only admits GTC.
+	mayRest := true
 	switch {
 	case !guardsOK(taker):
-		// Defensive: ValidateOrderEvent should already reject these. Skip matching;
-		// completion below releases the reservation and records a cancellation.
+		// Defensive: ValidateOrderEvent should already reject these.
 		o.logger.Warn("orderbook: order failed defensive guards, rejecting")
+		mayRest = false
 	case taker.OpenOrder.PostOnly && o.crossesBook(taker):
 		// A post-only order that would take liquidity is cancelled untouched — it may
-		// only rest. Skip matching; completion below releases the reservation.
-		postOnlyReject = true
+		// only rest, and here it cannot.
+		mayRest = false
 	case taker.OpenOrder.TimeInForce == oeq.FillOrKill && !o.canFill(taker):
 		// FOK that cannot fully fill is killed untouched — skip matching.
 	default:
 		o.match(taker, result)
 	}
 
-	rests := o.takerRests(taker) && !postOnlyReject
+	rests := mayRest && o.takerRests(taker)
 	filled := o.takerFilled(taker)
 	o.settleTakerCompletion(taker, rests, result)
 	o.emitTakerOutcome(taker, rests, filled, result)
@@ -49,13 +52,12 @@ func (o *OrderBook) takerFilled(t *Order) bool {
 		o.oppositeTree(t.OpenOrder.Side).Len() > 0
 }
 
-// crossesBook reports whether the order would trade against the resting book right now: the
-// best price on the opposite side is within its limit. Only the best level matters — if it
-// does not cross, nothing deeper does. Used to reject a post-only order before it can take.
+// crossesBook reports whether the order would trade against the resting book right now.
+// Used to reject a post-only order before it can take.
 func (o *OrderBook) crossesBook(order *Order) bool {
 	crossed := false
-	o.eachOppositeLevel(order, func(lvl *PriceLevel) bool {
-		crossed = crosses(order, lvl.Price)
+	o.eachCrossingLevel(order, func(*PriceLevel) bool {
+		crossed = true
 		return false
 	})
 	return crossed
@@ -68,11 +70,7 @@ func (o *OrderBook) crossesBook(order *Order) bool {
 func (o *OrderBook) match(taker *Order, result *repository.BatchResult) {
 	var emptyLevels []*PriceLevel
 
-	o.eachOppositeLevel(taker, func(lvl *PriceLevel) bool {
-		if !crosses(taker, lvl.Price) {
-			return false
-		}
-
+	o.eachCrossingLevel(taker, func(lvl *PriceLevel) bool {
 		for lvl.Orders.Len() > 0 && taker.canTrade(lvl.Price, o.market.BaseScale) {
 			front := lvl.Orders.Front()
 			maker, ok := front.Value.(*Order)
@@ -112,44 +110,36 @@ func (o *OrderBook) match(taker *Order, result *repository.BatchResult) {
 		return taker.stillActive()
 	})
 
-	// Delete empty levels after iteration — modifying the tree inside Ascend/Descend is unsafe.
 	oppTree := o.oppositeTree(taker.OpenOrder.Side)
 	for _, lvl := range emptyLevels {
 		oppTree.Delete(lvl)
 	}
 }
 
-// canFill reports whether the crossing liquidity can fully satisfy a FOK taker.
+// canFill reports whether the crossing liquidity can fully satisfy a FOK taker. A quote-
+// denominated market buy needs its budget absorbed, every other order its base quantity, so
+// each level is valued in the taker's own denomination and drawn down from what it still needs.
+// Draining need (rather than summing supply) keeps the running total from overflowing when a
+// deep level's notional saturates.
 func (o *OrderBook) canFill(taker *Order) bool {
+	need := taker.Remaining
 	if taker.quoteDenom {
-		// Market buy FOK: can the crossing asks absorb the entire quote budget?
-		remaining := taker.RemainingQuote
-		filled := false
-		o.eachOppositeLevel(taker, func(lvl *PriceLevel) bool {
-			if !crosses(taker, lvl.Price) {
-				return false
-			}
-			v := quoteValue(lvl.Price, lvl.TotalQty, o.market.BaseScale)
-			if v >= remaining {
-				filled = true
-				return false
-			}
-			remaining -= v
-			return true
-		})
-		return filled
+		need = taker.RemainingQuote
 	}
 
-	var avail uint64
-	need := taker.Remaining
-	o.eachOppositeLevel(taker, func(lvl *PriceLevel) bool {
-		if !crosses(taker, lvl.Price) {
+	o.eachCrossingLevel(taker, func(lvl *PriceLevel) bool {
+		avail := lvl.TotalQty
+		if taker.quoteDenom {
+			avail = quoteAmount(lvl.Price, lvl.TotalQty, o.market.BaseScale)
+		}
+		if avail >= need {
+			need = 0
 			return false
 		}
-		avail += lvl.TotalQty
-		return avail < need
+		need -= avail
+		return true
 	})
-	return avail >= need
+	return need == 0
 }
 
 func crosses(order *Order, levelPrice uint64) bool {
@@ -197,8 +187,8 @@ func (o *OrderBook) emitTrade(taker, maker *Order, qty, price uint64, result *re
 		MatchBuyAmount:    qty,      // base bought
 		MatchSellAmount:   quoteAmt, // quote sold
 		MatchPrice:        price,
-		MatchBuyFees:      buyerFee,  // buyer's fee, in base
-		MatchSellFees:     sellerFee, // seller's fee, in quote
+		MatchBuyFees:      buyerFee,  // in base
+		MatchSellFees:     sellerFee, // in quote
 		BuyOrderIsTaker:   buyerIsTaker,
 		IsBuyOrderFilled:  buyer.fullyFilled(),
 		IsSellOrderFilled: seller.fullyFilled(),
@@ -251,25 +241,16 @@ func (o *OrderBook) emitMakerPartialFill(maker *Order, result *repository.BatchR
 // a non-resting order, the unfilled remainder. A resting order keeps exactly the amount
 // backing its remaining quantity blocked.
 func (o *OrderBook) settleTakerCompletion(t *Order, rests bool, result *repository.BatchResult) {
+	// A sell blocks base and spends it as base; a buy blocks quote and spends it as quote.
+	held, keep := t.reserve-t.filledBase, t.Remaining
 	if t.OpenOrder.Side == oeq.BuyOrder {
-		held := t.reserve - t.spentQuote // quote still blocked after fills
-		var keep uint64
-		if rests {
-			keep = quoteAmount(t.OpenOrder.Price, t.Remaining, o.market.BaseScale)
-		}
-		if release := held - keep; release > 0 {
-			result.AddBalanceDelta(t.OpenOrder.UserID, o.quoteInstr(), int64(release), -int64(release))
-		}
-		return
+		held, keep = t.reserve-t.spentQuote, quoteAmount(t.OpenOrder.Price, t.Remaining, o.market.BaseScale)
 	}
-
-	held := t.reserve - t.filledBase // base still blocked after fills
-	var keep uint64
-	if rests {
-		keep = t.Remaining
+	if !rests {
+		keep = 0
 	}
 	if release := held - keep; release > 0 {
-		result.AddBalanceDelta(t.OpenOrder.UserID, o.baseInstr(), int64(release), -int64(release))
+		releaseBlocked(result, t.OpenOrder.UserID, o.haveInstr(t.OpenOrder.Side), release)
 	}
 }
 

@@ -483,3 +483,259 @@ func TestPostOnlySellRejectedWhenItWouldCross(t *testing.T) {
 		t.Fatalf("stream status = %+v, want cancelled", upd)
 	}
 }
+
+// An order failing the defensive guards must be cancelled, never rested — a limit GTC with a
+// zero price satisfies takerRests on its own, so it would otherwise sit in the book at price 0.
+func TestGuardFailureIsCancelledNotRested(t *testing.T) {
+	o := testBook()
+	id := uuid.New()
+	r := repository.NewBatchResult()
+	o.MatchOrder(&oeq.OpenOrderEvent{
+		OrderID: id, UserID: uuid.New(), MarketID: 1,
+		Side: oeq.BuyOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+		Price: 0, Quantity: 10,
+	}, r)
+
+	if s := o.Stats(); s.BidOrders != 0 {
+		t.Fatalf("guard-failed order rested in the book: bidOrders=%d", s.BidOrders)
+	}
+	if len(r.OpenOrders) != 0 || len(r.CancelledOrders) != 1 {
+		t.Fatalf("open=%d cancelled=%d (want 0, 1)", len(r.OpenOrders), len(r.CancelledOrders))
+	}
+	if r.NewOrders[0].Status != repository.OrderStatusCancelled {
+		t.Fatalf("status = %s, want cancelled", r.NewOrders[0].Status)
+	}
+}
+
+// The mirror of TestPriceImprovementRelease: a sell taker crossing a higher resting bid trades
+// at the maker's better price. Exercises emitTrade's buyer/seller swap, which no other test in
+// the package reaches — every other taker here is a buy.
+func TestSellTakerPriceImprovement(t *testing.T) {
+	o := testBook()
+	seller := uuid.New()
+	buyer := uuid.New()
+	restBuy(o, buyer, 120, 10)
+
+	r := repository.NewBatchResult()
+	o.MatchOrder(&oeq.OpenOrderEvent{
+		OrderID: uuid.New(), UserID: seller, MarketID: 1,
+		Side: oeq.SellOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+		Price: 100, Quantity: 10, // asks 100 or better; the resting bid pays 120
+	}, r)
+
+	if len(r.Matches) != 1 {
+		t.Fatalf("want 1 match, got %d", len(r.Matches))
+	}
+	m := r.Matches[0]
+	if m.MatchPrice != 120 || m.MatchBuyAmount != 10 || m.MatchSellAmount != 1200 {
+		t.Fatalf("match: price=%d buy=%d sell=%d (want 120, 10, 1200)", m.MatchPrice, m.MatchBuyAmount, m.MatchSellAmount)
+	}
+	if m.BuyOrderIsTaker {
+		t.Fatalf("BuyOrderIsTaker = true, want false — the sell is the taker here")
+	}
+	if sb := delta(t, r, seller, baseInstr); sb.BlockedDelta != -10 || sb.BalanceDelta != 0 {
+		t.Fatalf("seller base: blocked=%d balance=%d (want -10, 0)", sb.BlockedDelta, sb.BalanceDelta)
+	}
+	if sq := delta(t, r, seller, quoteInstr); sq.BalanceDelta != 1200 {
+		t.Fatalf("seller quote balance=%d (want 1200, the maker's price)", sq.BalanceDelta)
+	}
+	if bq := delta(t, r, buyer, quoteInstr); bq.BlockedDelta != -1200 {
+		t.Fatalf("buyer quote blocked=%d (want -1200)", bq.BlockedDelta)
+	}
+	if bb := delta(t, r, buyer, baseInstr); bb.BalanceDelta != 10 {
+		t.Fatalf("buyer base credit=%d (want 10)", bb.BalanceDelta)
+	}
+	if got := r.NewOrders[0].Status; got != repository.OrderStatusFilled {
+		t.Fatalf("taker status=%q want filled", got)
+	}
+	assertConserved(t, r)
+}
+
+// The mirror of TestPartialFillRests, and the only test that runs settleTakerCompletion's sell
+// path with a non-zero filled amount: a sell taker blocks base, delivers part of it, and must
+// keep exactly the remainder blocked when it rests — releasing nothing.
+func TestSellTakerPartialFillRests(t *testing.T) {
+	o := testBook()
+	seller := uuid.New()
+	buyer := uuid.New()
+	restBuy(o, buyer, 120, 4)
+
+	r := repository.NewBatchResult()
+	o.MatchOrder(&oeq.OpenOrderEvent{
+		OrderID: uuid.New(), UserID: seller, MarketID: 1,
+		Side: oeq.SellOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+		Price: 100, Quantity: 10,
+	}, r)
+
+	if len(r.Matches) != 1 || r.Matches[0].MatchBuyAmount != 4 {
+		t.Fatalf("want 1 match of 4, got %+v", r.Matches)
+	}
+	if len(r.OpenOrders) != 1 {
+		t.Fatalf("want taker resting, got %d open orders", len(r.OpenOrders))
+	}
+	// sell: have = base remainder, want = quote at its own limit (100 * 6).
+	if oo := r.OpenOrders[0]; oo.RemainingHaveAmount != 6 || oo.RemainingWantAmount != 600 {
+		t.Fatalf("resting remainder have=%d want=%d (want 6, 600)", oo.RemainingHaveAmount, oo.RemainingWantAmount)
+	}
+	if sb := delta(t, r, seller, baseInstr); sb.BlockedDelta != -4 || sb.BalanceDelta != 0 {
+		t.Fatalf("seller base: blocked=%d balance=%d (want -4, 0 — the resting 6 stays blocked)", sb.BlockedDelta, sb.BalanceDelta)
+	}
+	if sq := delta(t, r, seller, quoteInstr); sq.BalanceDelta != 480 {
+		t.Fatalf("seller quote balance=%d (want 480)", sq.BalanceDelta)
+	}
+	if got := r.NewOrders[0].Status; got != repository.OrderStatusOpen {
+		t.Fatalf("taker status=%q want open", got)
+	}
+	assertConserved(t, r)
+}
+
+// The fee-role mirror of TestTakerMakerFees. The two rates are deliberately different, so a
+// swapped role assignment in emitTrade yields different numbers rather than the same ones.
+func TestSellTakerFeeRoles(t *testing.T) {
+	o := NewOrderBook(logger.NewLogger(logger.Error), &repository.Market{
+		ID: 1, BaseInstrumentID: baseInstr, QuoteInstrumentID: quoteInstr,
+		TakerFeeBps: 10, MakerFeeBps: 5, BaseScale: 1,
+	})
+	buyer := uuid.New()  // resting maker (buy)
+	seller := uuid.New() // incoming taker (sell)
+	restBuy(o, buyer, 100, 10000)
+
+	r := repository.NewBatchResult()
+	o.MatchOrder(&oeq.OpenOrderEvent{
+		OrderID: uuid.New(), UserID: seller, MarketID: 1,
+		Side: oeq.SellOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+		Price: 100, Quantity: 10000,
+	}, r)
+
+	// 10000 base @ 100 → quoteAmt 1,000,000. The buyer is the MAKER now (5 bps on the base it
+	// receives = 5); the seller is the TAKER (10 bps on the quote it receives = 1000). Both
+	// numbers are the inverse of TestTakerMakerFees, where the buyer was the taker.
+	m := r.Matches[0]
+	if m.MatchBuyFees != 5 || m.MatchSellFees != 1000 {
+		t.Fatalf("fees: buy=%d sell=%d (want 5, 1000 — roles inverted vs TestTakerMakerFees)", m.MatchBuyFees, m.MatchSellFees)
+	}
+	if bb := delta(t, r, buyer, baseInstr); bb.BalanceDelta != 10000-5 {
+		t.Fatalf("buyer base credit=%d (want 9995)", bb.BalanceDelta)
+	}
+	if sq := delta(t, r, seller, quoteInstr); sq.BalanceDelta != 1000000-1000 {
+		t.Fatalf("seller quote credit=%d (want 999000)", sq.BalanceDelta)
+	}
+	assertConserved(t, r)
+}
+
+// Two makers sharing a price must fill in arrival order. Nothing else in the package rests two
+// orders at the same price, so this is also the only coverage of getOrCreate returning an
+// existing level instead of creating one.
+func TestFIFOTimePriorityWithinLevel(t *testing.T) {
+	o := testBook()
+	oldest := restSell(o, uuid.New(), 100, 4)
+	newest := restSell(o, uuid.New(), 100, 4)
+
+	if s := o.Stats(); s.AskOrders != 2 {
+		t.Fatalf("both makers should share one level: askOrders=%d, want 2", s.AskOrders)
+	}
+
+	r := repository.NewBatchResult()
+	o.MatchOrder(&oeq.OpenOrderEvent{
+		OrderID: uuid.New(), UserID: uuid.New(), MarketID: 1,
+		Side: oeq.BuyOrder, Type: oeq.LimitOrder, TimeInForce: oeq.ImmediateOrCancel,
+		Price: 100, Quantity: 4,
+	}, r)
+
+	if len(r.Matches) != 1 {
+		t.Fatalf("want 1 match, got %+v", r.Matches)
+	}
+	if got := r.Matches[0].SellOrderID; got != oldest {
+		t.Fatalf("filled %s first, want the older maker %s", got, oldest)
+	}
+	if s := o.Stats(); s.AskOrders != 1 {
+		t.Fatalf("askOrders=%d after consuming one of two, want 1", s.AskOrders)
+	}
+	// The survivor keeps the level alive with only its own quantity.
+	if _, asks := o.SnapshotLevels(); len(asks) != 1 || asks[0].Quantity != 4 {
+		t.Fatalf("asks=%+v, want the 100 level holding the newest maker's 4 (%s)", asks, newest)
+	}
+}
+
+// A taker sweeping several levels must empty them and remove them from the tree — the
+// collect-then-delete pass that runs after Ascend returns. It must also stop at the first level
+// its limit does not reach, leaving that level untouched.
+func TestMultiLevelSweepDeletesEmptiedLevels(t *testing.T) {
+	o := testBook()
+	restSell(o, uuid.New(), 100, 3)
+	restSell(o, uuid.New(), 101, 3)
+	restSell(o, uuid.New(), 105, 3) // above the taker's limit — must not trade
+
+	r := repository.NewBatchResult()
+	o.MatchOrder(&oeq.OpenOrderEvent{
+		OrderID: uuid.New(), UserID: uuid.New(), MarketID: 1,
+		Side: oeq.BuyOrder, Type: oeq.LimitOrder, TimeInForce: oeq.ImmediateOrCancel,
+		Price: 101, Quantity: 10,
+	}, r)
+
+	if len(r.Matches) != 2 {
+		t.Fatalf("want 2 matches (one per swept level), got %d: %+v", len(r.Matches), r.Matches)
+	}
+	if r.Matches[0].MatchPrice != 100 || r.Matches[1].MatchPrice != 101 {
+		t.Fatalf("swept out of price order: %d then %d (want 100 then 101)", r.Matches[0].MatchPrice, r.Matches[1].MatchPrice)
+	}
+
+	// Stats counts orders, so an emptied-but-still-present level would be invisible to it.
+	// SnapshotLevels lists levels, so it proves the two emptied ones actually left the tree.
+	bids, asks := o.SnapshotLevels()
+	if len(bids) != 0 {
+		t.Fatalf("IOC taker rested: bids=%+v", bids)
+	}
+	if len(asks) != 1 || asks[0].Price != 105 || asks[0].Quantity != 3 {
+		t.Fatalf("asks=%+v, want only the untouched 105 level with qty 3", asks)
+	}
+}
+
+// The FOK pre-check for a base-denominated taker: it must total only the levels the order
+// actually crosses, across as many as it takes. Every other FOK test here is a quote-
+// denominated market buy, which takes the other branch of canFill.
+func TestLimitFillOrKillAcrossLevels(t *testing.T) {
+	newBook := func() *OrderBook {
+		o := testBook()
+		restSell(o, uuid.New(), 100, 3)
+		restSell(o, uuid.New(), 101, 3)
+		return o
+	}
+	fokBuy := func(price, qty uint64) *oeq.OpenOrderEvent {
+		return &oeq.OpenOrderEvent{
+			OrderID: uuid.New(), UserID: uuid.New(), MarketID: 1,
+			Side: oeq.BuyOrder, Type: oeq.LimitOrder, TimeInForce: oeq.FillOrKill,
+			Price: price, Quantity: qty,
+		}
+	}
+
+	t.Run("fills when the crossed levels together cover it", func(t *testing.T) {
+		r := repository.NewBatchResult()
+		newBook().MatchOrder(fokBuy(101, 6), r)
+		if len(r.Matches) != 2 {
+			t.Fatalf("want 2 matches, got %d: %+v", len(r.Matches), r.Matches)
+		}
+		if got := r.NewOrders[0].Status; got != repository.OrderStatusFilled {
+			t.Fatalf("status=%q want filled", got)
+		}
+	})
+
+	t.Run("killed when the book is one unit short", func(t *testing.T) {
+		r := repository.NewBatchResult()
+		newBook().MatchOrder(fokBuy(101, 7), r)
+		if len(r.Matches) != 0 {
+			t.Fatalf("FOK traded despite insufficient liquidity: %+v", r.Matches)
+		}
+		if got := r.NewOrders[0].Status; got != repository.OrderStatusCancelled {
+			t.Fatalf("status=%q want cancelled", got)
+		}
+	})
+
+	t.Run("counts only levels it crosses, not total book depth", func(t *testing.T) {
+		r := repository.NewBatchResult()
+		newBook().MatchOrder(fokBuy(100, 6), r) // 6 rest in total, but only 3 at a price it reaches
+		if len(r.Matches) != 0 {
+			t.Fatalf("FOK counted a level above its own limit: %+v", r.Matches)
+		}
+	})
+}

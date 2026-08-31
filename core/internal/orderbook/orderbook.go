@@ -17,9 +17,10 @@ import (
 
 type PriceLevel struct {
 	Price uint64
-	// First element is the oldest one
+	// FIFO by time priority: the front element is the oldest resting order, matched first.
 	Orders *list.List
-	// Total remaining (For FOK orders)
+	// Aggregate remaining quantity of every order at this level. Maintained on every
+	// rest/fill/removal — FOK sizing, the L2 snapshot, and the stream's book deltas all read it.
 	TotalQty uint64
 }
 
@@ -50,7 +51,19 @@ type OrderBook struct {
 func (o *OrderBook) baseInstr() int  { return o.market.BaseInstrumentID }
 func (o *OrderBook) quoteInstr() int { return o.market.QuoteInstrumentID }
 
-// BookStats is a read-only snapshot of book depth.
+// haveInstr is the instrument an order blocks funds in: a buy pays quote, a sell delivers base.
+func (o *OrderBook) haveInstr(side oeq.OrderSide) int {
+	if side == oeq.BuyOrder {
+		return o.quoteInstr()
+	}
+	return o.baseInstr()
+}
+
+// releaseBlocked returns amount to a user's spendable balance from their blocked funds.
+func releaseBlocked(result *repository.BatchResult, userID uuid.UUID, instrumentID int, amount uint64) {
+	result.AddBalanceDelta(userID, instrumentID, int64(amount), -int64(amount))
+}
+
 type BookStats struct {
 	BidOrders, AskOrders int
 	BestBid, BestAsk     uint64
@@ -124,6 +137,15 @@ func (o *OrderBook) eachOppositeLevel(order *Order, fn func(*PriceLevel) bool) {
 	} else {
 		o.bids.Descend(fn)
 	}
+}
+
+// eachCrossingLevel walks the opposite side best-price-first, calling fn for each level the
+// order crosses and stopping at the first one it does not — levels deeper than that are
+// worse priced, so none of them can cross either.
+func (o *OrderBook) eachCrossingLevel(order *Order, fn func(*PriceLevel) bool) {
+	o.eachOppositeLevel(order, func(lvl *PriceLevel) bool {
+		return crosses(order, lvl.Price) && fn(lvl)
+	})
 }
 
 const btreeDegree = 32
