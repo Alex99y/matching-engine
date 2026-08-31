@@ -3,15 +3,12 @@ package stream
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
 // Order-update statuses carried on the private stream. "rejected" and "expired" are
-// stream-only distinctions — both persist as "cancelled" (see core stream.go).
+// stream-only distinctions — both persist as "cancelled" (see core's stream.go).
 const (
 	StatusOpen            = "open"
 	StatusFilled          = "filled"
@@ -21,10 +18,6 @@ const (
 	StatusExpired         = "expired"
 )
 
-// ErrClosed is returned by Next/WaitForStatus after the stream has ended (server closed it,
-// Close was called, or the connecting context was cancelled) with no other error to report.
-var ErrClosed = errors.New("stream: closed")
-
 type OrderEvent struct {
 	OrderID   string
 	Status    string
@@ -33,94 +26,49 @@ type OrderEvent struct {
 	At        time.Time // client receive time
 }
 
-type wireOrder struct {
-	Type      string `json:"type"`
-	OrderID   string `json:"order_id"`
-	Status    string `json:"status"`
-	Filled    string `json:"filled"`
-	Remaining string `json:"remaining"`
-}
+// UserStream is a live subscriber to GET /stream/users for one account. It carries only that
+// account's order updates — the broker routes private events by user id.
+type UserStream struct{ *sub[OrderEvent] }
 
-// UserStream is a live subscriber to GET /stream/users for one account.
-type UserStream struct {
-	r       *reader
-	events  chan OrderEvent
-	errc    chan error
-	stop    context.CancelFunc
-	closeMu sync.Once
-	closed  chan struct{}
-}
-
-// ConnectUser dials the stream synchronously (so a returned nil error means the listener is
-// live) and starts decoding frames in the background.
 func ConnectUser(ctx context.Context, apiURL, token string) (*UserStream, error) {
-	sctx, cancel := context.WithCancel(ctx)
 	url := strings.TrimRight(apiURL, "/") + "/stream/users"
 
-	r, err := dial(sctx, url, token)
+	s, err := subscribe(ctx, url, token, decodeOrder)
 	if err != nil {
-		cancel()
 		return nil, err
 	}
-
-	s := &UserStream{
-		r:      r,
-		events: make(chan OrderEvent, 256),
-		errc:   make(chan error, 1),
-		stop:   cancel,
-		closed: make(chan struct{}),
-	}
-	go s.pump()
-	return s, nil
+	return &UserStream{s}, nil
 }
 
-func (s *UserStream) pump() {
-	defer close(s.events)
-	defer s.stop() // release sctx if the stream ended on its own (server closed / parent ctx)
-	for raw := range s.r.frames {
-		var w wireOrder
-		if err := json.Unmarshal(raw, &w); err != nil {
-			s.report(err)
-			continue
-		}
-		if w.Type != "order" {
-			continue
-		}
-		filled, _ := strconv.ParseUint(w.Filled, 10, 64)
-		remaining, _ := strconv.ParseUint(w.Remaining, 10, 64)
-		ev := OrderEvent{OrderID: w.OrderID, Status: w.Status, Filled: filled, Remaining: remaining, At: time.Now()}
-		select {
-		case s.events <- ev:
-		case <-s.closed:
-			return
-		}
+func decodeOrder(raw []byte) (OrderEvent, bool, error) {
+	kind, err := frameType(raw)
+	if err != nil {
+		return OrderEvent{}, false, err
 	}
-	// frames closed — surface a final read error if consume left one.
-	select {
-	case err := <-s.r.errc:
-		s.report(err)
-	default:
+	if kind != "order" {
+		return OrderEvent{}, false, nil
 	}
-}
 
-// Next returns the next order event. It returns an error if the stream failed, ended
-// (ErrClosed), or ctx expired.
-func (s *UserStream) Next(ctx context.Context) (OrderEvent, error) {
-	select {
-	case err := <-s.errc:
-		return OrderEvent{}, err
-	case ev, ok := <-s.events:
-		if !ok {
-			return OrderEvent{}, ErrClosed
-		}
-		return ev, nil
-	case <-ctx.Done():
-		return OrderEvent{}, ctx.Err()
+	var w struct {
+		OrderID   string `json:"order_id"`
+		Status    string `json:"status"`
+		Filled    string `json:"filled"`
+		Remaining string `json:"remaining"`
 	}
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return OrderEvent{}, false, err
+	}
+	return OrderEvent{
+		OrderID:   w.OrderID,
+		Status:    w.Status,
+		Filled:    amount(w.Filled),
+		Remaining: amount(w.Remaining),
+		At:        time.Now(),
+	}, true, nil
 }
 
 // WaitForStatus consumes events until orderID reaches one of statuses (returning that event)
-// or ctx expires. Events for other orders, and non-matching statuses for orderID, are skipped.
+// or ctx expires. Events for other orders, and other statuses for orderID, are skipped.
 func (s *UserStream) WaitForStatus(ctx context.Context, orderID string, statuses ...string) (OrderEvent, error) {
 	for {
 		ev, err := s.Next(ctx)
@@ -138,17 +86,18 @@ func (s *UserStream) WaitForStatus(ctx context.Context, orderID string, statuses
 	}
 }
 
-// Close stops the stream. Safe to call more than once.
-func (s *UserStream) Close() {
-	s.closeMu.Do(func() {
-		close(s.closed)
-		s.stop()
-	})
-}
-
-func (s *UserStream) report(err error) {
-	select {
-	case s.errc <- err:
-	default:
+// Collect drains up to limit events for orderID until ctx expires, returning them in arrival
+// order. Use it to assert on the whole lifecycle rather than a single transition.
+func (s *UserStream) Collect(ctx context.Context, orderID string, limit int) []OrderEvent {
+	var out []OrderEvent
+	for len(out) < limit {
+		ev, err := s.Next(ctx)
+		if err != nil {
+			return out
+		}
+		if ev.OrderID == orderID {
+			out = append(out, ev)
+		}
 	}
+	return out
 }

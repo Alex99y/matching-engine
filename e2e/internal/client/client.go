@@ -57,6 +57,28 @@ func (c *Client) Health(ctx context.Context) error {
 	return nil
 }
 
+// OpenAPISpec fetches the served API description. Like /health it sits outside /api/v1.
+func (c *Client) OpenAPISpec(ctx context.Context) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.rootURL+"/openapi.yaml", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Method: http.MethodGet, Path: "/openapi.yaml", Status: resp.StatusCode, Body: string(body)}
+	}
+	return body, nil
+}
+
 // do issues one request against the /api/v1 base and decodes a JSON body into out (when
 // non-nil). token may be empty for public endpoints. Any status not in wantStatus is
 // returned as *HTTPError with the raw body attached.
