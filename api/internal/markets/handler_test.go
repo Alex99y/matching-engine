@@ -182,6 +182,7 @@ func TestGetMarketHandlerNotFound(t *testing.T) {
 func TestGetMarketHandlerReturnsMarket(t *testing.T) {
 	repo := &spyMarketRepository{market: &repository.Market{
 		BaseSymbol: "BTC", QuoteSymbol: "USDT", PriceQuantum: 1, AmountQuantum: 1000, MinOrderSize: 1000, MaxOrderSize: 1000000000,
+		TakerFeeBps: 100, MakerFeeBps: 50,
 	}}
 	app := newTestAppWithRepo(repo, fakeDepthSource{}, nil)
 
@@ -196,8 +197,12 @@ func TestGetMarketHandlerReturnsMarket(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.BaseSymbol != "BTC" || got.QuoteSymbol != "USDT" {
-		t.Fatalf("body = %+v, unexpected shape", got)
+	want := markets.GetMarketResponse{
+		BaseSymbol: "BTC", QuoteSymbol: "USDT", PriceQuantum: 1, AmountQuantum: 1000,
+		MinOrderSize: 1000, MaxOrderSize: 1000000000, TakerFeeBps: 100, MakerFeeBps: 50,
+	}
+	if got != want {
+		t.Fatalf("body = %+v, want %+v", got, want)
 	}
 }
 

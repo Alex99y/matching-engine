@@ -22,6 +22,8 @@ type GetMarketResponse struct {
 	AmountQuantum uint64 `json:"amount_quantum"`
 	MinOrderSize  uint64 `json:"min_order_size"`
 	MaxOrderSize  uint64 `json:"max_order_size"`
+	TakerFeeBps   uint64 `json:"taker_fee_bps"`
+	MakerFeeBps   uint64 `json:"maker_fee_bps"`
 }
 
 func (h *MarketHandler) GetMarket(c fiber.Ctx) error {
@@ -44,6 +46,8 @@ func (h *MarketHandler) GetMarket(c fiber.Ctx) error {
 		AmountQuantum: market.AmountQuantum,
 		MinOrderSize:  market.MinOrderSize,
 		MaxOrderSize:  market.MaxOrderSize,
+		TakerFeeBps:   market.TakerFeeBps,
+		MakerFeeBps:   market.MakerFeeBps,
 	})
 }
 
@@ -62,6 +66,8 @@ func (h *MarketHandler) GetMarkets(c fiber.Ctx) error {
 			AmountQuantum: m.AmountQuantum,
 			MinOrderSize:  m.MinOrderSize,
 			MaxOrderSize:  m.MaxOrderSize,
+			TakerFeeBps:   m.TakerFeeBps,
+			MakerFeeBps:   m.MakerFeeBps,
 		}
 	}
 

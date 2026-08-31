@@ -931,7 +931,19 @@ components:
         amount_quantum: { type: integer, format: int64, minimum: 0 }
         min_order_size: { type: integer, format: int64, minimum: 0 }
         max_order_size: { type: integer, format: int64, minimum: 0 }
-      required: [base_symbol, quote_symbol, price_quantum, amount_quantum, min_order_size, max_order_size]
+        taker_fee_bps:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 10000
+          description: Fee in basis points charged to the taker, on the asset it receives.
+        maker_fee_bps:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 10000
+          description: Fee in basis points charged to the maker, on the asset it receives.
+      required: [base_symbol, quote_symbol, price_quantum, amount_quantum, min_order_size, max_order_size, taker_fee_bps, maker_fee_bps]
 
     GetPriceResponse:
       type: object
