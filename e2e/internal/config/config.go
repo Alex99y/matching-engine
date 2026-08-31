@@ -1,0 +1,90 @@
+// Package config resolves the e2e suite's runtime settings from E2E_* environment
+// variables, defaulting to an infra/local-deploy stack (see PLAN.md §5).
+package config
+
+import (
+	"fmt"
+	"os"
+	"strings"
+	"time"
+)
+
+type Config struct {
+	APIURL        string        // API base URL, including the /api/v1 prefix
+	Market        string        // default market ref for single-market tests
+	Markets       []string      // market-ref pool for sharded tests
+	ReadyTimeout  time.Duration // how long to wait for the stack to accept traffic
+	SettleTimeout time.Duration // per-test deadline for waiting on asynchronous state
+	LogLevel      string
+
+	// CLIBin and PostgresURL back the few admin actions the API does not expose — today
+	// only the account freeze/unfreeze the frozen-account test needs mid-run. Seeding is
+	// NOT done through these (it has to happen before the API boots — see PLAN.md §2).
+	CLIBin      string
+	PostgresURL string
+}
+
+const (
+	defaultAPIURL        = "http://localhost:4000/api/v1"
+	defaultMarket        = "ETH-USDT"
+	defaultMarkets       = "ETH-USDT,BTC-USDT,ETH-BTC"
+	defaultReadyTimeout  = 60 * time.Second
+	defaultSettleTimeout = 15 * time.Second
+	defaultLogLevel      = "info"
+	defaultCLIBin        = "../../../cli/bin/cli"
+	defaultPostgresURL   = "postgres://admin:admin@localhost:5432/matching-engine?sslmode=disable"
+)
+
+// Load returns an error only when a variable is set to an unparseable value; an unset
+// variable takes its default.
+func Load() (*Config, error) {
+	ready, err := durationEnv("E2E_READY_TIMEOUT", defaultReadyTimeout)
+	if err != nil {
+		return nil, err
+	}
+	settle, err := durationEnv("E2E_SETTLE_TIMEOUT", defaultSettleTimeout)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Config{
+		APIURL:        strings.TrimRight(stringEnv("E2E_API_URL", defaultAPIURL), "/"),
+		Market:        stringEnv("E2E_MARKET", defaultMarket),
+		Markets:       splitCSV(stringEnv("E2E_MARKETS", defaultMarkets)),
+		ReadyTimeout:  ready,
+		SettleTimeout: settle,
+		LogLevel:      stringEnv("E2E_LOG_LEVEL", defaultLogLevel),
+		CLIBin:        stringEnv("E2E_CLI_BIN", defaultCLIBin),
+		PostgresURL:   stringEnv("E2E_POSTGRES_URL", defaultPostgresURL),
+	}, nil
+}
+
+func stringEnv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func durationEnv(key string, def time.Duration) (time.Duration, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q: %w", key, raw, err)
+	}
+	return d, nil
+}
+
+func splitCSV(csv string) []string {
+	parts := strings.Split(csv, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}

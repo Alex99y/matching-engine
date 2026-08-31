@@ -6,5 +6,6 @@ use (
 	./common
 	./core
 	./db
+	./e2e
 	./loadtest
 )

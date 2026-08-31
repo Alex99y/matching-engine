@@ -1,0 +1,82 @@
+name: E2E
+
+on:
+  push:
+    branches: ["master"]
+    paths:
+      - "api/**"
+      - "cli/**"
+      - "core/**"
+      - "common/**"
+      - "db/**"
+      - "e2e/**"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/e2e.yml"
+  pull_request:
+    branches: ["master"]
+    paths:
+      - "api/**"
+      - "cli/**"
+      - "core/**"
+      - "common/**"
+      - "db/**"
+      - "e2e/**"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/e2e.yml"
+
+jobs:
+  e2e:
+    name: End-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      # BTC-USDT is in the stack's MARKET_LIST, so core runs a matcher for it. Pointing this
+      # at a market core does not serve would leave every order queued with no consumer.
+      E2E_MARKET: BTC-USDT
+      E2E_API_URL: http://localhost:4000/api/v1
+      E2E_POSTGRES_URL: postgres://admin:admin@localhost:5432/matching-engine?sslmode=disable
+      E2E_CLI_BIN: ./cli/bin/cli
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: e2e/go.mod
+          cache-dependency-path: |
+            api/go.sum
+            cli/go.sum
+            common/go.sum
+            core/go.sum
+            db/go.sum
+            e2e/go.sum
+
+      # The Dockerfiles build with -mod=vendor and COPY vendor/, but vendor/ is gitignored
+      # and therefore absent on a fresh checkout — without this every image build fails.
+      - name: Vendor workspace dependencies
+        run: go work vendor
+
+      # The account-freeze test drives this binary against the database directly; the API
+      # exposes no freeze route. Without it that one test skips rather than fails.
+      - name: Build the cli (used by the frozen-account test)
+        run: make -C cli build
+
+      - name: Start the stack
+        run: docker compose -f e2e/docker-compose.yml up -d --build --wait
+
+      - name: Run the e2e suite
+        run: make -C e2e test-e2e
+
+      # Service logs are the only way to see why a failure happened inside core or api, and
+      # they are gone once the stack comes down.
+      - name: Stack logs
+        if: failure()
+        run: docker compose -f e2e/docker-compose.yml logs --no-color --tail=400
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f e2e/docker-compose.yml down -v

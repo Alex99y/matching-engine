@@ -180,9 +180,9 @@ func TestMarketBuyBudgetBelowUnitPriceStillFills(t *testing.T) {
 }
 
 // A market buy almost never spends its budget to zero (integer division on both the
-// affordable quantity and the fill cost). When the leftover is unspendable dust and the
-// book still holds asks it could not afford, the order is filled — the dust is refunded,
-// not recorded as a cancellation.
+// affordable quantity and the fill cost). When the leftover cannot buy a single base quantum
+// at the price it just traded at, the order is filled — the dust is refunded, not recorded
+// as a cancellation — and that holds whether or not any liquidity remains behind it.
 func TestMarketBuyDustRemainderCountsAsFilled(t *testing.T) {
 	const baseScale = 1_000
 	o := NewOrderBook(logger.NewLogger(logger.Error), &repository.Market{
@@ -211,6 +211,38 @@ func TestMarketBuyDustRemainderCountsAsFilled(t *testing.T) {
 	// 500 spent, 1 dust refunded from the 501 reserved.
 	if bq := delta(t, r, buyer, quoteInstr); bq.BlockedDelta != -501 || bq.BalanceDelta != 1 {
 		t.Fatalf("buyer quote: blocked=%d balance=%d (want -501, 1)", bq.BlockedDelta, bq.BalanceDelta)
+	}
+	assertConserved(t, r)
+}
+
+// The dust verdict must not depend on what is left on the book: consuming the only resting
+// ask empties that side entirely, and the order is still filled. Guards the earlier rule,
+// which asked whether the opposite side had levels remaining and so reported this order —
+// which got every unit it could afford — as partially filled.
+func TestMarketBuyDustCountsAsFilledEvenWhenItEmptiesTheBook(t *testing.T) {
+	const baseScale = 1_000
+	o := NewOrderBook(logger.NewLogger(logger.Error), &repository.Market{
+		ID: 1, BaseInstrumentID: baseInstr, QuoteInstrumentID: quoteInstr, BaseScale: baseScale,
+	})
+	buyer := uuid.New()
+	restSell(o, uuid.New(), 2000, 250) // the only ask, and the buy consumes all of it
+
+	budget := uint64(501) // buys the full 250 base for 500; 1 quantum of dust left over
+	r := repository.NewBatchResult()
+	o.MatchOrder(&oeq.OpenOrderEvent{
+		OrderID: uuid.New(), UserID: buyer, MarketID: 1,
+		Side: oeq.BuyOrder, Type: oeq.MarketOrder, TimeInForce: oeq.ImmediateOrCancel,
+		QuoteQty: &budget,
+	}, r)
+
+	if s := o.Stats(); s.AskOrders != 0 {
+		t.Fatalf("the ask side still holds %d order(s); this test needs it emptied", s.AskOrders)
+	}
+	if got := r.NewOrders[0].Status; got != repository.OrderStatusFilled {
+		t.Fatalf("taker status = %q, want filled — it bought every unit it could afford", got)
+	}
+	if len(r.CancelledOrders) != 0 {
+		t.Fatalf("dust was recorded as a cancellation: %+v", r.CancelledOrders)
 	}
 	assertConserved(t, r)
 }

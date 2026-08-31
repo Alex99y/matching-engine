@@ -15,8 +15,8 @@ runtime/process metrics, and RabbitMQ exposes its own.
 | **core** | `:9092/metrics` (`METRICS_PORT`) | `me_core_*`, `me_db_*` (`service="core"`), `go_*`, `process_*` |
 | **rabbitmq** | `:15692/metrics` | `rabbitmq_*` (queue depth / broker health) |
 
-Prometheus scrapes all of the above (`local-deploy/prometheus/prometheus.yml`). Grafana dashboards:
-**`me-api`**, **`me-core`**, **`me-db`** (`local-deploy/grafana/dashboards/`).
+Prometheus scrapes all of the above (`infra/local-deploy/prometheus/prometheus.yml`). Grafana dashboards:
+**`me-api`**, **`me-core`**, **`me-db`** (`infra/local-deploy/grafana/dashboards/`).
 
 ---
 

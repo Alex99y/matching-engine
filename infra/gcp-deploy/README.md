@@ -74,9 +74,9 @@ Each service directory has a `deploy.sh` that:
 Run from the VM, inside the relevant service folder:
 
 ```sh
-cd gcp-deploy/api && ./deploy.sh
-cd gcp-deploy/core && ./deploy.sh
-cd gcp-deploy/rabbitmq && ./deploy.sh
+cd infra/gcp-deploy/api && ./deploy.sh
+cd infra/gcp-deploy/core && ./deploy.sh
+cd infra/gcp-deploy/rabbitmq && ./deploy.sh
 ```
 
 The VM's service account needs `roles/secretmanager.secretAccessor` on those secrets and `roles/artifactregistry.reader` on the repo to pull images.
