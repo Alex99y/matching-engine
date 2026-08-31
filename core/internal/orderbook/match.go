@@ -41,15 +41,17 @@ func (o *OrderBook) MatchOrder(event *oeq.OpenOrderEvent, result *repository.Bat
 }
 
 // takerFilled reports whether the taker got everything it could. Beyond an exact fill this
-// covers a quote-denominated market buy that spent its budget down to a sub-quantum
-// remainder it can no longer trade with, while the book still holds asks it could not
-// afford: the dust is refunded at settlement, so the order is filled, not partially filled.
+// covers a quote-denominated market buy left holding a remainder too small to buy even one
+// base quantum at the price it last traded at: that dust is refunded at settlement, so the
+// order is filled rather than partially filled.
 func (o *OrderBook) takerFilled(t *Order) bool {
 	if t.fullyFilled() {
 		return true
 	}
-	return t.quoteDenom && t.filledBase > 0 &&
-		o.oppositeTree(t.OpenOrder.Side).Len() > 0
+	if !t.quoteDenom || t.filledBase == 0 {
+		return false
+	}
+	return affordableBase(t.RemainingQuote, t.lastPrice, o.market.BaseScale) == 0
 }
 
 // crossesBook reports whether the order would trade against the resting book right now.

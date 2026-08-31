@@ -34,6 +34,9 @@ type Order struct {
 	// Running taker totals across the fills of one MatchOrder call.
 	filledBase uint64 // total base traded
 	spentQuote uint64 // total quote traded
+	// lastPrice is the price of the most recent fill — the prevailing price against which a
+	// leftover quote budget is judged spendable or dust (see OrderBook.takerFilled).
+	lastPrice uint64
 }
 
 func (ord *Order) canTrade(price, baseScale uint64) bool {
@@ -51,6 +54,7 @@ func (ord *Order) stillActive() bool {
 }
 
 func (ord *Order) applyFill(qty, price, baseScale uint64) {
+	ord.lastPrice = price
 	ord.filledBase += qty
 	qAmt := quoteAmount(price, qty, baseScale)
 	ord.spentQuote += qAmt
