@@ -13,6 +13,8 @@ type MarketInfo struct {
 	AmountQuantum uint64 `json:"amount_quantum"`
 	MinOrderSize  uint64 `json:"min_order_size"`
 	MaxOrderSize  uint64 `json:"max_order_size"`
+	TakerFeeBps   uint64 `json:"taker_fee_bps"`
+	MakerFeeBps   uint64 `json:"maker_fee_bps"`
 }
 
 // Price fields are decimal strings (or null before the market has traded) — the API sends
