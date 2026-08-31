@@ -63,7 +63,7 @@ func DeriveInsertParams(event *oeq.OpenOrderEvent, market *repository.Market) re
 		p.ClientOrderID = &event.ClientOrderID
 	}
 	if event.ExpiresAt != nil {
-		t := time.Unix(*event.ExpiresAt, 0)
+		t := time.Unix(*event.ExpiresAt, 0).UTC()
 		p.ExpiresAt = &t
 	}
 

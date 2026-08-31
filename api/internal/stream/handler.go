@@ -21,11 +21,11 @@ const clientPingInterval = 15 * time.Second
 var errInvalidInterval = errors.New("interval must be one of: 60, 300, 900, 3600, 14400, 86400")
 
 type StreamHandler struct {
-	logger     *logger.Logger
-	marketHub  *Hub
-	candleHub  *CandleHub
-	markets    map[string]uint64 // served market ref -> price_quantum (validates :market and grouping)
-	intervals  map[int64]struct{} // allowed candle intervals
+	logger    *logger.Logger
+	marketHub *Hub
+	candleHub *CandleHub
+	markets   map[string]uint64  // served market ref -> price_quantum (validates :market and grouping)
+	intervals map[int64]struct{} // allowed candle intervals
 }
 
 // MarketStream is the SSE endpoint GET /api/v1/stream/:market. It authenticates the connection (so the
@@ -95,6 +95,10 @@ func (h *StreamHandler) UserStream(c fiber.Ctx) error {
 		defer h.marketHub.disconnect(cl)
 		ping := time.NewTicker(clientPingInterval)
 		defer ping.Stop()
+
+		if !flush(w, []byte(": connected\n\n")) {
+			return
+		}
 
 		for {
 			select {

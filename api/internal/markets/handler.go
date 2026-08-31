@@ -29,7 +29,9 @@ func (h *MarketHandler) GetMarket(c fiber.Ctx) error {
 
 	market, err := h.marketService.GetMarket(c.Context(), marketRef)
 	if err != nil {
-		if errors.Is(err, ErrMarketNotFound) {
+		// A ref that is malformed and one that is merely unknown are the same thing to a
+		// caller: no such market. Left unmapped, the malformed case fell through to a 500.
+		if errors.Is(err, ErrMarketNotFound) || errors.Is(err, ErrInvalidMarketRef) {
 			return utils.NewErrorResponse(c, fiber.StatusNotFound, "market not found")
 		}
 		return utils.NewServerErrorResponse(c, h.logger, err)
