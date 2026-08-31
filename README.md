@@ -1,6 +1,12 @@
 # matching-engine
 
-Matching Engine project is a proof of concept for a high-performance order matching engine built in Go, designed to handle a large volume of orders with low latency. The engine supports limit and market orders, various time-in-force options, and is optimized for concurrent processing.
+Matching Engine is a proof of concept for an order matching engine built in Go, with durability as its first concern rather than raw speed.
+
+Each market's book is held in memory for matching, but **PostgreSQL is the source of truth**. A batch of orders is matched in memory and every side effect — trades, balances, order state — is written in a single transaction; only once that commits are the broker messages acknowledged. A crash therefore replays work rather than losing it, and the book is rebuilt from the database on restart. Orders reach the engine over **RabbitMQ** (one queue per market), and live market data is fanned back out through a separate exchange to SSE subscribers.
+
+That design sets the pace: one matcher goroutine owns each market and commits serially, which tops out around 2,500 orders/s per market with tail latency degrading from roughly 1,500 orders/s upward — far below a memory-only engine, and a deliberate trade rather than an accident. See [loadtest/README.md](loadtest/README.md) for the measurements.
+
+The engine supports limit and market orders, various time-in-force options, and is optimized for concurrent processing.
 
 
 ## Project structure
