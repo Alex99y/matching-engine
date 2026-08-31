@@ -44,6 +44,11 @@ docker build -f db/Dockerfile   -t matching-engine/db   .
 
 Bring the pieces up in this order: infrastructure, database migrations, `core`, then `api`. `ui` and `bots` are optional clients on top.
 
+> **Shortcut:** `make stack-up` does steps 1–2 plus seeds the default instruments/markets
+> (Postgres + RabbitMQ only, via `infra/local-deploy/docker-compose-deps.yml`). Then start
+> `core` and `api` (steps 3–4). `make stack-down` tears the deps down. For the full local
+> stack incl. Prometheus/Grafana/UI, use the compose file below instead.
+
 ### 1. Infrastructure
 
 Start Postgres, RabbitMQ, Prometheus, and Grafana:

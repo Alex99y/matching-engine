@@ -5,13 +5,17 @@
 FROM golang:1.25-alpine AS builder
 WORKDIR /workspace
 
-COPY go.work go.work.sum ./
 COPY api/go.mod api/go.sum api/
 COPY cli/go.mod cli/go.sum cli/
 COPY common/go.mod common/go.sum common/
 COPY core/go.mod core/go.sum core/
 COPY db/go.mod db/go.sum db/
 COPY vendor/ vendor/
+
+# Declare the workspace this image needs rather than copying the repo's go.work. Go loads
+# every module a workspace lists, so inheriting it would tie this image to modules it never
+# references — and break the build whenever one is added to the repo.
+RUN go work init ./api ./cli ./common ./core ./db
 
 COPY cli/ cli/
 COPY common/ common/

@@ -1,0 +1,117 @@
+# Self-contained stack for the e2e suite: dependencies, migrations, seed data, core and api.
+# Everything the tests need except the tests themselves, which run on the host (see README —
+# `suite.Setup` polls /health, so it needs no orchestration help, and running them outside the
+# stack keeps the exit code and the test output clean).
+#
+#   docker compose -f e2e/docker-compose.yml up -d --wait     # from the repo root
+#   E2E_MARKET=BTC-USDT make -C e2e test-e2e
+#   docker compose -f e2e/docker-compose.yml down -v
+#
+# The image builds use the workspace root as their context and `-mod=vendor`, so
+# `go work vendor` must have been run first — vendor/ is gitignored and absent on a fresh
+# checkout. `make -C e2e stack-up` does that for you.
+#
+# Ports 5432/5672 clash with infra/local-deploy; only one of the two stacks can be up.
+
+name: matching-engine-e2e
+
+x-service-env: &service-env
+  POSTGRESQL_URL: postgres://admin:admin@postgres:5432/matching-engine?sslmode=disable
+  RABBITMQ_URL: amqp://admin:admin@rabbitmq:5672/
+  DEBUG_LEVEL: info
+
+services:
+  postgres:
+    image: postgres:18.4
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: matching-engine
+    ports:
+      # Published for the account-freeze test, which drives the cli against the database
+      # directly (the API exposes no freeze route).
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d matching-engine"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  rabbitmq:
+    image: rabbitmq:4.2.4-management
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  # One-shot: brings the schema up to date, then exits.
+  migrate:
+    build:
+      context: ..
+      dockerfile: db/Dockerfile
+    environment:
+      <<: *service-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # One-shot: creates the instruments and markets the suite trades on. Must finish before
+  # core and api start — core only runs matchers for the markets in MARKET_LIST, and the API
+  # caches its market set at boot, so anything seeded later is invisible to both.
+  seed:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile.seed
+    environment:
+      <<: *service-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  core:
+    build:
+      context: ..
+      dockerfile: core/Dockerfile
+    environment:
+      <<: *service-env
+      # Every market the suite might be pointed at needs a matcher here, or its orders are
+      # accepted and then queue forever with no consumer.
+      MARKET_LIST: ETH-USDT,BTC-USDT,ETH-BTC
+      METRICS_PORT: "9092"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+
+  api:
+    build:
+      context: ..
+      dockerfile: api/Dockerfile
+    environment:
+      <<: *service-env
+      PORT: "4000"
+      HOST: 0.0.0.0
+      METRICS_PORT: "9091"
+    ports:
+      - "4000:4000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+      core:
+        condition: service_started
+    # The image is FROM scratch — no shell, no curl — so it cannot describe its own health to
+    # compose. Readiness is established by the suite instead: suite.Setup polls /health and
+    # GET /markets until both answer (E2E_READY_TIMEOUT, default 60s).

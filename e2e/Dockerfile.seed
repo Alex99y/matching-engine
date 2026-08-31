@@ -1,5 +1,8 @@
+# The seed job: the cli binary plus a shell to drive it. The cli's own image is FROM scratch,
+# which cannot run a script, so this rebuilds the binary onto a minimal shell image.
+#
 # Build context must be the workspace root:
-#   docker build -f core/Dockerfile -t matching-engine/core .
+#   docker build -f e2e/Dockerfile.seed -t matching-engine/e2e-seed .
 # Run `go work vendor` at the workspace root before building.
 
 FROM golang:1.25-alpine AS builder
@@ -17,15 +20,14 @@ COPY vendor/ vendor/
 # references — and break the build whenever one is added to the repo.
 RUN go work init ./api ./cli ./common ./core ./db
 
+COPY cli/ cli/
 COPY common/ common/
-COPY core/ core/
 COPY db/ db/
 
-RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -ldflags="-s -w" -o /bin/core ./core/cmd
+RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -ldflags="-s -w" -o /bin/cli ./cli/cmd
 
 
-FROM scratch
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /bin/core /bin/core
-USER 65534:65534
-ENTRYPOINT ["/bin/core"]
+FROM alpine:3.20
+COPY --from=builder /bin/cli /bin/cli
+COPY infra/scripts/seed.sh /seed.sh
+ENTRYPOINT ["/bin/sh", "/seed.sh"]
