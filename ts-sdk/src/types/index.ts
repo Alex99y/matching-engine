@@ -123,7 +123,10 @@ export interface CreateOrderParams {
   readonly side: OrderSide;
   readonly type: OrderType;
   readonly timeInForce: TimeInForce;
-  /** Optional idempotency key. The API requires 32-64 chars when present. */
+  /**
+   * Optional idempotency key. The API requires 32-64 chars when present, and rejects an
+   * id this user has already used ("client_order_id already used").
+   */
   readonly clientOrderId?: string;
   /** Required for limit orders; ignored by market orders. uint64. */
   readonly price?: bigint;

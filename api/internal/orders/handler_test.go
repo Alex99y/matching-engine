@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
@@ -191,6 +192,39 @@ func TestCreateOrderHandlerAllSucceedReturns202(t *testing.T) {
 	}
 	if len(got.Results) != 1 || got.Results[0].Error != nil || got.Results[0].OrderID == nil {
 		t.Fatalf("results = %+v, want one success", got.Results)
+	}
+}
+
+// A duplicate client_order_id is a client mistake, so it must come back as a readable
+// per-item error rather than the generic "internal error" the default branch produces.
+func TestCreateOrderHandlerReportsDuplicateClientOrderID(t *testing.T) {
+	pub := &fakePublisher{}
+	repo := &fakeOrderRepository{clientOrderIDExists: true}
+	app := newTestApp(repo, btcUsdtCache(), pub)
+
+	resp, err := app.Test(jsonRequest("POST", "/orders/", []orders.CreateOrderRequest{
+		{OrderSide: oeq.BuyOrder, OrderType: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+			Market: "BTC-USDT", Price: 100, Quantity: 5, ClientOrderID: strings.Repeat("a", 32)},
+	}))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 (every order in the batch was rejected)", resp.StatusCode)
+	}
+
+	var got orders.BatchCreateOrderResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Results) != 1 || got.Results[0].Error == nil {
+		t.Fatalf("results = %+v, want one rejection", got.Results)
+	}
+	if *got.Results[0].Error != "client_order_id already used" {
+		t.Fatalf("error = %q, want the duplicate-id message", *got.Results[0].Error)
+	}
+	if len(pub.calls) != 0 {
+		t.Fatalf("published %d events for a duplicate id, want 0", len(pub.calls))
 	}
 }
 

@@ -996,7 +996,9 @@ components:
           type: string
           minLength: 32
           maxLength: 64
-          description: Optional idempotency key supplied by the caller.
+          description: >-
+            Optional idempotency key supplied by the caller. Must be unused by this
+            user: reusing one rejects that order with "client_order_id already used".
         order_side: { type: string, enum: [sell, buy] }
         order_type: { type: string, enum: [limit, market] }
         order_tif:

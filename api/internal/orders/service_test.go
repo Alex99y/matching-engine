@@ -3,6 +3,7 @@ package orders_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,6 +68,17 @@ type fakeOrderRepository struct {
 
 	ordersByIDs    []repository.OrderRow
 	ordersByIDsErr error
+
+	clientOrderIDExists    bool
+	clientOrderIDExistsErr error
+	// gotClientOrderIDCheck records the id the service looked up, so a test can assert the
+	// check ran (or, when empty, that it was skipped entirely).
+	gotClientOrderIDCheck string
+}
+
+func (f *fakeOrderRepository) ClientOrderIDExists(ctx context.Context, userID uuid.UUID, clientOrderID string) (bool, error) {
+	f.gotClientOrderIDCheck = clientOrderID
+	return f.clientOrderIDExists, f.clientOrderIDExistsErr
 }
 
 func (f *fakeOrderRepository) GetOrderByID(ctx context.Context, userID, id uuid.UUID) (*repository.OrderRow, error) {
@@ -278,6 +290,112 @@ func TestPublishOrderToQueuePostOnlyMarketRejectedBeforePublish(t *testing.T) {
 	}
 	if len(pub.calls) != 0 {
 		t.Fatalf("published %d events, want 0", len(pub.calls))
+	}
+}
+
+// A replayed client_order_id must never reach the queue: the orders table only enforces
+// uniqueness at insert time, inside the matcher's batch transaction, where the violation
+// aborts the whole batch and forces a book rebuild.
+func TestPublishOrderToQueueRejectsDuplicateClientOrderID(t *testing.T) {
+	pub := &fakePublisher{}
+	repo := &fakeOrderRepository{clientOrderIDExists: true}
+	svc := newTestService(repo, btcUsdtCache(), pub)
+
+	clientOrderID := strings.Repeat("a", 32)
+	_, err := svc.PublishOrderToQueue(context.Background(), uuid.New(), &orders.OrderToPublish{
+		MarketID: "BTC-USDT", Side: oeq.BuyOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+		Price: 100, Quantity: 5, ClientOrderID: clientOrderID,
+	})
+	if !errors.Is(err, orders.ErrDuplicateClientOrderID) {
+		t.Fatalf("err = %v, want ErrDuplicateClientOrderID", err)
+	}
+	if repo.gotClientOrderIDCheck != clientOrderID {
+		t.Fatalf("checked %q, want %q", repo.gotClientOrderIDCheck, clientOrderID)
+	}
+	if len(pub.calls) != 0 {
+		t.Fatalf("published %d events for a duplicate id, want 0", len(pub.calls))
+	}
+}
+
+func TestPublishOrderToQueueAcceptsUnusedClientOrderID(t *testing.T) {
+	pub := &fakePublisher{}
+	repo := &fakeOrderRepository{clientOrderIDExists: false}
+	svc := newTestService(repo, btcUsdtCache(), pub)
+
+	clientOrderID := strings.Repeat("b", 32)
+	if _, err := svc.PublishOrderToQueue(context.Background(), uuid.New(), &orders.OrderToPublish{
+		MarketID: "BTC-USDT", Side: oeq.BuyOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+		Price: 100, Quantity: 5, ClientOrderID: clientOrderID,
+	}); err != nil {
+		t.Fatalf("PublishOrderToQueue: %v", err)
+	}
+	if len(pub.calls) != 1 {
+		t.Fatalf("published %d events, want 1", len(pub.calls))
+	}
+	open, err := pub.calls[0].event.DecodeOpenOrder()
+	if err != nil {
+		t.Fatalf("DecodeOpenOrder: %v", err)
+	}
+	if open.ClientOrderID != clientOrderID {
+		t.Fatalf("published client_order_id = %q, want %q", open.ClientOrderID, clientOrderID)
+	}
+}
+
+// An absent client_order_id is stored NULL and sits outside the unique index, so the lookup
+// must be skipped rather than run against an empty string — this is the order-entry hot path.
+func TestPublishOrderToQueueSkipsTheCheckWithoutAClientOrderID(t *testing.T) {
+	repo := &fakeOrderRepository{}
+	svc := newTestService(repo, btcUsdtCache(), &fakePublisher{})
+
+	if _, err := svc.PublishOrderToQueue(context.Background(), uuid.New(), &orders.OrderToPublish{
+		MarketID: "BTC-USDT", Side: oeq.BuyOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+		Price: 100, Quantity: 5,
+	}); err != nil {
+		t.Fatalf("PublishOrderToQueue: %v", err)
+	}
+	if repo.gotClientOrderIDCheck != "" {
+		t.Fatalf("queried the database for %q, want no query at all", repo.gotClientOrderIDCheck)
+	}
+}
+
+// The check runs after validation, so a malformed order is refused without ever touching the
+// database — an invalid order must not cost a query.
+func TestPublishOrderToQueueValidatesBeforeCheckingClientOrderID(t *testing.T) {
+	repo := &fakeOrderRepository{clientOrderIDExists: true}
+	svc := newTestService(repo, btcUsdtCache(), &fakePublisher{})
+
+	// Market order + GoodTillCancel is rejected by ValidateOrderEvent.
+	_, err := svc.PublishOrderToQueue(context.Background(), uuid.New(), &orders.OrderToPublish{
+		MarketID: "BTC-USDT", Side: oeq.BuyOrder, Type: oeq.MarketOrder, TimeInForce: oeq.GoodTillCancel,
+		ClientOrderID: strings.Repeat("c", 32),
+	})
+	if !errors.Is(err, orders.ErrInvalidOrder) {
+		t.Fatalf("err = %v, want ErrInvalidOrder", err)
+	}
+	if repo.gotClientOrderIDCheck != "" {
+		t.Fatalf("an invalid order still cost a lookup for %q", repo.gotClientOrderIDCheck)
+	}
+}
+
+// A database failure during the check is an infrastructure error, not a rejection: it must
+// not be reported to the caller as a duplicate.
+func TestPublishOrderToQueueClientOrderIDCheckError(t *testing.T) {
+	pub := &fakePublisher{}
+	repo := &fakeOrderRepository{clientOrderIDExistsErr: errors.New("connection refused")}
+	svc := newTestService(repo, btcUsdtCache(), pub)
+
+	_, err := svc.PublishOrderToQueue(context.Background(), uuid.New(), &orders.OrderToPublish{
+		MarketID: "BTC-USDT", Side: oeq.BuyOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+		Price: 100, Quantity: 5, ClientOrderID: strings.Repeat("d", 32),
+	})
+	if err == nil {
+		t.Fatal("a failed lookup was treated as success")
+	}
+	if errors.Is(err, orders.ErrDuplicateClientOrderID) {
+		t.Fatalf("a failed lookup was reported as a duplicate: %v", err)
+	}
+	if len(pub.calls) != 0 {
+		t.Fatalf("published %d events despite the lookup failing, want 0", len(pub.calls))
 	}
 }
 
