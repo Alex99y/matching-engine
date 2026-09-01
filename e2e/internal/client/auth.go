@@ -50,7 +50,7 @@ func (c *Client) CheckUsername(ctx context.Context, username string) (bool, erro
 }
 
 // Login exchanges credentials for a write-scoped login-session token (usable directly for
-// faucet and order routes). Password must be at least 10 characters or the API returns 400.
+// faucet and order routes).
 func (c *Client) Login(ctx context.Context, username, password string) (string, error) {
 	var resp tokenResponse
 	if err := c.do(ctx, http.MethodPost, "/sessions", "",

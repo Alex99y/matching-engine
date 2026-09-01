@@ -20,9 +20,13 @@ type CredentialValidator interface {
 	ValidateCredentials(ctx context.Context, username, password string) (uuid.UUID, error)
 }
 
+// No minimum length here on purpose: the password either matches the stored hash or it does
+// not, and pinning login to whatever the registration rule happens to be today would lock out
+// every account created under an older, shorter one. The cap stays, since argon2id burns CPU
+// in proportion to the input it is handed.
 type LoginRequest struct {
 	Username string `json:"username" validate:"required"`
-	Password string `json:"password" validate:"required,min=10"`
+	Password string `json:"password" validate:"required,max=128"`
 }
 
 type RevokeTokenHashRequest struct {
