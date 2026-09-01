@@ -16,6 +16,7 @@ import (
 
 	"github.com/alex99y/matching-engine/api/internal/users"
 	"github.com/alex99y/matching-engine/api/pkg/middleware"
+	"github.com/alex99y/matching-engine/api/pkg/validations"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
 )
@@ -34,7 +35,9 @@ func newTestApp(repo users.UserRepository) *fiber.App {
 	h := users.NewUserHandler(log, svc)
 	auth := fiber.Handler(middleware.Auth(log, fakeValidator{userID: uuid.New()}))
 
-	app := fiber.New()
+	// Same validator the real server installs (server.go) — without it Bind skips the
+	// validate tags entirely and every field rule below would pass vacuously.
+	app := fiber.New(fiber.Config{StructValidator: validations.NewStructValidator()})
 	// Mirrors router.go: register/check-username are public, balances/operations require auth.
 	app.Post("/users/register", h.CreateUser)
 	app.Post("/users/check-username", h.IsUsernameAvailable)
@@ -62,6 +65,74 @@ func TestCreateUserHandlerInvalidBody(t *testing.T) {
 	}
 	if resp.StatusCode != fiber.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// Every field rule is rejected with a message naming the offending field, not the generic
+// "invalid request body" — a caller cannot fix a 400 it cannot attribute.
+func TestCreateUserHandlerRejectsInvalidFieldsWithASpecificMessage(t *testing.T) {
+	valid := users.CreateUserRequest{
+		Username: "alice", Email: "alice@example.com", Password: "hunter2!",
+	}
+	cases := []struct {
+		name    string
+		mutate  func(*users.CreateUserRequest)
+		wantMsg string
+	}{
+		{"password below the minimum", func(r *users.CreateUserRequest) { r.Password = "12345" }, "password must be at least 6 characters"},
+		{"password absent", func(r *users.CreateUserRequest) { r.Password = "" }, "password is required"},
+		{"password beyond the cap", func(r *users.CreateUserRequest) { r.Password = strings.Repeat("x", 129) }, "password must be at most 128 characters"},
+		{"email malformed", func(r *users.CreateUserRequest) { r.Email = "alice-at-example" }, "email must be a valid email address"},
+		{"email absent", func(r *users.CreateUserRequest) { r.Email = "" }, "email is required"},
+		{"email beyond the column width", func(r *users.CreateUserRequest) { r.Email = strings.Repeat("a", 96) + "@x.io" }, "email must be at most 100 characters"},
+		{"username absent", func(r *users.CreateUserRequest) { r.Username = "" }, "username is required"},
+		{"username below the minimum", func(r *users.CreateUserRequest) { r.Username = "ab" }, "username must be at least 3 characters"},
+		{"username beyond the column width", func(r *users.CreateUserRequest) { r.Username = strings.Repeat("a", 26) }, "username must be at most 25 characters"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := newTestApp(&fakeUserRepository{})
+			body := valid
+			tc.mutate(&body)
+
+			resp, err := app.Test(jsonRequest("POST", "/users/register", body))
+			if err != nil {
+				t.Fatalf("app.Test: %v", err)
+			}
+			if resp.StatusCode != fiber.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			}
+			var got struct {
+				Message string `json:"message"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got.Message != tc.wantMsg {
+				t.Fatalf("message = %q, want %q", got.Message, tc.wantMsg)
+			}
+		})
+	}
+}
+
+// A rejected registration must never reach the repository — the insert would otherwise be
+// the thing enforcing the column widths, by failing.
+func TestCreateUserHandlerDoesNotInsertWhenValidationFails(t *testing.T) {
+	repo := &fakeUserRepository{}
+	app := newTestApp(repo)
+
+	resp, err := app.Test(jsonRequest("POST", "/users/register", users.CreateUserRequest{
+		Username: "alice", Email: "not-an-email", Password: "hunter2!",
+	}))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	if len(repo.insertCalls) != 0 {
+		t.Fatalf("repository was called %d time(s) for a request that never validated", len(repo.insertCalls))
 	}
 }
 

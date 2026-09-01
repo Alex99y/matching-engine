@@ -1,6 +1,9 @@
 package validations
 
 import (
+	"reflect"
+	"strings"
+
 	validator "github.com/go-playground/validator/v10"
 )
 
@@ -13,5 +16,15 @@ func (v *structValidator) Validate(out any) error {
 }
 
 func NewStructValidator() *structValidator {
-	return &structValidator{validate: validator.New()}
+	validate := validator.New()
+	// Report the field by the name the caller sent, not the Go field it landed in — the
+	// difference matters for anything that is not a single lowercase word (client_order_id).
+	validate.RegisterTagNameFunc(func(fld reflect.StructField) string {
+		name := strings.SplitN(fld.Tag.Get("json"), ",", 2)[0]
+		if name == "-" {
+			return ""
+		}
+		return name
+	})
+	return &structValidator{validate: validate}
 }

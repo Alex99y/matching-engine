@@ -819,7 +819,7 @@ components:
       type: object
       properties:
         username: { type: string }
-        password: { type: string, minLength: 10 }
+        password: { type: string, maxLength: 128 }
       required: [username, password]
 
     LoginResponse:
@@ -872,15 +872,15 @@ components:
     CreateUserRequest:
       type: object
       properties:
-        username: { type: string, maxLength: 25 }
-        email: { type: string, maxLength: 100 }
-        password: { type: string, minLength: 10 }
+        username: { type: string, minLength: 3, maxLength: 25 }
+        email: { type: string, format: email, maxLength: 100 }
+        password: { type: string, minLength: 6, maxLength: 128 }
       required: [username, email, password]
 
     UsernameAvailableRequest:
       type: object
       properties:
-        username: { type: string, maxLength: 25 }
+        username: { type: string, minLength: 3, maxLength: 25 }
       required: [username]
 
     UsernameAvailableResponse:

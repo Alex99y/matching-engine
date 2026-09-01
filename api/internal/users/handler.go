@@ -6,6 +6,7 @@ import (
 
 	"github.com/alex99y/matching-engine/api/pkg/middleware"
 	"github.com/alex99y/matching-engine/api/pkg/utils"
+	"github.com/alex99y/matching-engine/api/pkg/validations"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/gofiber/fiber/v3"
 	requestid "github.com/gofiber/fiber/v3/middleware/requestid"
@@ -17,14 +18,19 @@ type UserHandler struct {
 	userService *UserService
 }
 
+// Lengths mirror the users table (username VARCHAR(25), email VARCHAR(100)) so an
+// over-long value is refused with a field error instead of a driver error on insert.
+// The password bound is not a storage limit — the hash is fixed width — but argon2id
+// costs CPU proportional to its input, so an unbounded password is a cheap way to
+// burn the server's time.
 type CreateUserRequest struct {
-	Username string `json:"username" validate:"required,max=25"`
-	Email    string `json:"email" validate:"required,max=100"`
-	Password string `json:"password" validate:"required,min=10"`
+	Username string `json:"username" validate:"required,min=3,max=25"`
+	Email    string `json:"email" validate:"required,email,max=100"`
+	Password string `json:"password" validate:"required,min=6,max=128"`
 }
 
 type UsernameAvailableRequest struct {
-	Username string `json:"username" validate:"required,max=25"`
+	Username string `json:"username" validate:"required,min=3,max=25"`
 }
 
 type UsernameAvailableResponse struct {
@@ -34,7 +40,12 @@ type UsernameAvailableResponse struct {
 func (u *UserHandler) CreateUser(c fiber.Ctx) error {
 	var req CreateUserRequest
 	if err := c.Bind().Body(&req); err != nil {
-		u.logger.Error("CreateUser: invalid body, request_id=" + requestid.FromContext(c))
+		// Bind reports a malformed body and a failed field rule through the same error, so
+		// the caller only learns which field is wrong if the validation case is unwrapped.
+		if msg, ok := validations.FormatError(err); ok {
+			return utils.NewErrorResponse(c, fiber.StatusBadRequest, msg)
+		}
+		u.logger.Error("CreateUser: invalid body, request_id=" + requestid.FromContext(c) + ": " + err.Error())
 		return utils.NewErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
@@ -51,6 +62,9 @@ func (u *UserHandler) CreateUser(c fiber.Ctx) error {
 func (u *UserHandler) IsUsernameAvailable(c fiber.Ctx) error {
 	var req UsernameAvailableRequest
 	if err := c.Bind().Body(&req); err != nil {
+		if msg, ok := validations.FormatError(err); ok {
+			return utils.NewErrorResponse(c, fiber.StatusBadRequest, msg)
+		}
 		u.logger.Error("IsUsernameAvailable: invalid body, request_id=" + requestid.FromContext(c))
 		return utils.NewErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
 	}
