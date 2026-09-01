@@ -2,7 +2,7 @@ import { useState } from "react";
 import { MatchingEngineClient } from "ts-sdk";
 import { useAuth } from "../contexts/AuthContext.tsx";
 import { useToast } from "../contexts/ToastContext.tsx";
-import { DEFAULT_HOST, DEFAULT_PORT, DEFAULT_INSECURE } from "../config.ts";
+import { DEFAULT_API } from "../config.ts";
 
 type Mode = "login" | "register";
 
@@ -11,9 +11,9 @@ export function LoginPage() {
   const { showToast } = useToast();
 
   // Connection
-  const [host, setHost] = useState(DEFAULT_HOST);
-  const [port, setPort] = useState(String(DEFAULT_PORT));
-  const [insecure, setInsecure] = useState(DEFAULT_INSECURE);
+  const [host, setHost] = useState(DEFAULT_API.host);
+  const [port, setPort] = useState(String(DEFAULT_API.port));
+  const [insecure, setInsecure] = useState(DEFAULT_API.insecure);
 
   // Credentials
   const [mode, setMode] = useState<Mode>("login");
