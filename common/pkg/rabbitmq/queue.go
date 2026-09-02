@@ -2,6 +2,7 @@ package rabbitmq
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -10,6 +11,8 @@ import (
 	"github.com/rabbitmq/amqp091-go"
 )
 
+var ErrQueueClosed = errors.New("queue is closed")
+
 type Queue struct {
 	client      *RabbitMQClient
 	channel     *amqp091.Channel
@@ -17,6 +20,7 @@ type Queue struct {
 	logger      *logger.Logger
 	channelArgs ChannelArgs
 	queueArgs   QueueArgs
+	closed      bool
 	mu          sync.RWMutex
 }
 
@@ -72,7 +76,14 @@ func NewQueue(
 func (q *Queue) Close() error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	q.closed = true
 	return q.channel.Close()
+}
+
+func (q *Queue) snapshot() (*amqp091.Channel, string) {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	return q.channel, q.queue.Name
 }
 
 func (q *Queue) Name() string {
@@ -87,18 +98,25 @@ func (q *Queue) Publish(
 	message []byte,
 	persistent bool,
 ) error {
-	q.mu.RLock()
-	ch := q.channel
-	name := q.queue.Name
-	q.mu.RUnlock()
-	return ch.PublishWithContext(
-		ctx,
-		"",
-		name,
-		false,
-		false,
-		newJSONPublishing(messageId, message, persistent),
-	)
+	publishing := newJSONPublishing(messageId, message, persistent)
+
+	ch, name := q.snapshot()
+	err := ch.PublishWithContext(ctx, "", name, false, false, publishing)
+	if !isChannelClosed(err) {
+		return err
+	}
+
+	// Re-open the channel and try to publish the event again
+	if err := q.reopen(ch); err != nil {
+		return fmt.Errorf("rabbitmq publish: channel closed and reopen failed: %w", err)
+	}
+
+	ch, name = q.snapshot()
+	return ch.PublishWithContext(ctx, "", name, false, false, publishing)
+}
+
+func isChannelClosed(err error) bool {
+	return errors.Is(err, amqp091.ErrClosed)
 }
 
 func newJSONPublishing(messageId string, message []byte, persistent bool) amqp091.Publishing {
@@ -162,14 +180,18 @@ func (q *Queue) handleDelivery(delivery amqp091.Delivery, callback ConsumeCallba
 	q.logger.Debug(fmt.Sprintf("message %s processed", delivery.MessageId))
 }
 
-// reopen closes the dead channel and opens a fresh one against the current connection.
-// Called by Consume after an unexpected channel closure.
-func (q *Queue) reopen() error {
-	q.mu.RLock()
-	oldCh := q.channel
-	q.mu.RUnlock()
-	if oldCh != nil {
-		oldCh.Close() // ignore error — channel is likely already dead
+func (q *Queue) reopen(stale *amqp091.Channel) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if q.closed {
+		return ErrQueueClosed
+	}
+	if stale != nil && q.channel != stale {
+		return nil
+	}
+	if q.channel != nil {
+		q.channel.Close() // ignore error — channel is likely already dead
 	}
 
 	ch, err := q.client.CreateChannel(q.channelArgs.PrefetchCount, q.channelArgs.PrefetchSize)
@@ -189,20 +211,15 @@ func (q *Queue) reopen() error {
 		return fmt.Errorf("rabbitmq reopen queue declare: %w", err)
 	}
 
-	q.mu.Lock()
 	q.channel = ch
 	q.queue = &queue
-	q.mu.Unlock()
 	return nil
 }
 
 // consumeOnce runs the delivery loop for the current channel until it closes or ctx is cancelled.
 // Deliveries are processed sequentially to guarantee FIFO ordering within the queue.
 func (q *Queue) consumeOnce(ctx context.Context, callback ConsumeCallback) error {
-	q.mu.RLock()
-	ch := q.channel
-	name := q.queue.Name
-	q.mu.RUnlock()
+	ch, name := q.snapshot()
 
 	deliveries, err := ch.ConsumeWithContext(
 		ctx,
@@ -244,7 +261,10 @@ func (q *Queue) Consume(ctx context.Context, callback ConsumeCallback) error {
 		case <-time.After(2 * time.Second):
 		}
 
-		if err := q.reopen(); err != nil {
+		if err := q.reopen(nil); err != nil {
+			if errors.Is(err, ErrQueueClosed) {
+				return nil
+			}
 			q.logger.Error(fmt.Sprintf("rabbitmq: channel reopen failed: %v", err))
 		}
 	}

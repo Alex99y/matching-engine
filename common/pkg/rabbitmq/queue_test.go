@@ -1,12 +1,15 @@
 // queue_test.go covers the pure, connection-independent pieces of Queue: message
 // construction, the ConsumeArgs/MessageMetadata wrappers, and handleDelivery's
-// dispatch to a delivery's Acknowledger (faked here). Consume/consumeOnce/reopen and
-// NewQueue itself drive a real *amqp091.Channel and need a live broker, so — like the
-// rest of this package — they're left to integration testing, not unit tests.
+// dispatch to a delivery's Acknowledger (faked here), plus reopen's guards, which are
+// reachable without a broker because they run before any channel is opened. Consume,
+// consumeOnce, Publish and NewQueue itself drive a real *amqp091.Channel and need a live
+// broker, so — like the rest of this package — they're left to integration testing.
 package rabbitmq
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -181,5 +184,55 @@ func TestQueueHandleDelivery(t *testing.T) {
 	if !fake.rejectCalled || fake.rejectTag != 7 || fake.rejectRequeue {
 		t.Errorf("Reject delegation wrong: called=%v tag=%d requeue=%v",
 			fake.rejectCalled, fake.rejectTag, fake.rejectRequeue)
+	}
+}
+
+func TestIsChannelClosed(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil is not a closed channel", nil, false},
+		{"the sentinel itself", amqp091.ErrClosed, true},
+		{"wrapped sentinel", fmt.Errorf("publish: %w", amqp091.ErrClosed), true},
+		{"an unrelated amqp error", &amqp091.Error{Code: amqp091.NotFound, Reason: "no queue"}, false},
+		{"a plain error", errors.New("connection reset by peer"), false},
+		{"context cancellation", context.Canceled, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isChannelClosed(tc.err); got != tc.want {
+				t.Fatalf("isChannelClosed(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// A queue closed on purpose must not be resurrected by a later publish or by the consumer's
+// retry loop — without the guard, reopen would hand back a live channel after Close and the
+// queue would outlive its own shutdown.
+func TestReopenRefusesAfterClose(t *testing.T) {
+	q := &Queue{logger: logger.NewLogger(logger.Error), closed: true}
+
+	if err := q.reopen(nil); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("reopen after Close = %v, want ErrQueueClosed", err)
+	}
+}
+
+// Concurrent publishers all observe the same dead channel. Only the first should replace it;
+// the rest must see it already moved on and return without opening another.
+func TestReopenIgnoresAStaleChannelThatWasAlreadyReplaced(t *testing.T) {
+	current := &amqp091.Channel{}
+	stale := &amqp091.Channel{}
+	q := &Queue{logger: logger.NewLogger(logger.Error), channel: current}
+
+	// The nil client would panic if reopen got as far as opening a channel, which is exactly
+	// what must not happen here.
+	if err := q.reopen(stale); err != nil {
+		t.Fatalf("reopen with an already-replaced channel = %v, want nil", err)
+	}
+	if q.channel != current {
+		t.Fatalf("reopen replaced a channel another caller had already refreshed")
 	}
 }
