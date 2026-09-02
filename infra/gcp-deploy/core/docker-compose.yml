@@ -5,6 +5,8 @@ services:
     image: us-central1-docker.pkg.dev/project-e5d919ff-a78f-43b8-856/me-docker-registry/core:latest
     container_name: core-app
     restart: always
+    ports:
+      - "9091:9091"
     environment:
       - MARKET_LIST=BTC-USDT
       - METRICS_PORT=9091
