@@ -44,9 +44,10 @@ services:
     image: node:22-alpine
     container_name: me-ui
     working_dir: /workspace/ui
-    # api runs on the host too (make run), so the default connection
-    # settings baked into the FE (localhost:4000, see ui/src/config.ts)
-    # reach it fine from the browser without extra env vars here.
+    environment:
+      # Resolved in the browser, not in this container — api runs on the host (make run), so
+      # localhost is the host's, which is what reaches it.
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:4000}
     ports:
       - "5173:5173"
     volumes:
