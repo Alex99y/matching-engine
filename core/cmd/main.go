@@ -96,9 +96,9 @@ func main() {
 	wg.Go(func() { eventPublisher.Run(ctx) })
 	epoch := uuid.NewString()
 
-	instrumentRepository := repository.NewInstrumentRepository(log, postgresqlClient)
-	marketRepository := repository.NewMarketRepository(log, postgresqlClient)
-	orderRepository := repository.NewOrderRepository(log, postgresqlClient, dbMetrics)
+	instrumentRepository := repository.NewInstrumentRepository(log, postgresqlClient, coreConfig.DBQueryTimeout)
+	marketRepository := repository.NewMarketRepository(log, postgresqlClient, coreConfig.DBQueryTimeout)
+	orderRepository := repository.NewOrderRepository(log, postgresqlClient, dbMetrics, coreConfig.DBQueryTimeout)
 
 	const cacheRefreshSeconds = 5 * 60
 	cacheService := cache.NewCacheService(log, marketRepository, instrumentRepository, cacheRefreshSeconds)

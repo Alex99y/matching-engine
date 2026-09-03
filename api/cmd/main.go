@@ -73,23 +73,23 @@ func main() {
 	}
 	defer rabbitmqClient.Close()
 
-	userRepository := repository.NewUserRepository(log, postgresqlClient)
+	userRepository := repository.NewUserRepository(log, postgresqlClient, apiConfig.DBQueryTimeout)
 	userService := users.NewUserService(log, userRepository)
 	userHandler := users.NewUserHandler(log, userService)
 
-	sessionRepository := repository.NewSessionRepository(log, postgresqlClient)
+	sessionRepository := repository.NewSessionRepository(log, postgresqlClient, apiConfig.DBQueryTimeout)
 	sessionService := sessions.NewSessionService(log, sessionRepository)
 	authMiddleware := middleware.Auth(log, sessionService)
 	sessionHandler := sessions.NewSessionHandler(log, sessionService, userService)
 
-	instrumentRepository := repository.NewInstrumentRepository(log, postgresqlClient)
+	instrumentRepository := repository.NewInstrumentRepository(log, postgresqlClient, apiConfig.DBQueryTimeout)
 	instrumentService := instruments.NewInstrumentService(log, instrumentRepository)
 	instrumentHandler := instruments.NewInstrumentHandler(log, instrumentService)
 
 	faucetService := faucet.NewFaucetService(log, instrumentRepository, userRepository)
 	faucetHandler := faucet.NewFaucetHandler(log, faucetService)
 
-	marketRepository := repository.NewMarketRepository(log, postgresqlClient)
+	marketRepository := repository.NewMarketRepository(log, postgresqlClient, apiConfig.DBQueryTimeout)
 
 	const cacheRefreshSeconds = 5 * 60
 	cacheService := cache.NewCacheService(log, marketRepository, instrumentRepository, cacheRefreshSeconds)
@@ -110,11 +110,11 @@ func main() {
 	}
 	publisher := orderqueue.NewOrderCommandPublisher(log, rabbitmqClient, marketRefs, apiMetrics)
 
-	orderRepository := repository.NewOrderRepository(log, postgresqlClient, dbMetrics)
+	orderRepository := repository.NewOrderRepository(log, postgresqlClient, dbMetrics, apiConfig.DBQueryTimeout)
 	orderService := orders.NewOrderService(log, orderRepository, cacheService, publisher)
 	orderHandler := orders.NewOrderHandler(log, orderService)
 
-	candleRepository := repository.NewCandleRepository(log, postgresqlClient)
+	candleRepository := repository.NewCandleRepository(log, postgresqlClient, apiConfig.DBQueryTimeout)
 	candleService := candles.NewCandleService(log, candleRepository)
 	candleHandler := candles.NewCandleHandler(log, candleService, marketIDs)
 
@@ -135,7 +135,7 @@ func main() {
 	marketService := markets.NewMarketService(log, marketRepository, streamHub)
 	marketHandler := markets.NewMarketHandler(log, marketService, marketQuanta)
 
-	matchRepository := repository.NewMatchRepository(log, postgresqlClient)
+	matchRepository := repository.NewMatchRepository(log, postgresqlClient, apiConfig.DBQueryTimeout)
 	matchService := matches.NewMatchService(log, matchRepository)
 	matchHandler := matches.NewMatchHandler(log, matchService, marketIDs)
 

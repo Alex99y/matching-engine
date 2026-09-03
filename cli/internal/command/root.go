@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -57,9 +58,11 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("database: %w", err)
 		}
 
-		instrumentRepo = repository.NewInstrumentRepository(log, conn)
-		marketRepo = repository.NewMarketRepository(log, conn)
-		userRepo = repository.NewUserRepository(log, conn)
+		queryTimeout := time.Second * 5
+
+		instrumentRepo = repository.NewInstrumentRepository(log, conn, queryTimeout)
+		marketRepo = repository.NewMarketRepository(log, conn, queryTimeout)
+		userRepo = repository.NewUserRepository(log, conn, queryTimeout)
 		return nil
 	},
 }

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"os"
+	"time"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/common/pkg/utils"
@@ -12,12 +13,16 @@ const RabbitMQURL = "RABBITMQ_URL"
 const MetricsPort = "METRICS_PORT"
 const PostgresURL = "POSTGRESQL_URL"
 const DebugLevel = "DEBUG_LEVEL"
+const QueryTimeout = "QUERY_TIMEOUT"
+
+const DEFAULT_DB_TIMEOUT = 2 * time.Second
 
 type Config struct {
-	MetricsPort int
-	PostgresURL string
-	RabbitMQURL string
-	DebugLevel  logger.DebugLevel
+	MetricsPort    int
+	PostgresURL    string
+	RabbitMQURL    string
+	DBQueryTimeout time.Duration
+	DebugLevel     logger.DebugLevel
 }
 
 func GetConfigFromEnv(env string) *string {
@@ -66,6 +71,21 @@ func GetRabbitMQURL() (string, error) {
 	return *rabbitMQURL, nil
 }
 
+func GetQueryTimeout() (time.Duration, error) {
+	durationInStr := GetConfigFromEnv(QueryTimeout)
+
+	if durationInStr == nil {
+		return DEFAULT_DB_TIMEOUT, nil
+	}
+
+	duration, err := utils.StringToInt(*durationInStr)
+	if err != nil {
+		return time.Second * 0, errors.New("environment variable QUERY_TIMEOUT is not a valid integer")
+	}
+
+	return time.Second * time.Duration(duration), nil
+}
+
 func GetAllDefaultConfigs() (*Config, error) {
 
 	metricsPort, err := GetMetricsPort()
@@ -85,10 +105,17 @@ func GetAllDefaultConfigs() (*Config, error) {
 
 	debugLevel := GetDebugLevel()
 
+	queryTimeout, err := GetQueryTimeout()
+
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
-		MetricsPort: metricsPort,
-		PostgresURL: postgresURL,
-		RabbitMQURL: rabbitMQURL,
-		DebugLevel:  logger.DebugLevel(debugLevel),
+		MetricsPort:    metricsPort,
+		PostgresURL:    postgresURL,
+		RabbitMQURL:    rabbitMQURL,
+		DBQueryTimeout: queryTimeout,
+		DebugLevel:     logger.DebugLevel(debugLevel),
 	}, nil
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	"github.com/alex99y/matching-engine/db/pkg/utils"
 )
 
 var ErrNoCandle = errors.New("no trades in candle range")
@@ -23,11 +24,15 @@ type Candle struct {
 }
 
 type CandleRepository struct {
-	psql   *sql.DB
-	logger *logger.Logger
+	psql    *sql.DB
+	logger  *logger.Logger
+	timeout time.Duration
 }
 
 func (r *CandleRepository) GetCandles(ctx context.Context, marketID int, intervalSec int64, from, to time.Time) ([]Candle, error) {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
 	const q = `
 		SELECT
 			extract(epoch from match_time)::bigint / $1 * $1              AS bucket,
@@ -44,7 +49,7 @@ func (r *CandleRepository) GetCandles(ctx context.Context, marketID int, interva
 		GROUP BY bucket
 		ORDER BY bucket`
 
-	rows, err := r.psql.QueryContext(ctx, q, intervalSec, marketID, from, to)
+	rows, err := r.psql.QueryContext(ctxWithTimeout, q, intervalSec, marketID, from, to)
 	if err != nil {
 		r.logger.Error(fmt.Sprintf("candle repository: get candles market=%d interval=%d: %v", marketID, intervalSec, err))
 		return nil, fmt.Errorf("get candles: %w", err)
@@ -68,7 +73,10 @@ func (r *CandleRepository) GetCandles(ctx context.Context, marketID int, interva
 // the CandleHub's channel-buffer cutoff, eliminating overlap between the seed result
 // and the buffered trade events delivered after registration.
 func (r *CandleRepository) GetCurrentCandle(ctx context.Context, marketID int, bucketStart time.Time) (*Candle, error) {
-	tx, err := r.psql.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
+	tx, err := r.psql.BeginTx(ctxWithTimeout, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return nil, fmt.Errorf("begin repeatable read: %w", err)
 	}
@@ -89,7 +97,7 @@ func (r *CandleRepository) GetCurrentCandle(ctx context.Context, marketID int, b
 
 	var c Candle
 	c.BucketStart = bucketStart.Unix()
-	err = tx.QueryRowContext(ctx, q, marketID, bucketStart).Scan(
+	err = tx.QueryRowContext(ctxWithTimeout, q, marketID, bucketStart).Scan(
 		&c.Open, &c.High, &c.Low, &c.Close, &c.Volume, &c.TradeCount,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -102,12 +110,13 @@ func (r *CandleRepository) GetCurrentCandle(ctx context.Context, marketID int, b
 	return &c, nil
 }
 
-func NewCandleRepository(log *logger.Logger, db *sql.DB) *CandleRepository {
+func NewCandleRepository(log *logger.Logger, db *sql.DB, timeout time.Duration) *CandleRepository {
 	if log == nil {
 		panic("logger cannot be nil")
 	}
 	if db == nil {
 		panic("db cannot be nil")
 	}
-	return &CandleRepository{psql: db, logger: log}
+	utils.ValidateTimeout("candle repository", timeout)
+	return &CandleRepository{psql: db, logger: log, timeout: timeout}
 }
