@@ -2,7 +2,7 @@ import { useState } from "react";
 import { MatchingEngineClient } from "ts-sdk";
 import { useAuth } from "../contexts/AuthContext.tsx";
 import { useToast } from "../contexts/ToastContext.tsx";
-import { DEFAULT_API } from "../config.ts";
+import { DEFAULT_API, type ApiTarget } from "../config.ts";
 
 type Mode = "login" | "register";
 
@@ -22,14 +22,21 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
-  function buildClient(): MatchingEngineClient | null {
+  // The target is returned alongside the client because it can't be read back out
+  // of one, and AuthContext persists it next to the token so a reload reconnects
+  // to the same server rather than to whatever the defaults say.
+  function buildClient(): { client: MatchingEngineClient; target: ApiTarget } | null {
     const portNum = parseInt(port, 10);
     if (!portNum || portNum < 1 || portNum > 65535) {
       showToast("Port must be 1–65535", "error");
       return null;
     }
+    const target: ApiTarget = { host: host.trim(), port: portNum, insecure };
     try {
-      return new MatchingEngineClient(host.trim(), portNum, { allowInsecure: insecure });
+      const client = new MatchingEngineClient(target.host, target.port, {
+        allowInsecure: target.insecure,
+      });
+      return { client, target };
     } catch (err) {
       showToast(err instanceof Error ? err.message : String(err), "error");
       return null;
@@ -47,8 +54,9 @@ export function LoginPage() {
       return;
     }
 
-    const client = buildClient();
-    if (!client) return;
+    const built = buildClient();
+    if (!built) return;
+    const { client, target } = built;
 
     setLoading(true);
     try {
@@ -57,7 +65,7 @@ export function LoginPage() {
         showToast("Account created — logging in…", "success");
       }
       const session = await client.login({ username: username.trim(), password });
-      setClient(client);
+      setClient(client, target);
       setSession(session, username.trim());
       showToast(`Welcome, ${username.trim()}!`, "success");
     } catch (err) {
@@ -68,9 +76,9 @@ export function LoginPage() {
   }
 
   function handleBrowseAsGuest() {
-    const client = buildClient();
-    if (!client) return;
-    setClient(client);
+    const built = buildClient();
+    if (!built) return;
+    setClient(built.client, built.target);
     showToast("Browsing as guest — order features require login", "info");
   }
 
