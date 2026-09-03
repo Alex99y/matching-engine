@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	"github.com/alex99y/matching-engine/db/pkg/utils"
 	"github.com/google/uuid"
 )
 
@@ -20,11 +21,15 @@ type Match struct {
 }
 
 type MatchRepository struct {
-	psql   *sql.DB
-	logger *logger.Logger
+	psql    *sql.DB
+	logger  *logger.Logger
+	timeout time.Duration
 }
 
 func (r *MatchRepository) GetMatches(ctx context.Context, marketID int, startDate, endDate *time.Time, limit int) ([]Match, error) {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
 	var sb strings.Builder
 	sb.WriteString(`
 		SELECT id, match_price, match_buy_amount, buy_order_is_taker, match_time
@@ -44,7 +49,7 @@ func (r *MatchRepository) GetMatches(ctx context.Context, marketID int, startDat
 	args = append(args, limit)
 	sb.WriteString(fmt.Sprintf("\nORDER BY match_time DESC\nLIMIT $%d", len(args)))
 
-	rows, err := r.psql.QueryContext(ctx, sb.String(), args...)
+	rows, err := r.psql.QueryContext(ctxWithTimeout, sb.String(), args...)
 	if err != nil {
 		r.logger.Error(fmt.Sprintf("match repository: get matches market=%d: %v", marketID, err))
 		return nil, fmt.Errorf("get matches: %w", err)
@@ -68,12 +73,13 @@ func (r *MatchRepository) GetMatches(ctx context.Context, marketID int, startDat
 	return matches, rows.Err()
 }
 
-func NewMatchRepository(log *logger.Logger, psql *sql.DB) *MatchRepository {
+func NewMatchRepository(log *logger.Logger, psql *sql.DB, timeout time.Duration) *MatchRepository {
 	if log == nil {
 		panic("logger cannot be nil")
 	}
 	if psql == nil {
 		panic("psql cannot be nil")
 	}
-	return &MatchRepository{psql: psql, logger: log}
+	utils.ValidateTimeout("match repository", timeout)
+	return &MatchRepository{psql: psql, logger: log, timeout: timeout}
 }

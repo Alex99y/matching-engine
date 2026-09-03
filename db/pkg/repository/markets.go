@@ -58,8 +58,9 @@ type Market struct {
 }
 
 type MarketRepository struct {
-	psql   *sql.DB
-	logger *logger.Logger
+	psql    *sql.DB
+	logger  *logger.Logger
+	timeout time.Duration
 }
 
 func (r *MarketRepository) CreateMarket(
@@ -68,6 +69,9 @@ func (r *MarketRepository) CreateMarket(
 	priceQuantum, amountQuantum, minOrderSize, maxOrderSize int64,
 	takerFeeBps, makerFeeBps int64,
 ) error {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
 	// INSERT ... SELECT avoids a separate lookup round-trip.
 	// If either symbol is missing the SELECT returns 0 rows → rowsAffected == 0.
 	query := `
@@ -76,7 +80,7 @@ func (r *MarketRepository) CreateMarket(
 		FROM instruments bi, instruments qi
 		WHERE bi.symbol = $1 AND qi.symbol = $2
 	`
-	result, err := r.psql.ExecContext(ctx, query, baseSymbol, quoteSymbol, priceQuantum, amountQuantum, minOrderSize, maxOrderSize, takerFeeBps, makerFeeBps)
+	result, err := r.psql.ExecContext(ctxWithTimeout, query, baseSymbol, quoteSymbol, priceQuantum, amountQuantum, minOrderSize, maxOrderSize, takerFeeBps, makerFeeBps)
 	if err != nil {
 		if constraint, isUnique := postgres.IsUniqueConstraintViolation(err); isUnique {
 			if constraint == MarketBaseQuoteUniqueConstraint {
@@ -101,6 +105,9 @@ func (r *MarketRepository) CreateMarket(
 }
 
 func (r *MarketRepository) GetMarket(ctx context.Context, baseSymbol, quoteSymbol string) (*Market, error) {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
 	query := `
 		SELECT m.id, bi.symbol, qi.symbol,
 		       m.price_quantum, m.amount_quantum, m.min_order_size, m.max_order_size,
@@ -112,7 +119,7 @@ func (r *MarketRepository) GetMarket(ctx context.Context, baseSymbol, quoteSymbo
 		JOIN instruments qi ON m.quote_instrument_id = qi.id
 		WHERE bi.symbol = $1 AND qi.symbol = $2
 	`
-	row := r.psql.QueryRowContext(ctx, query, baseSymbol, quoteSymbol)
+	row := r.psql.QueryRowContext(ctxWithTimeout, query, baseSymbol, quoteSymbol)
 	m := &Market{}
 	var baseDecimals int
 
@@ -131,6 +138,9 @@ func (r *MarketRepository) GetMarket(ctx context.Context, baseSymbol, quoteSymbo
 }
 
 func (r *MarketRepository) GetMarkets(ctx context.Context) ([]Market, error) {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
 	query := `
 		SELECT m.id, bi.symbol, qi.symbol,
 		       m.price_quantum, m.amount_quantum, m.min_order_size, m.max_order_size,
@@ -142,7 +152,7 @@ func (r *MarketRepository) GetMarkets(ctx context.Context) ([]Market, error) {
 		JOIN instruments qi ON m.quote_instrument_id = qi.id
 		ORDER BY bi.symbol ASC, qi.symbol ASC
 	`
-	rows, err := r.psql.QueryContext(ctx, query)
+	rows, err := r.psql.QueryContext(ctxWithTimeout, query)
 	if err != nil {
 		r.logger.Error("error querying markets")
 		r.logger.ErrorO(err)
@@ -172,7 +182,10 @@ func (r *MarketRepository) GetMarkets(ctx context.Context) ([]Market, error) {
 }
 
 func (r *MarketRepository) GetLatestPrices(ctx context.Context, windowStart time.Time) ([]MarketPrice, error) {
-	tx, rollback, err := dbutils.BeginTx(ctx, r.psql, r.logger, "GetLatestPrices")
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
+	tx, rollback, err := dbutils.BeginTx(ctxWithTimeout, r.psql, r.logger, "GetLatestPrices")
 	if err != nil {
 		return nil, fmt.Errorf("%s %w", marketErrPrefix, ErrMarketGetFailed)
 	}
@@ -181,7 +194,7 @@ func (r *MarketRepository) GetLatestPrices(ctx context.Context, windowStart time
 	// This query's cost estimate crosses jit_above_cost even though it only ever returns a
 	// handful of rows; SET LOCAL (not SET) keeps the exemption from leaking onto whatever
 	// unrelated query next borrows this pooled connection.
-	if _, err := tx.ExecContext(ctx, "SET LOCAL jit = off"); err != nil {
+	if _, err := tx.ExecContext(ctxWithTimeout, "SET LOCAL jit = off"); err != nil {
 		r.logger.Error("error disabling jit for latest prices query")
 		r.logger.ErrorO(err)
 		return nil, fmt.Errorf("%s %w", marketErrPrefix, ErrMarketGetFailed)
@@ -217,7 +230,7 @@ func (r *MarketRepository) GetLatestPrices(ctx context.Context, windowStart time
 		) openp ON true
 		ORDER BY bi.symbol ASC, qi.symbol ASC
 	`
-	rows, err := tx.QueryContext(ctx, query, windowStart)
+	rows, err := tx.QueryContext(ctxWithTimeout, query, windowStart)
 	if err != nil {
 		r.logger.Error("error querying latest prices")
 		r.logger.ErrorO(err)
@@ -251,13 +264,16 @@ func (r *MarketRepository) GetLatestPrices(ctx context.Context, windowStart time
 }
 
 func (r *MarketRepository) RemoveOneMarket(ctx context.Context, baseSymbol, quoteSymbol string) error {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
 	// Subqueries return NULL if a symbol is missing → WHERE col = NULL matches nothing → 0 rows deleted.
 	query := `
 		DELETE FROM markets
 		WHERE base_instrument_id  = (SELECT id FROM instruments WHERE symbol = $1)
 		  AND quote_instrument_id = (SELECT id FROM instruments WHERE symbol = $2)
 	`
-	result, err := r.psql.ExecContext(ctx, query, baseSymbol, quoteSymbol)
+	result, err := r.psql.ExecContext(ctxWithTimeout, query, baseSymbol, quoteSymbol)
 	if err != nil {
 		r.logger.Error("error deleting market")
 		r.logger.ErrorO(err)
@@ -276,15 +292,17 @@ func (r *MarketRepository) RemoveOneMarket(ctx context.Context, baseSymbol, quot
 	return nil
 }
 
-func NewMarketRepository(logger *logger.Logger, psql *sql.DB) *MarketRepository {
+func NewMarketRepository(logger *logger.Logger, psql *sql.DB, timeout time.Duration) *MarketRepository {
 	if logger == nil {
 		panic("logger cannot be nil")
 	}
 	if psql == nil {
 		panic("psql cannot be nil")
 	}
+	dbutils.ValidateTimeout("market repository", timeout)
 	return &MarketRepository{
-		psql:   psql,
-		logger: logger,
+		psql:    psql,
+		logger:  logger,
+		timeout: timeout,
 	}
 }

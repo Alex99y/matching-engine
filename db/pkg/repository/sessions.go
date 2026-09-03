@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	"github.com/alex99y/matching-engine/db/pkg/utils"
 	"github.com/google/uuid"
 )
 
@@ -40,8 +41,9 @@ type Session struct {
 }
 
 type SessionRepository struct {
-	psql   *sql.DB
-	logger *logger.Logger
+	psql    *sql.DB
+	logger  *logger.Logger
+	timeout time.Duration
 }
 
 // InsertSessionParams bundles a new session's fields — grown past the point a positional
@@ -59,11 +61,14 @@ type InsertSessionParams struct {
 }
 
 func (r *SessionRepository) InsertSession(ctx context.Context, params InsertSessionParams) error {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
 	query := `
 		INSERT INTO sessions (user_id, token_hash, expires_at, origin, scope, user_agent, ip_address)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`
-	_, err := r.psql.ExecContext(ctx, query,
+	_, err := r.psql.ExecContext(ctxWithTimeout, query,
 		params.UserID, params.TokenHash, params.ExpiresAt, params.Origin, params.Scope,
 		params.UserAgent, params.IPAddress,
 	)
@@ -79,6 +84,9 @@ func (r *SessionRepository) GetActiveSessionByTokenHash(
 	ctx context.Context,
 	tokenHash string,
 ) (*Session, error) {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
 	query := `
 		SELECT s.id, s.user_id, s.token_hash, s.created_at, s.expires_at, s.revoked_at,
 		       s.origin, s.scope, s.user_agent, s.ip_address, u.frozen
@@ -88,7 +96,7 @@ func (r *SessionRepository) GetActiveSessionByTokenHash(
 		  AND s.revoked_at IS NULL
 		  AND s.expires_at > NOW()
 	`
-	row := r.psql.QueryRowContext(ctx, query, tokenHash)
+	row := r.psql.QueryRowContext(ctxWithTimeout, query, tokenHash)
 	s := &Session{}
 	err := row.Scan(&s.ID, &s.UserID, &s.TokenHash, &s.CreatedAt, &s.ExpiresAt, &s.RevokedAt,
 		&s.Origin, &s.Scope, &s.UserAgent, &s.IPAddress, &s.Frozen)
@@ -107,6 +115,9 @@ func (r *SessionRepository) GetActiveSessionByUserId(
 	ctx context.Context,
 	userId uuid.UUID,
 ) ([]Session, error) {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
 	query := `
 		SELECT id, user_id, token_hash, created_at, expires_at, revoked_at, origin, scope, user_agent, ip_address
 		FROM sessions
@@ -115,7 +126,7 @@ func (r *SessionRepository) GetActiveSessionByUserId(
 			AND expires_at > NOW()
 	`
 
-	rows, err := r.psql.QueryContext(ctx, query, userId)
+	rows, err := r.psql.QueryContext(ctxWithTimeout, query, userId)
 	if err != nil {
 		r.logger.Error("error querying active sessions")
 		r.logger.ErrorO(err)
@@ -158,12 +169,15 @@ func (r *SessionRepository) RevokeSessionByTokenHash(
 	userID uuid.UUID,
 	tokenHash string,
 ) error {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
 	query := `
 		UPDATE sessions
 		SET revoked_at = NOW()
 		WHERE token_hash = $1 AND user_id = $2 AND revoked_at IS NULL
 	`
-	row, err := r.psql.ExecContext(ctx, query, tokenHash, userID)
+	row, err := r.psql.ExecContext(ctxWithTimeout, query, tokenHash, userID)
 	if err != nil {
 		r.logger.Error("error revoking session")
 		r.logger.ErrorO(err)
@@ -192,6 +206,9 @@ func (r *SessionRepository) RefreshSession(
 	newExpiresAt time.Time,
 	minCreatedAt time.Time,
 ) error {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
 	query := `
 		UPDATE sessions
 		SET expires_at = $1
@@ -201,7 +218,7 @@ func (r *SessionRepository) RefreshSession(
 		  AND expires_at > NOW()
 		  AND created_at > $4
 	`
-	row, err := r.psql.ExecContext(ctx, query, newExpiresAt, tokenHash, userID, minCreatedAt)
+	row, err := r.psql.ExecContext(ctxWithTimeout, query, newExpiresAt, tokenHash, userID, minCreatedAt)
 	if err != nil {
 		r.logger.Error("error refreshing session")
 		r.logger.ErrorO(err)
@@ -226,13 +243,16 @@ func (r *SessionRepository) GetSessionsByUserID(
 	ctx context.Context,
 	userID uuid.UUID,
 ) ([]Session, error) {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
 	query := `
 		SELECT id, user_id, token_hash, created_at, expires_at, revoked_at
 		FROM sessions
 		WHERE user_id = $1
 		ORDER BY created_at DESC
 	`
-	rows, err := r.psql.QueryContext(ctx, query, userID)
+	rows, err := r.psql.QueryContext(ctxWithTimeout, query, userID)
 	if err != nil {
 		r.logger.Error("error querying sessions by user")
 		r.logger.ErrorO(err)
@@ -258,12 +278,13 @@ func (r *SessionRepository) GetSessionsByUserID(
 	return sessions, nil
 }
 
-func NewSessionRepository(logger *logger.Logger, psql *sql.DB) *SessionRepository {
+func NewSessionRepository(logger *logger.Logger, psql *sql.DB, timeout time.Duration) *SessionRepository {
 	if logger == nil {
 		panic("logger cannot be nil")
 	}
 	if psql == nil {
 		panic("psql cannot be nil")
 	}
-	return &SessionRepository{psql: psql, logger: logger}
+	utils.ValidateTimeout("session repository", timeout)
+	return &SessionRepository{psql: psql, logger: logger, timeout: timeout}
 }

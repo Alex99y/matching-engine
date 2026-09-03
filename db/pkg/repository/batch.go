@@ -204,7 +204,10 @@ type MatchFunc func(fundedOrderIDs []uuid.UUID) (*BatchResult, error)
 // the batch's messages.
 func (o *OrderRepository) ProcessBatch(ctx context.Context, incoming []IncomingOrder, match MatchFunc) (outErr error) {
 	defer o.metrics.ObserveQuery("process_batch", time.Now(), &outErr)
-	tx, rollback, err := dbutils.BeginTx(ctx, o.psql, o.logger, "ProcessBatch")
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, o.timeout)
+	defer cancel()
+
+	tx, rollback, err := dbutils.BeginTx(ctxWithTimeout, o.psql, o.logger, "ProcessBatch")
 	if err != nil {
 		return fmt.Errorf("process batch: %w: %w", ErrBatchBegin, err)
 	}
@@ -216,7 +219,7 @@ func (o *OrderRepository) ProcessBatch(ctx context.Context, incoming []IncomingO
 	for i := range incoming {
 		ids[i] = incoming[i].Insert.ID
 	}
-	existing, err := existingOrderIDs(ctx, tx, ids)
+	existing, err := existingOrderIDs(ctxWithTimeout, tx, ids)
 	if err != nil {
 		o.logger.Error("ProcessBatch: idempotency lookup: " + err.Error())
 		return fmt.Errorf("process batch: idempotency: %w", err)
@@ -231,7 +234,7 @@ func (o *OrderRepository) ProcessBatch(ctx context.Context, incoming []IncomingO
 		if _, dup := existing[ord.Insert.ID]; dup {
 			continue
 		}
-		ok, err := reserveBalance(ctx, tx, ord.Insert.UserID, ord.Reserve.InstrumentID, ord.Reserve.Amount)
+		ok, err := reserveBalance(ctxWithTimeout, tx, ord.Insert.UserID, ord.Reserve.InstrumentID, ord.Reserve.Amount)
 		if err != nil {
 			o.logger.Error("ProcessBatch: reserve: " + err.Error())
 			return wrapPoison(fmt.Errorf("process batch: %w: %w", ErrReserve, err), err)
@@ -254,7 +257,7 @@ func (o *OrderRepository) ProcessBatch(ctx context.Context, incoming []IncomingO
 	}
 
 	// Phase 3 — bulk write everything.
-	if err := flushBatch(ctx, tx, result); err != nil {
+	if err := flushBatch(ctxWithTimeout, tx, result); err != nil {
 		o.logger.Error("ProcessBatch: flush: " + err.Error())
 		return wrapPoison(fmt.Errorf("process batch: %w: %w", ErrBatchFlush, err), err)
 	}
@@ -609,6 +612,9 @@ type OpenOrderHydration struct {
 // priority when the caller reinserts them into the book.
 func (o *OrderRepository) LoadOpenOrders(ctx context.Context, marketID int) (_ []OpenOrderHydration, outErr error) {
 	defer o.metrics.ObserveQuery("load_open_orders", time.Now(), &outErr)
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, o.timeout)
+	defer cancel()
+
 	const q = `
 		SELECT oo.order_id, ord.user_id, ord.client_order_id, oo.side, oo.price,
 		       ord.type, ord.time_in_force, oo.remaining_have_amount, oo.remaining_want_amount,
@@ -618,7 +624,7 @@ func (o *OrderRepository) LoadOpenOrders(ctx context.Context, marketID int) (_ [
 		WHERE oo.market_id = $1
 		ORDER BY oo.id ASC
 	`
-	rows, err := o.psql.QueryContext(ctx, q, marketID)
+	rows, err := o.psql.QueryContext(ctxWithTimeout, q, marketID)
 	if err != nil {
 		o.logger.Error("LoadOpenOrders: " + err.Error())
 		return nil, fmt.Errorf("load open orders: %w", err)

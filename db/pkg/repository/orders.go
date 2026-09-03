@@ -10,6 +10,7 @@ import (
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/db/pkg/metrics"
+	"github.com/alex99y/matching-engine/db/pkg/utils"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
@@ -23,6 +24,7 @@ type OrderRepository struct {
 	psql    *sql.DB
 	logger  *logger.Logger
 	metrics *metrics.DBMetrics
+	timeout time.Duration
 }
 
 type OrderRow struct {
@@ -91,6 +93,9 @@ type InsertOpenOrderParams struct {
 // where must be a hardcoded SQL fragment (e.g. "WHERE orders.id = $1") — never user input.
 func (o *OrderRepository) getOrder(ctx context.Context, where string, args ...any) (_ *OrderRow, outErr error) {
 	defer o.metrics.ObserveQuery("get_order", time.Now(), &outErr)
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, o.timeout)
+	defer cancel()
+
 	query := `
 		SELECT
 			orders.id,
@@ -124,7 +129,7 @@ func (o *OrderRepository) getOrder(ctx context.Context, where string, args ...an
 	var clientOrderID sql.NullString   // client_order_id is nullable
 	var haveQty, wantQty sql.NullInt64 // have/want_quantity are nullable (market orders)
 
-	err := o.psql.QueryRowContext(ctx, query, args...).Scan(
+	err := o.psql.QueryRowContext(ctxWithTimeout, query, args...).Scan(
 		&row.ID,
 		&clientOrderID,
 		&row.UserID,
@@ -185,13 +190,15 @@ func (o *OrderRepository) GetOrderByClientOrderID(ctx context.Context, userID uu
 
 func (o *OrderRepository) ClientOrderIDExists(ctx context.Context, userID uuid.UUID, clientOrderID string) (_ bool, outErr error) {
 	defer o.metrics.ObserveQuery("client_order_id_exists", time.Now(), &outErr)
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, o.timeout)
+	defer cancel()
 
 	const query = `SELECT EXISTS (
 		SELECT 1 FROM orders WHERE user_id = $1 AND client_order_id = $2
 	)`
 
 	var exists bool
-	if err := o.psql.QueryRowContext(ctx, query, userID, clientOrderID).Scan(&exists); err != nil {
+	if err := o.psql.QueryRowContext(ctxWithTimeout, query, userID, clientOrderID).Scan(&exists); err != nil {
 		o.logger.Error("ClientOrderIDExists: " + err.Error())
 		return false, fmt.Errorf("client order id exists: %w", err)
 	}
@@ -200,6 +207,9 @@ func (o *OrderRepository) ClientOrderIDExists(ctx context.Context, userID uuid.U
 
 func (o *OrderRepository) GetOrderByIDWithMatches(ctx context.Context, userID, orderID uuid.UUID) (_ *OrderRow, outErr error) {
 	defer o.metrics.ObserveQuery("get_order_with_matches", time.Now(), &outErr)
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, o.timeout)
+	defer cancel()
+
 	const query = `
 		SELECT
 			orders.id,
@@ -235,7 +245,7 @@ func (o *OrderRepository) GetOrderByIDWithMatches(ctx context.Context, userID, o
 		WHERE orders.user_id = $1 AND orders.id = $2
 		ORDER BY matches.match_time ASC`
 
-	rows, err := o.psql.QueryContext(ctx, query, userID, orderID)
+	rows, err := o.psql.QueryContext(ctxWithTimeout, query, userID, orderID)
 	if err != nil {
 		o.logger.Error("GetOrderByIDWithMatches: " + err.Error())
 		return nil, fmt.Errorf("get order with matches: %w", err)
@@ -331,6 +341,9 @@ func (o *OrderRepository) GetOrdersByUser(
 	limit int,
 ) (_ []OrderRow, outErr error) {
 	defer o.metrics.ObserveQuery("get_orders_by_user", time.Now(), &outErr)
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, o.timeout)
+	defer cancel()
+
 	// Base columns always selected from orders.
 	cols := []string{
 		"orders.id",
@@ -409,7 +422,7 @@ func (o *OrderRepository) GetOrdersByUser(
 	args = append(args, limit)
 	sb.WriteString(fmt.Sprintf("\nORDER BY orders.created_at DESC\nLIMIT $%d", len(args)))
 
-	dbRows, err := o.psql.QueryContext(ctx, sb.String(), args...)
+	dbRows, err := o.psql.QueryContext(ctxWithTimeout, sb.String(), args...)
 	if err != nil {
 		o.logger.Error("GetOrdersByUser: " + err.Error())
 		return nil, fmt.Errorf("get orders by user: %w", err)
@@ -497,6 +510,9 @@ func (o *OrderRepository) GetOrdersByIDs(ctx context.Context, userID uuid.UUID, 
 	if len(ids) == 0 {
 		return nil, nil
 	}
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, o.timeout)
+	defer cancel()
+
 	const query = `
 		SELECT
 			orders.id,
@@ -523,7 +539,7 @@ func (o *OrderRepository) GetOrdersByIDs(ctx context.Context, userID uuid.UUID, 
 		LEFT JOIN cancelled_orders ON cancelled_orders.order_id = orders.id
 		WHERE orders.user_id = $1 AND orders.id = ANY($2::uuid[])`
 
-	rows, err := o.psql.QueryContext(ctx, query, userID, pq.Array(uuidStrings(ids)))
+	rows, err := o.psql.QueryContext(ctxWithTimeout, query, userID, pq.Array(uuidStrings(ids)))
 	if err != nil {
 		o.logger.Error("GetOrdersByIDs: " + err.Error())
 		return nil, fmt.Errorf("get orders by ids: %w", err)
@@ -592,16 +608,18 @@ func (o *OrderRepository) GetOrdersByIDs(ctx context.Context, userID uuid.UUID, 
 }
 
 // dbMetrics may be nil, which disables query metric recording.
-func NewOrderRepository(logger *logger.Logger, psql *sql.DB, dbMetrics *metrics.DBMetrics) *OrderRepository {
+func NewOrderRepository(logger *logger.Logger, psql *sql.DB, dbMetrics *metrics.DBMetrics, timeout time.Duration) *OrderRepository {
 	if logger == nil {
 		panic("logger cannot be nil")
 	}
 	if psql == nil {
 		panic("psql cannot be nil")
 	}
+	utils.ValidateTimeout("order repository", timeout)
 	return &OrderRepository{
 		psql:    psql,
 		logger:  logger,
 		metrics: dbMetrics,
+		timeout: timeout,
 	}
 }
