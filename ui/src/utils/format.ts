@@ -20,6 +20,24 @@ export function fmtDateTime(unix: number): string {
   return new Date(unix * 1000).toLocaleString();
 }
 
+// Format a unix-second timestamp relative to now, e.g. "in 6 days", "2 hours ago".
+export function fmtRelative(unix: number): string {
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  const deltaSeconds = unix - Date.now() / 1000;
+  const units: [Intl.RelativeTimeFormatUnit, number][] = [
+    ["year", 31_536_000],
+    ["day", 86_400],
+    ["hour", 3600],
+    ["minute", 60],
+  ];
+  for (const [unit, span] of units) {
+    if (Math.abs(deltaSeconds) >= span) {
+      return rtf.format(Math.round(deltaSeconds / span), unit);
+    }
+  }
+  return rtf.format(Math.round(deltaSeconds), "second");
+}
+
 // Parse a string as bigint; returns undefined when invalid.
 export function parseBigInt(s: string): bigint | undefined {
   const trimmed = s.trim();

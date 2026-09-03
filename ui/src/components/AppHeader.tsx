@@ -13,6 +13,7 @@ const NAV_LINKS = [
   { to: "/", label: "Trade", end: true },
   { to: "/history", label: "History", end: false },
   { to: "/faucet", label: "Faucet", end: false },
+  { to: "/sessions", label: "Sessions", end: false },
 ] as const;
 
 export function AppHeader({ leftExtra }: Props) {

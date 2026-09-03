@@ -17,8 +17,23 @@ React web frontend for visualizing the matching engine's order book and candle c
 - `/` — trading view (order book, chart, order entry)
 - `/history` — order history and account operations (deposits/withdrawals/freezes), tabbed
 - `/faucet` — sandbox faucet to credit test balances
+- `/sessions` — active sessions (revoke any of them, including this device) and API token minting
 
-`/history` and `/faucet` require a signed-in session; guests are prompted to sign in.
+`/history`, `/faucet` and `/sessions` require a signed-in session; guests are prompted to sign in.
+
+## Session persistence
+
+A successful sign-in stores the bearer token, the username, and the server host/port in
+`localStorage` under `me.auth.v1`, so a page reload keeps you signed in. On load the stored token
+is checked with a single `POST /sessions/refresh`, which both validates it and pushes its expiry
+out — a rejected token clears the entry and returns you to the login screen, while a network
+failure leaves it alone so a later reload can retry. Signing out or disconnecting clears it.
+
+> ⚠️ A bearer token in `localStorage` is readable by any script on the origin, so an XSS here is a
+> full account takeover. The right fix is an httpOnly cookie issued by the API — see the TODO at
+> the top of [src/utils/authStorage.ts](src/utils/authStorage.ts) for what that requires on the
+> API side (cookie issuance, a cookie path in the auth middleware, CORS credentials, and CSRF
+> protection).
 
 ## Run locally
 
