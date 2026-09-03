@@ -1,0 +1,31 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: api
+    static_configs:
+      - targets: ["10.128.0.4:9091"]
+        labels:
+          service: api
+  - job_name: api2
+    static_configs:
+      - targets: ["10.128.0.7:9091"]
+        labels:
+          service: api
+
+  - job_name: core
+    static_configs:
+      - targets: ["10.128.0.6:9091"]
+        labels:
+          service: core
+
+  # RabbitMQ runs in compose; the rabbitmq_prometheus plugin exposes :15692. Used for queue
+  # depth / consumer lag (rabbitmq_queue_messages_ready) instead of instrumenting core (D6).
+  - job_name: rabbitmq
+    static_configs:
+      - targets: ["10.128.0.2:15692"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
