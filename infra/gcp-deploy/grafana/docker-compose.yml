@@ -3,6 +3,7 @@ services:
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
+    restart: always
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--web.enable-lifecycle"
@@ -18,6 +19,7 @@ services:
   grafana:
     image: grafana/grafana-oss:latest
     container_name: grafana
+    restart: always
     ports:
       - "10000:3000"
     environment:

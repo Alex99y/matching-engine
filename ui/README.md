@@ -73,8 +73,28 @@ Other settings (book depth, candle history, ticker poll interval) are constants 
 
 ## Run via Docker
 
-From the repo root:
+The dev server (hot reload, source mounted from the host), from the repo root:
 
 ```sh
 docker compose -f infra/local-deploy/docker-compose.yml up -d ui
 ```
+
+## Production image
+
+[Dockerfile](Dockerfile) builds the bundle with Node and serves the result with nginx
+([nginx.conf](nginx.conf)): SPA fallback so a refresh on `/history`, `/faucet` or `/sessions`
+is answered with `index.html`, a year of caching on Vite's fingerprinted `/assets/`, `no-cache`
+on `index.html`, gzip, and `GET /healthz`.
+
+The build context is the **workspace root**, not `ui/` — the app compiles `ts-sdk` from source
+through the alias in [vite.config.ts](vite.config.ts), so both trees must be in the context:
+
+```sh
+docker build -f ui/Dockerfile --build-arg VITE_API_URL=https://api.example.com -t matching-engine/ui .
+docker run --rm -p 8080:80 matching-engine/ui
+```
+
+> `VITE_API_URL` is a **build-time** argument: Vite inlines it, so the resulting image is bound to
+> one API origin and cannot be re-pointed with a container environment variable. Omitting it bakes
+> in the `http://localhost:4000` fallback. For the GCP flow this is wrapped by
+> [infra/gcp-deploy/ui/build.sh](../infra/gcp-deploy/ui/build.sh), which requires the value.
