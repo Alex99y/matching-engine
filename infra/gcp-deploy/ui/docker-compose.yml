@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  ui:
+    image: us-central1-docker.pkg.dev/project-e5d919ff-a78f-43b8-856/me-docker-registry/ui:latest
+    container_name: ui-app
+    restart: always
+    ports:
+      - "80:80"
+    # Nothing is configured here on purpose: the API origin the UI talks to is compiled
+    # into the bundle by build.sh, so this image has no runtime environment to set.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
