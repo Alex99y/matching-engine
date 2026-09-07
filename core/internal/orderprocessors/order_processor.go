@@ -87,15 +87,26 @@ type OrderProcessor struct {
 	stopMatcher   atomic.Bool
 	// Event-log stream (docs/event-log.md). publisher is nil-able (disables emission). epoch is a
 	// fresh id per core start; seq is a per-market monotonic counter advanced once per book delta,
-	// so the API can detect a gap (missed delta) or restart (changed epoch). Touched only by the
-	// matcher goroutine, so no synchronisation.
+	// so the API can detect a gap (missed delta) or restart (changed epoch)
 	publisher eventPublisher
 	marketRef string
 	epoch     string
-	seq       uint64
+	seq       atomic.Uint64
 	// failures counts consecutive isolation failures per order id; accessed only by the
 	// matcher goroutine. An order is dead-lettered once it reaches maxOrderFailures.
 	failures map[uuid.UUID]int
+	// quarantined holds expiring orders the matcher has given up on. A synthetic expiry event has no
+	// broker message, so it cannot be dead-lettered and requeued out of the way like a real order:
+	// without this set ExpireDue would re-derive it every sweep, wedging the market in a permanent
+	// isolate/rebuild loop. Matcher goroutine only, same as failures.
+	//
+	// Entries are dropped by pruneQuarantine once the order leaves the book, so settling one clears
+	// it without a restart. A core restart also clears the set wholesale, giving every quarantined
+	// order one more chance by which point an operator may have fixed the root cause.
+	//
+	// Quarantine does NOT release the order's blocked funds — see `cli reconcile balances`.
+	quarantined map[uuid.UUID]struct{}
+	dlq         deadLetterer
 }
 
 // Start hydrates the book from the DB, launches the matcher goroutine, then blocks on
@@ -119,7 +130,8 @@ func (o *OrderProcessor) Start(ctx context.Context) {
 		o.matcher(ctx, dbCtx)
 	}()
 
-	if err := o.queue.WatchForOrderEvents(ctx, o.handleDelivery); err != nil {
+	handle := func(d *oeq.OrderDelivery) { o.handleDelivery(dbCtx, d) }
+	if err := o.queue.WatchForOrderEvents(ctx, handle); err != nil {
 		o.logger.Error(fmt.Sprintf("order processor %s-%s: consumer error: %s",
 			o.market.BaseSymbol, o.market.QuoteSymbol, err))
 	}
@@ -140,6 +152,7 @@ func NewOrderProcessor(
 	repo orderRepository,
 	coreMetrics *metrics.CoreMetrics,
 	publisher eventPublisher,
+	dlq deadLetterer,
 	epoch string,
 ) *OrderProcessor {
 	if log == nil {
@@ -174,5 +187,7 @@ func NewOrderProcessor(
 		},
 		ordersChannel: make(chan *queuedEvent, orderChannelBuffer),
 		failures:      make(map[uuid.UUID]int),
+		quarantined:   make(map[uuid.UUID]struct{}),
+		dlq:           dlq,
 	}
 }

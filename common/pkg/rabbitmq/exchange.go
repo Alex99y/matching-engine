@@ -85,16 +85,27 @@ func (e *Exchange) open() error {
 // (e.g. after a connection blip) it reopens once and retries; a second failure is returned so the
 // caller can decide (for the event stream: drop and let consumers re-snapshot — never block).
 func (e *Exchange) Publish(ctx context.Context, routingKey, messageId string, body []byte) error {
-	if err := e.publish(ctx, routingKey, messageId, body); err != nil {
+	return e.publishRetrying(ctx, routingKey, messageId, body, false)
+}
+
+// PublishPersistent is Publish with the message marked persistent, so it survives a broker
+// restart once it reaches a durable queue. Used by the dead-letter parking lot, where losing a
+// message on a broker bounce would defeat the purpose; the live event stream uses Publish.
+func (e *Exchange) PublishPersistent(ctx context.Context, routingKey, messageId string, body []byte) error {
+	return e.publishRetrying(ctx, routingKey, messageId, body, true)
+}
+
+func (e *Exchange) publishRetrying(ctx context.Context, routingKey, messageId string, body []byte, persistent bool) error {
+	if err := e.publish(ctx, routingKey, messageId, body, persistent); err != nil {
 		if rErr := e.open(); rErr != nil {
 			return fmt.Errorf("exchange publish %q: %w (reopen failed: %v)", routingKey, err, rErr)
 		}
-		return e.publish(ctx, routingKey, messageId, body)
+		return e.publish(ctx, routingKey, messageId, body, persistent)
 	}
 	return nil
 }
 
-func (e *Exchange) publish(ctx context.Context, routingKey, messageId string, body []byte) error {
+func (e *Exchange) publish(ctx context.Context, routingKey, messageId string, body []byte, persistent bool) error {
 	e.mu.RLock()
 	ch := e.channel
 	name := e.args.Name
@@ -105,7 +116,7 @@ func (e *Exchange) publish(ctx context.Context, routingKey, messageId string, bo
 		routingKey,
 		false, // mandatory
 		false, // immediate
-		newJSONPublishing(messageId, body, false), // transient
+		newJSONPublishing(messageId, body, persistent),
 	)
 }
 

@@ -2,10 +2,12 @@ package orderprocessors
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	"github.com/alex99y/matching-engine/core/pkg/deadletter"
 	oeq "github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
 	"github.com/google/uuid"
@@ -16,7 +18,7 @@ func TestMatcherRebuildsOnFailure(t *testing.T) {
 	rec := &ackRecorder{}
 	q := &fakeQueue{deliveries: []*oeq.OrderDelivery{rec.delivery(limitBuy())}}
 	repo := &fakeRepo{failNext: 1}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, "")
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, nil, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)
@@ -34,19 +36,18 @@ func TestMatcherRebuildsOnFailure(t *testing.T) {
 }
 
 // poisonBroker simulates a real broker: it redelivers nacked messages until each is
-// acked or rejected, letting the matcher's isolation + dead-letter path run to completion.
+// acked, letting the matcher's isolation + dead-letter path run to completion.
 type poisonBroker struct {
 	pending chan *oeq.OpenOrderEvent
 	mu      sync.Mutex
 	acks    map[string]int
 	nacks   map[string]int
-	rejects map[string]int
 }
 
 func newPoisonBroker(events ...*oeq.OpenOrderEvent) *poisonBroker {
 	b := &poisonBroker{
 		pending: make(chan *oeq.OpenOrderEvent, 256),
-		acks:    map[string]int{}, nacks: map[string]int{}, rejects: map[string]int{},
+		acks:    map[string]int{}, nacks: map[string]int{},
 	}
 	for _, e := range events {
 		b.pending <- e
@@ -71,7 +72,11 @@ func (b *poisonBroker) WatchForOrderEvents(ctx context.Context, handler oeq.Orde
 			if err != nil {
 				return err
 			}
-			handler(oeq.NewOrderDelivery(env, id,
+			raw, err := env.ToBytes()
+			if err != nil {
+				return err
+			}
+			handler(oeq.NewOrderDelivery(env, raw, id,
 				func() error { b.mu.Lock(); b.acks[id]++; b.mu.Unlock(); return nil },
 				func() error {
 					b.mu.Lock()
@@ -83,7 +88,6 @@ func (b *poisonBroker) WatchForOrderEvents(ctx context.Context, handler oeq.Orde
 					}
 					return nil
 				},
-				func() error { b.mu.Lock(); b.rejects[id]++; b.mu.Unlock(); return nil },
 			))
 		}
 	}
@@ -116,26 +120,66 @@ func (r *poisonRepo) LoadOpenOrders(ctx context.Context, marketID int) ([]reposi
 	return nil, nil
 }
 
-// A poison order is isolated: the healthy orders in its batch still commit, and the poison
-// order is dead-lettered (rejected) after maxOrderFailures, unwedging the market.
+// A poison order is isolated: the healthy orders in its batch still commit, and the poison order is
+// parked in the dead-letter queue after maxOrderFailures and then acked, unwedging the market.
 func TestMatcherPoisonIsolation(t *testing.T) {
 	good1, poison, good2 := limitBuy(), limitBuy(), limitBuy()
 	b := newPoisonBroker(good1, poison, good2)
 	repo := &poisonRepo{poison: poison.OrderID}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), b, repo, nil, nil, "")
+	dlq := &fakeDeadLetterer{}
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), b, repo, nil, nil, dlq, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)
 
 	gid1, gid2, pid := good1.OrderID.String(), good2.OrderID.String(), poison.OrderID.String()
 	runUntil(t, func() bool { return b.count(b.acks, gid1) == 1 && b.count(b.acks, gid2) == 1 })
-	runUntil(t, func() bool { return b.count(b.rejects, pid) == 1 })
+	runUntil(t, func() bool { return dlq.count() == 1 })
 	cancel()
 
 	if n := b.count(b.nacks, pid); n != maxOrderFailures-1 {
 		t.Fatalf("poison nacks=%d want %d", n, maxOrderFailures-1)
 	}
-	if b.count(b.acks, pid) != 0 {
-		t.Fatalf("poison must never be acked")
+	// Acked only once it is safely parked — that ack is what stops the redelivery loop.
+	if n := b.count(b.acks, pid); n != 1 {
+		t.Fatalf("poison acks=%d want 1", n)
+	}
+
+	parked := dlq.parked[0]
+	if parked.Reason != deadletter.ReasonPoison {
+		t.Fatalf("parked reason=%q want %q", parked.Reason, deadletter.ReasonPoison)
+	}
+	if parked.OrderID != pid {
+		t.Fatalf("parked order=%q want %q", parked.OrderID, pid)
+	}
+	if parked.Failures != maxOrderFailures {
+		t.Fatalf("parked failures=%d want %d", parked.Failures, maxOrderFailures)
+	}
+	if len(parked.Payload) == 0 {
+		t.Fatal("parked envelope must carry the original payload")
+	}
+}
+
+// When the parking-lot publish itself fails, the order is dropped rather than requeued: a broker
+// outage must never leave a market wedged on a message that can never be processed.
+func TestPoisonAckedWhenDeadLetterPublishFails(t *testing.T) {
+	poison := limitBuy()
+	b := newPoisonBroker(poison)
+	repo := &poisonRepo{poison: poison.OrderID}
+	dlq := &fakeDeadLetterer{failWith: errors.New("broker down")}
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), b, repo, nil, nil, dlq, "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Start(ctx)
+
+	pid := poison.OrderID.String()
+	runUntil(t, func() bool { return b.count(b.acks, pid) == 1 })
+
+	if dlq.count() != 0 {
+		t.Fatalf("nothing should have been parked, got %d", dlq.count())
+	}
+	if n := b.count(b.nacks, pid); n != maxOrderFailures-1 {
+		t.Fatalf("poison nacks=%d want %d", n, maxOrderFailures-1)
 	}
 }

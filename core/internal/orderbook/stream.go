@@ -20,6 +20,15 @@ const statusRejected = "rejected"
 // as statusRejected.
 const statusExpired = "expired"
 
+// StatusDeadLettered reports an order that could not be processed at all and was parked in the
+// dead-letter queue. Nothing was persisted and no funds were reserved — distinct from
+// statusRejected, which specifically means the order was well-formed but could not be funded.
+const StatusDeadLettered = "dead_lettered"
+
+// StatusCancelRejected reports a cancel command that could not be applied. The order it targeted is
+// still resting and its funds are still blocked; the owner may retry.
+const StatusCancelRejected = "cancel_rejected"
+
 // levelKey identifies one price level on one side, used to dedupe the set of levels whose aggregate
 // quantity changed during a batch.
 type levelKey struct {

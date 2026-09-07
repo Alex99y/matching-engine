@@ -241,7 +241,8 @@ Failure taxonomy:
 | Transient infra | DB down, connection dropped | Rollback → nack → rebuild → retry; queue buffers, nothing lost. |
 | Deadlock / serialization | two markets lock the same user's balance row in opposite order | Postgres aborts one; same rebuild-and-retry path. |
 | Commit ambiguity | `COMMIT` succeeded but the ack of it was lost | DB *did* commit; on reprocess, idempotency skips the already-present orders. See [§7](#7-idempotency). |
-| Poison message | an order that fails every commit | _Not yet handled_ — would currently requeue forever; the planned mitigation is one-order-per-tx isolation + dead-letter (see `TODO.md`). |
+| Poison message | an order that fails every commit | One-order-per-tx isolation (healthy orders in the batch still commit), then parked in the dead-letter queue after `maxOrderFailures` and acked. Its transaction rolled back, so it strands no blocked funds. |
+| Poison expiry | a TTL reap that fails every commit | Same isolation, but a synthetic expiry has no broker message to park and ack, so it is **quarantined**: the sweep stops re-deriving it, which is what keeps the market from wedging. The order stays resting and its funds stay blocked — run `cli reconcile balances` to find them. |
 
 > **Why rebuild instead of undoing the book's mutations?** Rebuilding from the database
 > is simple and obviously correct, and commit failures are exceptional. A copy-on-write

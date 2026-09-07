@@ -257,52 +257,38 @@
       }
     },
     {
-      "type": "stat",
-      "title": "Dead-letters (1h)",
+      "type": "timeseries",
+      "title": "Dead-letters by reason (1h)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
         "h": 6,
-        "w": 6,
+        "w": 8,
         "x": 0,
         "y": 19
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          }
+          "unit": "short"
         },
         "overrides": []
       },
       "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
         }
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(me_core_dead_letters_total{market=~\"$market\"}[1h]))"
+          "expr": "sum by (reason) (increase(me_core_dead_letters_total{market=~\"$market\"}[1h]))",
+          "legendFormat": "{{reason}}"
         }
-      ]
+      ],
+      "description": "Commands parked in me.dlq.<market>. malformed/invalid/unknown_type are bad input; poison is an order that failed every commit; quarantined is an expiry the sweep gave up on (its funds are still blocked \u2014 run `cli reconcile balances`)."
     },
     {
       "type": "stat",
@@ -313,8 +299,8 @@
       },
       "gridPos": {
         "h": 6,
-        "w": 6,
-        "x": 6,
+        "w": 8,
+        "x": 8,
         "y": 19
       },
       "fieldConfig": {
@@ -361,8 +347,8 @@
       },
       "gridPos": {
         "h": 6,
-        "w": 6,
-        "x": 12,
+        "w": 8,
+        "x": 16,
         "y": 19
       },
       "fieldConfig": {
@@ -409,9 +395,9 @@
       },
       "gridPos": {
         "h": 6,
-        "w": 6,
-        "x": 18,
-        "y": 19
+        "w": 8,
+        "x": 0,
+        "y": 25
       },
       "fieldConfig": {
         "defaults": {
@@ -434,13 +420,111 @@
       }
     },
     {
+      "type": "stat",
+      "title": "DLQ publish failures (1h)",
+      "description": "Commands dropped because the parking-lot publish itself failed. This is the only path that loses an order outright \u2014 the payload survives only in core's ERROR log. Alert on any increase.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 25
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(me_core_dlq_publish_failures_total{market=~\"$market\"}[1h]))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Quarantined orders",
+      "description": "Expiring orders the matcher stopped sweeping to keep the market alive. Each one still rests in the book with its funds blocked. Non-zero needs operator settlement \u2014 run `cli reconcile balances`.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 25
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(me_core_quarantined_orders{market=~\"$market\"})"
+        }
+      ]
+    },
+    {
       "type": "row",
       "title": "Order Book",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 25
+        "y": 31
       }
     },
     {
@@ -454,7 +538,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 26
+        "y": 32
       },
       "fieldConfig": {
         "defaults": {
@@ -487,7 +571,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 26
+        "y": 32
       },
       "fieldConfig": {
         "defaults": {
@@ -516,22 +600,22 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 34
+        "y": 40
       }
     },
     {
       "type": "timeseries",
-      "title": "Command backlog \u2014 ready messages (all queues)",
-      "description": "Aggregate across all command queues; enable prometheus.return_per_object_metrics for a per-market breakdown.",
+      "title": "Command backlog \u2014 ready messages by market",
+      "description": "Unconsumed order commands per market queue. Sustained growth means the matcher is behind or its core is down. Excludes the dead-letter parking lots and the ephemeral amq.gen-* event-log subscriber queues.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 12,
         "x": 0,
-        "y": 35
+        "y": 41
       },
       "fieldConfig": {
         "defaults": {
@@ -542,8 +626,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rabbitmq_queue_messages_ready",
-          "legendFormat": "ready"
+          "expr": "rabbitmq_queue_messages_ready{queue!~\"me\\\\.dlq\\\\..*|amq\\\\.gen-.*\"}",
+          "legendFormat": "{{queue}}"
         }
       ],
       "options": {
@@ -554,13 +638,47 @@
       }
     },
     {
+      "type": "timeseries",
+      "title": "Dead-letter queue depth",
+      "description": "Messages parked in me.dlq.*. This queue has no consumer by design \u2014 it is a parking lot, so depth only ever falls when an operator drains it. Any sustained growth is a live incident.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 41
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (queue) (rabbitmq_queue_messages{queue=~\"me\\\\.dlq\\\\..*\"})",
+          "legendFormat": "{{queue}}"
+        }
+      ]
+    },
+    {
       "type": "row",
       "title": "Event-Log Stream (publisher)",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 43
+        "y": 49
       }
     },
     {
@@ -574,7 +692,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 44
+        "y": 50
       },
       "fieldConfig": {
         "defaults": {
@@ -607,7 +725,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 44
+        "y": 50
       },
       "fieldConfig": {
         "defaults": {

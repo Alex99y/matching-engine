@@ -7,14 +7,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alex99y/matching-engine/core/pkg/deadletter"
 	oeq "github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
 	"github.com/google/uuid"
 )
 
 // This file holds the fixtures shared by every _test.go in this package: a fake broker
-// queue, a fake repository, an ack/nack recorder, and common test builders. No Test
-// functions live here.
+// queue, a fake repository, an ack/nack recorder, a fake dead-letter publisher, and common
+// test builders. No Test functions live here.
 
 // fakeQueue replays a fixed set of deliveries to the handler, then blocks until ctx is
 // cancelled so Start closes the channel and the matcher drains and exits.
@@ -83,10 +84,9 @@ func fundedIDs(incoming []repository.IncomingOrder, fundNone bool) []uuid.UUID {
 }
 
 type ackRecorder struct {
-	mu      sync.Mutex
-	acks    int
-	nacks   int
-	rejects int
+	mu    sync.Mutex
+	acks  int
+	nacks int
 }
 
 func (a *ackRecorder) delivery(open *oeq.OpenOrderEvent) *oeq.OrderDelivery {
@@ -94,11 +94,48 @@ func (a *ackRecorder) delivery(open *oeq.OpenOrderEvent) *oeq.OrderDelivery {
 	if err != nil {
 		panic(err)
 	}
-	return oeq.NewOrderDelivery(env, open.OrderID.String(),
+	raw, err := env.ToBytes()
+	if err != nil {
+		panic(err)
+	}
+	return oeq.NewOrderDelivery(env, raw, open.OrderID.String(),
 		func() error { a.mu.Lock(); a.acks++; a.mu.Unlock(); return nil },
 		func() error { a.mu.Lock(); a.nacks++; a.mu.Unlock(); return nil },
-		func() error { a.mu.Lock(); a.rejects++; a.mu.Unlock(); return nil },
 	)
+}
+
+// fakeDeadLetterer records what the processor parks. failWith makes Publish fail, exercising the
+// ack-and-drop path.
+type fakeDeadLetterer struct {
+	mu       sync.Mutex
+	parked   []deadletter.Envelope
+	failWith error
+}
+
+func (f *fakeDeadLetterer) Publish(ctx context.Context, env *deadletter.Envelope) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failWith != nil {
+		return f.failWith
+	}
+	f.parked = append(f.parked, *env)
+	return nil
+}
+
+func (f *fakeDeadLetterer) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.parked)
+}
+
+func (f *fakeDeadLetterer) reasons() []deadletter.Reason {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]deadletter.Reason, 0, len(f.parked))
+	for _, e := range f.parked {
+		out = append(out, e.Reason)
+	}
+	return out
 }
 
 func (a *ackRecorder) counts() (int, int) {
@@ -124,7 +161,12 @@ func limitBuy() *oeq.OpenOrderEvent {
 
 func runUntil(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	runUntilWithin(t, 5*time.Second, cond)
+}
+
+func runUntilWithin(t *testing.T, d time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return

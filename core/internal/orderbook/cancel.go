@@ -34,6 +34,25 @@ func (o *OrderBook) ExpireOrder(orderID uuid.UUID, result *repository.BatchResul
 	o.closeResting(stored, result, statusExpired)
 }
 
+func (o *OrderBook) IsResting(orderID uuid.UUID) bool {
+	_, ok := o.index[orderID]
+	return ok
+}
+
+// RestingOwner addresses a private stream event at an order the matcher could not act on; a cancel
+// event carries no user id of its own.
+func (o *OrderBook) RestingOwner(orderID uuid.UUID) (uuid.UUID, bool) {
+	loc, ok := o.index[orderID]
+	if !ok {
+		return uuid.Nil, false
+	}
+	stored, ok := loc.el.Value.(*Order)
+	if !ok {
+		return uuid.Nil, false
+	}
+	return stored.OpenOrder.UserID, true
+}
+
 // removeResting detaches a resting order from its price level, the order index, and the
 // expiry index (if it carries a TTL). ok is false if the order is no longer resting.
 func (o *OrderBook) removeResting(orderID uuid.UUID) (*Order, bool) {

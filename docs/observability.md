@@ -99,7 +99,9 @@ path is allocation-free (`core/internal/metrics`). Metric values are derived fro
 | `me_core_batches_total` | counter | `market, result` | Batch outcomes (see values below) |
 | `me_core_reserve_rejections_total` | counter | `market` | Orders rejected at balance reservation (insufficient funds) |
 | `me_core_poison_isolations_total` | counter | `market` | Batches that fell into per-order isolation |
-| `me_core_dead_letters_total` | counter | `market` | Orders dead-lettered after the failure cap — **alert on any increase** |
+| `me_core_dead_letters_total` | counter | `market`, `reason` | Commands parked in the dead-letter queue — **alert on any increase**. `reason` is one of `malformed`, `invalid`, `unknown_type`, `poison`, `quarantined` |
+| `me_core_dlq_publish_failures_total` | counter | `market` | Commands dropped because the parking-lot publish itself failed — the only path that loses an order outright, **alert on any increase** |
+| `me_core_quarantined_orders` | gauge | `market` | Expiring orders the matcher stopped sweeping; their funds are still blocked and need operator settlement — **alert on `> 0`** |
 | `me_core_book_rebuilds_total` | counter | `market` | Book hydrations triggered by a failed batch — **alert on rate** |
 | `me_core_book_orders` | gauge | `market, side` | Resting order count per side (book depth) |
 | `me_core_book_best_price` | gauge | `market, side` | Best bid / best ask (0 when that side is empty) |
