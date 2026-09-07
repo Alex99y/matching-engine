@@ -12,6 +12,8 @@ import (
 	"github.com/alex99y/matching-engine/db/pkg/repository"
 )
 
+const candleSeedTimeout = 5 * time.Second
+
 // CandleSeeder is the only DB operation the CandleHub needs: seed the forming bucket on connect.
 type CandleSeeder interface {
 	GetCurrentCandle(ctx context.Context, marketID int, bucketStart time.Time) (*repository.Candle, error)
@@ -28,9 +30,9 @@ type CandleHub struct {
 	logger     *logger.Logger
 	source     eventSource
 	db         CandleSeeder
-	marketIDs  map[string]int                                   // market ref -> DB market_id
-	clients    map[string]map[int64]map[*candleClient]struct{}  // market -> interval -> clients
-	buckets    map[string]map[int64]int64                       // market -> interval -> current bucketStart (unix sec)
+	marketIDs  map[string]int                                  // market ref -> DB market_id
+	clients    map[string]map[int64]map[*candleClient]struct{} // market -> interval -> clients
+	buckets    map[string]map[int64]int64                      // market -> interval -> current bucketStart (unix sec)
 	events     chan event
 	register   chan *candleClient
 	unregister chan *candleClient
@@ -143,10 +145,23 @@ func (h *CandleHub) checkBuckets(market string, nowSec int64) {
 	}
 }
 
-// handleRegister adds the client, then queries the DB for the forming bucket under REPEATABLE READ.
-// Because this runs on the Hub goroutine (single-threaded), the DB snapshot is taken while the
-// events channel is not being drained. Any trade events that arrived between the DB query start
-// and when the Hub resumes are strictly in the channel buffer — no overlap, no gap.
+func (h *CandleHub) Seed(ctx context.Context, market string, interval int64) (snapshot []byte, bucketStart int64) {
+	bucketStart = (time.Now().Unix() / interval) * interval
+
+	seedCtx, cancel := context.WithTimeout(ctx, candleSeedTimeout)
+	defer cancel()
+
+	candle, err := h.db.GetCurrentCandle(seedCtx, h.marketIDs[market], time.Unix(bucketStart, 0).UTC())
+	if err != nil && !errors.Is(err, repository.ErrNoCandle) {
+		h.logger.Error(fmt.Sprintf("candle hub: seed market=%s interval=%d: %v", market, interval, err))
+		candle = nil
+	}
+
+	return candleSnapshotFrame(interval, bucketStart, candle), bucketStart
+}
+
+// handleRegister does bookkeeping only. Every blocking operation it used to perform now
+// happens in Seed, on the connecting request's own goroutine.
 func (h *CandleHub) handleRegister(cl *candleClient) {
 	if _, ok := h.clients[cl.market]; !ok {
 		close(cl.ch)
@@ -158,22 +173,11 @@ func (h *CandleHub) handleRegister(cl *candleClient) {
 	}
 	h.clients[cl.market][cl.interval][cl] = struct{}{}
 
-	now := time.Now().Unix()
-	bucketStart := (now / cl.interval) * cl.interval
-
 	if h.buckets[cl.market][cl.interval] == 0 {
-		h.buckets[cl.market][cl.interval] = bucketStart
+		h.buckets[cl.market][cl.interval] = (time.Now().Unix() / cl.interval) * cl.interval
 	}
 
-	seedCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	candle, err := h.db.GetCurrentCandle(seedCtx, h.marketIDs[cl.market], time.Unix(bucketStart, 0).UTC())
-	if err != nil && !errors.Is(err, repository.ErrNoCandle) {
-		h.logger.Error(fmt.Sprintf("candle hub: seed market=%s interval=%d: %v", cl.market, cl.interval, err))
-	}
-
-	h.send(cl, candleSnapshotFrame(cl.interval, bucketStart, candle))
+	h.send(cl, cl.snapshot)
 }
 
 func (h *CandleHub) handleUnregister(cl *candleClient) {

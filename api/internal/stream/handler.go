@@ -140,10 +140,15 @@ func (h *StreamHandler) CandleStream(c fiber.Ctx) error {
 		return utils.NewErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 
+	// Seeded here rather than inside the hub: it is a DB read, and the hub is a single
+	// goroutine, so seeding there stalls every other candle client for the query's duration.
+	snapshot, _ := h.candleHub.Seed(c.Context(), market, interval)
+
 	cl := &candleClient{
 		market:   market,
 		interval: interval,
 		ch:       make(chan []byte, clientSendBuffer),
+		snapshot: snapshot,
 	}
 	h.candleHub.connect(cl)
 
@@ -155,6 +160,13 @@ func (h *StreamHandler) CandleStream(c fiber.Ctx) error {
 		defer h.candleHub.disconnect(cl)
 		ping := time.NewTicker(clientPingInterval)
 		defer ping.Stop()
+
+		// Headers reach the socket on the first flush, so without this the response stays
+		// unsent until the snapshot is dequeued — long enough for a proxy to give up on a
+		// connection that is actually healthy.
+		if !flush(w, []byte(": connected\n\n")) {
+			return
+		}
 
 		for {
 			select {
