@@ -10,6 +10,7 @@ type candleClient struct {
 	market   string
 	interval int64 // seconds: 60, 300, 900, 3600, 14400, 86400
 	ch       chan []byte
+	snapshot []byte
 }
 
 func (c *candleClient) channel() chan []byte { return c.ch }
