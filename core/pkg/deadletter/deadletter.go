@@ -4,11 +4,11 @@
 // message to the me.dlx exchange itself and then acks the original, instead of relying on an
 // x-dead-letter-exchange argument on the command queues. Two reasons, both specific to this engine:
 //
-//   - A synthetic TTL-expiry event has no AMQP message behind it (see the matcher's expiry sweep), so
-//     the broker can never dead-letter it. Only an application-driven publish can quarantine one.
 //   - The broker's x-death header records only {queue, reason:"rejected", count, time}. The reason an
 //     order actually failed — the constraint it violated, the validation rule it broke — is the whole
 //     point of a dead-letter queue for a matching engine, and only core knows it.
+//   - Adding the argument to the existing durable command queues would fail with PRECONDITION_FAILED,
+//     crash-looping both core and api at boot until every queue was drained and recreated.
 //
 // The publisher is deliberately synchronous, unlike marketevents: the caller must know whether the
 // message reached the parking lot before it decides to ack the original.
@@ -43,15 +43,10 @@ const (
 	ReasonUnknownType Reason = "unknown_type"
 	// ReasonPoison is an order that failed to commit deterministically maxOrderFailures times.
 	ReasonPoison Reason = "poison"
-	// ReasonQuarantined is a synthetic expiry event that could not be committed. Unlike the others it
-	// has no broker message: the order is still resting and its funds are still blocked, and the
-	// matcher stops re-deriving it so the market does not wedge. Requires operator settlement.
-	ReasonQuarantined Reason = "quarantined"
 )
 
 // Envelope is what lands in the parking lot. Payload holds the original message so an operator can
-// replay it by hand after fixing the root cause; it is empty for a quarantined expiry, which was
-// never a broker message.
+// replay it by hand after fixing the root cause.
 type Envelope struct {
 	OrderID   string          `json:"order_id,omitempty"`
 	MarketRef string          `json:"market_ref"`

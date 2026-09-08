@@ -395,7 +395,7 @@
       },
       "gridPos": {
         "h": 6,
-        "w": 8,
+        "w": 12,
         "x": 0,
         "y": 25
       },
@@ -429,8 +429,8 @@
       },
       "gridPos": {
         "h": 6,
-        "w": 8,
-        "x": 8,
+        "w": 12,
+        "x": 12,
         "y": 25
       },
       "fieldConfig": {
@@ -465,55 +465,6 @@
         {
           "refId": "A",
           "expr": "sum(increase(me_core_dlq_publish_failures_total{market=~\"$market\"}[1h]))"
-        }
-      ]
-    },
-    {
-      "type": "stat",
-      "title": "Quarantined orders",
-      "description": "Expiring orders the matcher stopped sweeping to keep the market alive. Each one still rests in the book with its funds blocked. Non-zero needs operator settlement \u2014 run `cli reconcile balances`.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 16,
-        "y": 25
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum(me_core_quarantined_orders{market=~\"$market\"})"
         }
       ]
     },

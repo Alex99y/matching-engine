@@ -36,50 +36,14 @@ func (o *OrderProcessor) matcher(shutdownCtx, dbCtx context.Context) {
 		case <-heartbeatTicker.C:
 			o.emitHeartbeat()
 		case now := <-expiryTicker.C:
-			o.pruneQuarantine()
-			if batch := o.buildExpiryBatch(now); batch != nil {
-				if !o.runBatch(shutdownCtx, dbCtx, batch) {
-					return // shutdown requested during recovery
-				}
+			if !o.book.HasDue(now.Unix()) {
+				continue
+			}
+			if !o.runBatch(shutdownCtx, dbCtx, nil) {
+				return // shutdown requested during recovery
 			}
 		}
 	}
-}
-
-func (o *OrderProcessor) pruneQuarantine() {
-	if len(o.quarantined) == 0 {
-		return
-	}
-	for id := range o.quarantined {
-		if !o.book.IsResting(id) {
-			delete(o.quarantined, id)
-		}
-	}
-	o.metrics.SetQuarantined(len(o.quarantined))
-}
-
-// buildExpiryBatch asks the book (in-memory, no I/O) which resting orders are due, and wraps
-// each as a synthetic cancel-like event with no broker delivery. nil means nothing was due —
-// the common case for most ticks, since ExpireDue only walks the due prefix of its index.
-//
-// Quarantined orders are filtered out here rather than removed from the book's expiry index,
-// because loadBook rehydrates that index from the DB on every rebuild and would resurrect them.
-func (o *OrderProcessor) buildExpiryBatch(now time.Time) []*queuedEvent {
-	due := o.book.ExpireDue(now.Unix())
-	if len(due) == 0 {
-		return nil
-	}
-	batch := make([]*queuedEvent, 0, len(due))
-	for i := range due {
-		if _, skip := o.quarantined[due[i]]; skip {
-			continue
-		}
-		batch = append(batch, &queuedEvent{expire: &due[i]})
-	}
-	if len(batch) == 0 {
-		return nil
-	}
-	return batch
 }
 
 // collectBatch extends the just-received first event into a micro-batch, collecting more without

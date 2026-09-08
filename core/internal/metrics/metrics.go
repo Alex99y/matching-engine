@@ -25,7 +25,6 @@ const (
 	metricPoisonIsolations  = "poison_isolations_total"
 	metricDeadLetters       = "dead_letters_total"
 	metricDLQPublishFails   = "dlq_publish_failures_total"
-	metricQuarantined       = "quarantined_orders"
 	metricBookRebuilds      = "book_rebuilds_total"
 	metricBookOrders        = "book_orders"
 	metricBookBestPrice     = "book_best_price"
@@ -81,7 +80,6 @@ var (
 	deadLetterReasons = []string{
 		string(deadletter.ReasonMalformed), string(deadletter.ReasonInvalid),
 		string(deadletter.ReasonUnknownType), string(deadletter.ReasonPoison),
-		string(deadletter.ReasonQuarantined),
 	}
 )
 
@@ -97,7 +95,6 @@ type CoreMetrics struct {
 	poisonIsolations  *observability.CounterMetric
 	deadLetters       *observability.CounterMetric
 	dlqPublishFails   *observability.CounterMetric
-	quarantined       *observability.GaugeMetric
 	bookRebuilds      *observability.CounterMetric
 	bookOrders        *observability.GaugeMetric
 	bookBestPrice     *observability.GaugeMetric
@@ -159,11 +156,6 @@ func NewCoreMetrics(pm *observability.PrometheusMetrics) (*CoreMetrics, error) {
 	}); err != nil {
 		return nil, err
 	}
-	if c.quarantined, err = pm.RegisterGauge(observability.GaugeDefinition{
-		Name: metricQuarantined, Help: "Expiring orders the matcher stopped re-deriving; their funds are still blocked.", LabelKeys: marketLabel,
-	}); err != nil {
-		return nil, err
-	}
 	if c.bookRebuilds, err = pm.RegisterCounter(observability.CounterDefinition{
 		Name: metricBookRebuilds, Help: "Book rebuilds (hydrations) triggered by a failed batch.", LabelKeys: marketLabel,
 	}); err != nil {
@@ -214,7 +206,6 @@ type MarketMetrics struct {
 	reserveRej prometheus.Counter
 	poison     prometheus.Counter
 	dlqFails   prometheus.Counter
-	quarantine prometheus.Gauge
 	rebuilds   prometheus.Counter
 	batchSize  prometheus.Observer
 	batchDur   prometheus.Observer
@@ -238,7 +229,6 @@ func (c *CoreMetrics) BindMarket(market string) *MarketMetrics {
 		reserveRej: c.reserveRejections.Bind(market),
 		poison:     c.poisonIsolations.Bind(market),
 		dlqFails:   c.dlqPublishFails.Bind(market),
-		quarantine: c.quarantined.Bind(market),
 		rebuilds:   c.bookRebuilds.Bind(market),
 		batchSize:  c.batchSize.Bind(market),
 		batchDur:   c.batchDuration.Bind(market),
@@ -336,13 +326,6 @@ func (m *MarketMetrics) IncDLQPublishFailure() {
 		return
 	}
 	m.dlqFails.Inc()
-}
-
-func (m *MarketMetrics) SetQuarantined(n int) {
-	if m == nil {
-		return
-	}
-	m.quarantine.Set(float64(n))
 }
 
 func (m *MarketMetrics) IncRebuild() {

@@ -26,7 +26,7 @@ func (o *OrderProcessor) isolate(shutdownCtx, dbCtx context.Context, batch []*qu
 	for i := range batch {
 		qe := batch[i]
 		single := batch[i : i+1]
-		result, rejected, _, err := o.processBatchCaptured(dbCtx, single)
+		result, rejected, _, err := o.processBatchCaptured(dbCtx, single, false)
 		if err == nil {
 			// A healthy order committed on its own; record its outcome (but not batch_size /
 			// batches_total — the drained batch was already counted as poison_isolated).
@@ -64,10 +64,8 @@ func (o *OrderProcessor) isolate(shutdownCtx, dbCtx context.Context, batch []*qu
 		}
 		o.logger.Warn(fmt.Sprintf("order processor %s-%s: poison candidate %s (failure %d/%d), requeueing: %s",
 			o.market.BaseSymbol, o.market.QuoteSymbol, key, o.failures[key], maxOrderFailures, err))
-		if qe.delivery != nil {
-			if nerr := qe.delivery.Nack(); nerr != nil {
-				o.logger.Error(fmt.Sprintf("order processor: nack failed id=%s: %s", qe.delivery.ID(), nerr))
-			}
+		if nerr := qe.delivery.Nack(); nerr != nil {
+			o.logger.Error(fmt.Sprintf("order processor: nack failed id=%s: %s", qe.delivery.ID(), nerr))
 		}
 		requeued = true
 	}
@@ -95,9 +93,6 @@ func orderKey(qe *queuedEvent) uuid.UUID {
 	}
 	if qe.cancel != nil {
 		return qe.cancel.OrderID
-	}
-	if qe.expire != nil {
-		return *qe.expire
 	}
 	return uuid.UUID{}
 }

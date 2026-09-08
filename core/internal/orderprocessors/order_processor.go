@@ -65,14 +65,13 @@ type orderRepository interface {
 }
 
 // queuedEvent carries a validated, decoded event together with its broker delivery so
-// the matcher can ack/nack it after the batch commits. delivery is nil for a synthetic
-// expiry event (see buildExpiryBatch), which has no broker message to ack/nack — the
-// matcher's ack/nack helpers must treat that as a no-op.
+// the matcher can ack/nack it after the batch commits. Every queuedEvent originates from a broker
+// message, so delivery is always set — expiry is not an event but a sweep the match callback runs
+// (see buildMatch).
 type queuedEvent struct {
 	delivery *oeq.OrderDelivery
 	open     *oeq.OpenOrderEvent   // set for an open-order event
 	cancel   *oeq.CancelOrderEvent // set for a cancel-order event
-	expire   *uuid.UUID            // set for a synthetic TTL-expiry event
 }
 
 type OrderProcessor struct {
@@ -95,18 +94,7 @@ type OrderProcessor struct {
 	// failures counts consecutive isolation failures per order id; accessed only by the
 	// matcher goroutine. An order is dead-lettered once it reaches maxOrderFailures.
 	failures map[uuid.UUID]int
-	// quarantined holds expiring orders the matcher has given up on. A synthetic expiry event has no
-	// broker message, so it cannot be dead-lettered and requeued out of the way like a real order:
-	// without this set ExpireDue would re-derive it every sweep, wedging the market in a permanent
-	// isolate/rebuild loop. Matcher goroutine only, same as failures.
-	//
-	// Entries are dropped by pruneQuarantine once the order leaves the book, so settling one clears
-	// it without a restart. A core restart also clears the set wholesale, giving every quarantined
-	// order one more chance by which point an operator may have fixed the root cause.
-	//
-	// Quarantine does NOT release the order's blocked funds — see `cli reconcile balances`.
-	quarantined map[uuid.UUID]struct{}
-	dlq         deadLetterer
+	dlq      deadLetterer
 }
 
 // Start hydrates the book from the DB, launches the matcher goroutine, then blocks on
@@ -187,7 +175,6 @@ func NewOrderProcessor(
 		},
 		ordersChannel: make(chan *queuedEvent, orderChannelBuffer),
 		failures:      make(map[uuid.UUID]int),
-		quarantined:   make(map[uuid.UUID]struct{}),
 		dlq:           dlq,
 	}
 }

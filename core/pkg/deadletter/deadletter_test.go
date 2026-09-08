@@ -90,10 +90,10 @@ func TestNormalisePayloadKeepsUnparseableMessagesMarshalable(t *testing.T) {
 	}
 }
 
-// A quarantined expiry has no broker message and no order payload behind it; those fields must drop
-// out of the wire format rather than appearing as empty noise an operator has to read past.
+// Optional fields must drop out of the wire format rather than appearing as empty noise an operator
+// has to read past.
 func TestEnvelopeOmitsEmptyOptionalFields(t *testing.T) {
-	raw, err := json.Marshal(Envelope{MarketRef: "ETH-BTC", Reason: ReasonQuarantined})
+	raw, err := json.Marshal(Envelope{MarketRef: "ETH-BTC", Reason: ReasonPoison})
 	if err != nil {
 		t.Fatal(err)
 	}

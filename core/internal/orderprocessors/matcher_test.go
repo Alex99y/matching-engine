@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
-	"github.com/alex99y/matching-engine/core/pkg/deadletter"
+	oeq "github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
 	"github.com/google/uuid"
 )
@@ -21,6 +21,7 @@ type expiryHydrationRepo struct {
 	orders  []repository.OpenOrderHydration
 	batches int
 	closed  []uuid.UUID
+	matches int
 }
 
 func (r *expiryHydrationRepo) ProcessBatch(ctx context.Context, incoming []repository.IncomingOrder, match repository.MatchFunc) error {
@@ -33,8 +34,15 @@ func (r *expiryHydrationRepo) ProcessBatch(ctx context.Context, incoming []repos
 	}
 	r.mu.Lock()
 	r.closed = append(r.closed, result.ClosedOpenOrders...)
+	r.matches += len(result.Matches)
 	r.mu.Unlock()
 	return nil
+}
+
+func (r *expiryHydrationRepo) matchCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.matches
 }
 
 func (r *expiryHydrationRepo) LoadOpenOrders(ctx context.Context, marketID int) ([]repository.OpenOrderHydration, error) {
@@ -90,10 +98,18 @@ func (r *poisonExpiryRepo) ProcessBatch(ctx context.Context, incoming []reposito
 	r.mu.Lock()
 	r.batches++
 	r.mu.Unlock()
-	if _, err := match(fundedIDs(incoming, false)); err != nil {
+	result, err := match(fundedIDs(incoming, false))
+	if err != nil {
 		return err
 	}
-	return repository.ErrPoison
+	// The poison is the expiry's own settlement write, not the batch as a whole: only a result
+	// carrying a closed resting order (which only the sweep produces here) fails. A batch whose
+	// sweep was suppressed — every isolated one — must commit, or the test could not tell
+	// "isolation skips the sweep" from "isolation is broken".
+	if len(result.ClosedOpenOrders) > 0 {
+		return repository.ErrPoison
+	}
+	return nil
 }
 
 func (r *poisonExpiryRepo) LoadOpenOrders(ctx context.Context, marketID int) ([]repository.OpenOrderHydration, error) {
@@ -109,68 +125,69 @@ func (r *poisonExpiryRepo) counts() (batches, hydrates int) {
 	return r.batches, r.hydrates
 }
 
-// An expiring order that can never be committed is quarantined instead of being re-derived every
-// sweep. It has no broker message, so it cannot be dead-lettered and acked out of the way like a
-// real order — without quarantine the market wedges permanently, rebuilding the book on every tick.
+// An expiry whose settlement write fails deterministically must not take the market down with it,
+// and — the sharp edge — must never get a healthy order dead-lettered in its place.
 //
-// The filter has to survive a rebuild: loadBook re-hydrates the expiry index from the DB, so
-// removing the order from the book instead would resurrect it on the very next failure.
-func TestMatcherQuarantinesPoisonExpiry(t *testing.T) {
-	orderID := uuid.New()
+// isolate replays a failed batch one event at a time through the same match callback. If that
+// callback re-ran the sweep, the poison expiry would fail every one of those single-order
+// transactions, isolate would blame each innocent order, and after maxOrderFailures it would park a
+// perfectly good order in the dead-letter queue. sweepExpiries=false during isolation is what
+// prevents that, and this test is its guard.
+func TestPoisonExpiryNeverDeadLettersAHealthyOrder(t *testing.T) {
+	expiring := uuid.New()
 	past := time.Now().Add(-time.Hour).Unix()
-	repo := &poisonExpiryRepo{orders: []repository.OpenOrderHydration{restingHydration(orderID, &past)}}
+	repo := &poisonExpiryRepo{orders: []repository.OpenOrderHydration{restingHydration(expiring, &past)}}
 	dlq := &fakeDeadLetterer{}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), &fakeQueue{}, repo, nil, nil, dlq, "")
+	rec := &ackRecorder{}
+	q := &fakeQueue{deliveries: []*oeq.OrderDelivery{rec.delivery(limitBuy())}}
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, dlq, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go p.Start(ctx)
 
-	// Each sweep costs the order one failure, so quarantine is maxOrderFailures ticks away.
-	runUntilWithin(t, 2*maxOrderFailures*expirySweepInterval, func() bool { return dlq.count() == 1 })
+	// Long enough for the sweep to have failed far more than maxOrderFailures times.
+	time.Sleep(2 * maxOrderFailures * expirySweepInterval)
 
-	parked := dlq.parked[0]
-	if parked.Reason != deadletter.ReasonQuarantined {
-		t.Fatalf("parked reason=%q want %q", parked.Reason, deadletter.ReasonQuarantined)
+	if n := dlq.count(); n != 0 {
+		t.Fatalf("parked %d command(s) — a poison expiry must never dead-letter an order: %v", n, dlq.reasons())
 	}
-	if parked.OrderID != orderID.String() {
-		t.Fatalf("parked order=%q want %q", parked.OrderID, orderID)
+	// The real order isolates cleanly with the sweep off, so it commits and is acked.
+	if a, _ := rec.counts(); a != 1 {
+		t.Fatalf("healthy order acks=%d, want 1 — isolation must still commit real orders", a)
 	}
-
-	// Once quarantined the sweep must stop touching it, even though the book still holds it and
-	// every rebuild re-indexes its TTL.
-	settled, _ := repo.counts()
-	time.Sleep(3 * expirySweepInterval)
-	after, _ := repo.counts()
-	if after != settled {
-		t.Fatalf("quarantined order still swept: batches went %d -> %d", settled, after)
+	if batches, _ := repo.counts(); batches == 0 {
+		t.Fatal("expected the sweep to have been attempted")
 	}
 }
 
-// Quarantine must be forgettable. Once the order leaves the book — settled by an operator, cancelled
-// by its owner, or filled — the set must drop it, or the gauge built on it (documented as "alert on
-// > 0") would keep firing for a closed incident until the next core restart.
-func TestPruneQuarantineForgetsOrdersThatLeftTheBook(t *testing.T) {
-	gone, stillResting := uuid.New(), uuid.New()
+// The correctness win: expiry is swept at the start of the batch, before the batch's own events are
+// replayed, so a taker can never trade against a maker whose TTL has already elapsed. Under the old
+// 1 s ticker there was a window of up to a second in which exactly that could happen.
+func TestIncomingTakerCannotTradeAgainstAnExpiredMaker(t *testing.T) {
+	maker := uuid.New()
 	past := time.Now().Add(-time.Hour).Unix()
-	repo := &expiryHydrationRepo{orders: []repository.OpenOrderHydration{restingHydration(stillResting, &past)}}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), &fakeQueue{}, repo, nil, nil, nil, "")
+	repo := &expiryHydrationRepo{orders: []repository.OpenOrderHydration{restingHydration(maker, &past)}}
 
-	// Hydrate the book directly rather than via Start, so the matcher goroutine never races the
-	// assertions — pruneQuarantine is normally only ever called from that goroutine.
-	if !p.loadBook(context.Background(), context.Background()) {
-		t.Fatal("hydration failed")
+	// restingHydration rests a sell at 100; this buy crosses it and would fill but for the sweep.
+	taker := limitBuy()
+	taker.Price = 100
+	rec := &ackRecorder{}
+	q := &fakeQueue{deliveries: []*oeq.OrderDelivery{rec.delivery(taker)}}
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, nil, "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Start(ctx)
+
+	runUntil(t, func() bool { a, _ := rec.counts(); return a == 1 })
+
+	_, closed := repo.snapshot()
+	if len(closed) != 1 || closed[0] != maker {
+		t.Fatalf("expired maker was not retired: closed=%v", closed)
 	}
-	p.quarantined[gone] = struct{}{}
-	p.quarantined[stillResting] = struct{}{}
-
-	p.pruneQuarantine()
-
-	if _, ok := p.quarantined[gone]; ok {
-		t.Fatal("an order no longer in the book must be forgotten")
-	}
-	if _, ok := p.quarantined[stillResting]; !ok {
-		t.Fatal("an order still resting is still quarantined — forgetting it would resume the sweep loop")
+	if n := repo.matchCount(); n != 0 {
+		t.Fatalf("taker traded against an expired maker (%d match(es))", n)
 	}
 }
 

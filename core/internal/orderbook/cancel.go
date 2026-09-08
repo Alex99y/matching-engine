@@ -34,11 +34,6 @@ func (o *OrderBook) ExpireOrder(orderID uuid.UUID, result *repository.BatchResul
 	o.closeResting(stored, result, statusExpired)
 }
 
-func (o *OrderBook) IsResting(orderID uuid.UUID) bool {
-	_, ok := o.index[orderID]
-	return ok
-}
-
 // RestingOwner addresses a private stream event at an order the matcher could not act on; a cancel
 // event carries no user id of its own.
 func (o *OrderBook) RestingOwner(orderID uuid.UUID) (uuid.UUID, bool) {

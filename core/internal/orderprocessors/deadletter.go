@@ -13,8 +13,6 @@ import (
 
 var errNoDeadLetterPublisher = errors.New("no dead-letter publisher configured")
 
-const eventTypeExpiry = "expiry"
-
 type deadLetterer interface {
 	Publish(ctx context.Context, env *deadletter.Envelope) error
 }
@@ -55,24 +53,14 @@ func (o *OrderProcessor) parkPoison(ctx context.Context, qe *queuedEvent, key uu
 		Reason:   deadletter.ReasonPoison,
 		Error:    cause.Error(),
 		Failures: failures,
+		Payload:  qe.delivery.Raw,
 	}
 
 	switch {
-	case qe.expire != nil:
-		env.EventType = eventTypeExpiry
-		env.Reason = deadletter.ReasonQuarantined
-		o.quarantined[key] = struct{}{}
-		o.metrics.SetQuarantined(len(o.quarantined))
-		o.logger.Error(fmt.Sprintf(
-			"order processor %s: QUARANTINED expiring order %s after %d failures — it will no longer be swept, "+
-				"and its blocked funds need operator settlement: %v", o.marketRef, key, failures, cause))
 	case qe.cancel != nil:
 		env.EventType = string(oeq.EventTypeCancelOrder)
 	case qe.open != nil:
 		env.EventType = string(oeq.EventTypeOpenOrder)
-	}
-	if qe.delivery != nil {
-		env.Payload = qe.delivery.Raw
 	}
 
 	o.deadLetter(ctx, qe.delivery, env)

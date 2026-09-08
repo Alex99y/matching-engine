@@ -3,6 +3,7 @@ package orderbook
 import (
 	"bytes"
 
+	oeq "github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 	"github.com/google/uuid"
 )
 
@@ -23,19 +24,30 @@ func expiryLess(a, b *expiryEntry) bool {
 	return bytes.Compare(a.orderID[:], b.orderID[:]) < 0
 }
 
-// ExpireDue returns the ids of every resting order whose TTL has elapsed as of now (unix
-// seconds). It is a pure read (no mutation, no I/O): the index is sorted by expiry time, so
-// this walks only the *due* prefix and stops at the first order that isn't — O(k log n) for
-// k due orders, not O(book size). The caller removes each returned id via ExpireOrder inside
-// the batch/transaction that persists the change.
-func (o *OrderBook) ExpireDue(now int64) []uuid.UUID {
+// Expired reports whether an order's TTL has elapsed as of now (unix seconds).
+func Expired(event *oeq.OpenOrderEvent, now int64) bool {
+	return event.ExpiresAt != nil && *event.ExpiresAt <= now
+}
+
+// ExpireDue returns the ids of at most limit resting orders whose TTL has elapsed as of now (unix seconds).
+func (o *OrderBook) ExpireDue(now int64, limit int) []uuid.UUID {
 	var due []uuid.UUID
 	o.expiries.Ascend(func(e *expiryEntry) bool {
-		if e.expiresAt > now {
+		if e.expiresAt > now || len(due) == limit {
 			return false
 		}
 		due = append(due, e.orderID)
 		return true
+	})
+	return due
+}
+
+// HasDue reports whether any resting order is due
+func (o *OrderBook) HasDue(now int64) bool {
+	due := false
+	o.expiries.Ascend(func(e *expiryEntry) bool {
+		due = e.expiresAt <= now
+		return false
 	})
 	return due
 }
