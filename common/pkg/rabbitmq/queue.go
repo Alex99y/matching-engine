@@ -29,6 +29,12 @@ type ChannelArgs struct {
 	PrefetchSize  int
 }
 
+// Binding attaches the queue to an exchange under a routing key.
+type Binding struct {
+	Exchange   string
+	RoutingKey string
+}
+
 type QueueArgs struct {
 	Name       string
 	Durable    bool
@@ -36,6 +42,7 @@ type QueueArgs struct {
 	Exclusive  bool
 	NoWait     bool
 	Args       map[string]any
+	Bindings   []Binding
 }
 
 func NewQueue(
@@ -51,14 +58,7 @@ func NewQueue(
 	if err != nil {
 		return nil, err
 	}
-	queue, err := channel.QueueDeclare(
-		queueArgs.Name,
-		queueArgs.Durable,
-		queueArgs.AutoDelete,
-		queueArgs.Exclusive,
-		queueArgs.NoWait,
-		queueArgs.Args,
-	)
+	queue, err := declareAndBind(channel, queueArgs)
 	if err != nil {
 		channel.Close()
 		return nil, err
@@ -71,6 +71,41 @@ func NewQueue(
 		channelArgs: channelArgs,
 		queueArgs:   queueArgs,
 	}, nil
+}
+
+// DeclareQueue declares a queue and its bindings on a throwaway channel, for topology a process
+// creates but never itself consumes from or publishes directly to. Unlike NewQueue it holds no
+// channel open afterwards, so it is safe to call repeatedly to re-assert topology after a reconnect.
+func DeclareQueue(client *RabbitMQClient, args QueueArgs) error {
+	ch, err := client.Channel()
+	if err != nil {
+		return err
+	}
+	defer ch.Close()
+	if _, err := declareAndBind(ch, args); err != nil {
+		return err
+	}
+	return nil
+}
+
+func declareAndBind(ch *amqp091.Channel, args QueueArgs) (amqp091.Queue, error) {
+	queue, err := ch.QueueDeclare(
+		args.Name,
+		args.Durable,
+		args.AutoDelete,
+		args.Exclusive,
+		args.NoWait,
+		args.Args,
+	)
+	if err != nil {
+		return amqp091.Queue{}, err
+	}
+	for _, b := range args.Bindings {
+		if err := ch.QueueBind(queue.Name, b.RoutingKey, b.Exchange, args.NoWait, nil); err != nil {
+			return amqp091.Queue{}, fmt.Errorf("rabbitmq bind %q to %q: %w", queue.Name, b.Exchange, err)
+		}
+	}
+	return queue, nil
 }
 
 func (q *Queue) Close() error {
@@ -198,14 +233,7 @@ func (q *Queue) reopen(stale *amqp091.Channel) error {
 	if err != nil {
 		return fmt.Errorf("rabbitmq reopen channel: %w", err)
 	}
-	queue, err := ch.QueueDeclare(
-		q.queueArgs.Name,
-		q.queueArgs.Durable,
-		q.queueArgs.AutoDelete,
-		q.queueArgs.Exclusive,
-		q.queueArgs.NoWait,
-		q.queueArgs.Args,
-	)
+	queue, err := declareAndBind(ch, q.queueArgs)
 	if err != nil {
 		ch.Close()
 		return fmt.Errorf("rabbitmq reopen queue declare: %w", err)

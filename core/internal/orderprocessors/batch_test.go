@@ -13,7 +13,7 @@ func TestMatcherAcksAfterCommit(t *testing.T) {
 	rec := &ackRecorder{}
 	q := &fakeQueue{deliveries: []*oeq.OrderDelivery{rec.delivery(limitBuy()), rec.delivery(limitBuy())}}
 	repo := &fakeRepo{}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, "")
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, nil, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)
@@ -38,7 +38,7 @@ func TestMatcherRejectionNoRebuild(t *testing.T) {
 	rec := &ackRecorder{}
 	q := &fakeQueue{deliveries: []*oeq.OrderDelivery{rec.delivery(limitBuy())}}
 	repo := &fakeRepo{fundNone: true}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, "")
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, nil, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)

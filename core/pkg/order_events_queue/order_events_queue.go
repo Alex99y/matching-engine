@@ -29,32 +29,30 @@ func (o *OrdersEventsQueue) EmitNewOrderToME(
 	return nil
 }
 
-// OrderDelivery couples a parsed order event with its broker acknowledgement
-// controls. Under ack-after-commit the matcher acknowledges a message only once the
-// batch containing it is durably committed, so ack/nack are deferred to the matcher
-// rather than performed here by the consumer.
+// OrderDelivery couples an order event with its broker acknowledgement controls. Under
+// ack-after-commit the matcher acknowledges a message only once the batch containing it is durably
+// committed, so ack/nack are deferred to the matcher rather than performed here by the consumer.
+//
+// Event is nil when the envelope did not parse. Such a delivery is still forwarded rather than
+// discarded here, so that the processor remains the single owner of dead-letter policy; Raw always
+// carries the original bytes so they can be parked verbatim.
 type OrderDelivery struct {
-	Event  *OrderEvent
-	id     string
-	ack    func() error
-	nack   func() error
-	reject func() error
+	Event *OrderEvent
+	Raw   []byte
+	id    string
+	ack   func() error
+	nack  func() error
 }
 
 func (d *OrderDelivery) ID() string  { return d.id }
 func (d *OrderDelivery) Ack() error  { return d.ack() }
 func (d *OrderDelivery) Nack() error { return d.nack() }
 
-// Reject discards the message without requeueing it (dead-letter). With a dead-letter
-// exchange configured it is routed there for inspection; otherwise it is dropped. Used
-// by the matcher to evict a poison order that fails deterministically.
-func (d *OrderDelivery) Reject() error { return d.reject() }
-
-// NewOrderDelivery builds a delivery from an already-parsed event and its ack/nack/reject
-// controls. The consumer constructs deliveries directly; this is the exported path
-// used by callers (and tests) that supply their own acknowledgement hooks.
-func NewOrderDelivery(event *OrderEvent, id string, ack, nack, reject func() error) *OrderDelivery {
-	return &OrderDelivery{Event: event, id: id, ack: ack, nack: nack, reject: reject}
+// NewOrderDelivery builds a delivery from an already-parsed event and its acknowledgement controls.
+// The consumer constructs deliveries directly; this is the exported path used by callers (and tests)
+// that supply their own hooks.
+func NewOrderDelivery(event *OrderEvent, raw []byte, id string, ack, nack func() error) *OrderDelivery {
+	return &OrderDelivery{Event: event, Raw: raw, id: id, ack: ack, nack: nack}
 }
 
 // OrderDeliveryHandler receives each successfully parsed delivery. It must not block
@@ -62,26 +60,21 @@ func NewOrderDelivery(event *OrderEvent, id string, ack, nack, reject func() err
 // eventual ack/nack passes to whoever holds the OrderDelivery.
 type OrderDeliveryHandler func(*OrderDelivery)
 
-// WatchForOrderEvents consumes the market's command queue. It parses each envelope,
-// dead-letters malformed ones, and forwards the rest to the handler without
-// acknowledging — the matcher acks/nacks after the batch commits.
+// WatchForOrderEvents consumes the market's command queue and forwards every delivery to the
+// handler without acknowledging — the matcher acks/nacks after the batch commits.
 func (o *OrdersEventsQueue) WatchForOrderEvents(ctx context.Context, handler OrderDeliveryHandler) error {
 	return o.queue.Consume(ctx, func(args *rabbitmq.ConsumeArgs) {
-		event, err := ParseOrderEvent(args.RawMessage())
+		raw := args.RawMessage()
+		event, err := ParseOrderEvent(raw)
 		if err != nil {
-			// API sent a malformed message — reject without requeue (dead-letter it, do not retry).
 			o.logger.Error(fmt.Sprintf("order_events_queue: malformed message id=%s: %v", args.Id(), err))
-			if rejectErr := args.Reject(); rejectErr != nil {
-				o.logger.Error(fmt.Sprintf("order_events_queue: reject failed id=%s: %v", args.Id(), rejectErr))
-			}
-			return
 		}
 		handler(&OrderDelivery{
-			Event:  event,
-			id:     args.Id(),
-			ack:    args.Ack,
-			nack:   args.Nack,
-			reject: args.Reject,
+			Event: event,
+			Raw:   raw,
+			id:    args.Id(),
+			ack:   args.Ack,
+			nack:  args.Nack,
 		})
 	})
 }

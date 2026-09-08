@@ -36,28 +36,14 @@ func (o *OrderProcessor) matcher(shutdownCtx, dbCtx context.Context) {
 		case <-heartbeatTicker.C:
 			o.emitHeartbeat()
 		case now := <-expiryTicker.C:
-			if batch := o.buildExpiryBatch(now); batch != nil {
-				if !o.runBatch(shutdownCtx, dbCtx, batch) {
-					return // shutdown requested during recovery
-				}
+			if !o.book.HasDue(now.Unix()) {
+				continue
+			}
+			if !o.runBatch(shutdownCtx, dbCtx, nil) {
+				return // shutdown requested during recovery
 			}
 		}
 	}
-}
-
-// buildExpiryBatch asks the book (in-memory, no I/O) which resting orders are due, and wraps
-// each as a synthetic cancel-like event with no broker delivery. nil means nothing was due —
-// the common case for most ticks, since ExpireDue only walks the due prefix of its index.
-func (o *OrderProcessor) buildExpiryBatch(now time.Time) []*queuedEvent {
-	due := o.book.ExpireDue(now.Unix())
-	if len(due) == 0 {
-		return nil
-	}
-	batch := make([]*queuedEvent, 0, len(due))
-	for i := range due {
-		batch = append(batch, &queuedEvent{expire: &due[i]})
-	}
-	return batch
 }
 
 // collectBatch extends the just-received first event into a micro-batch, collecting more without

@@ -26,7 +26,7 @@ func (o *OrderProcessor) isolate(shutdownCtx, dbCtx context.Context, batch []*qu
 	for i := range batch {
 		qe := batch[i]
 		single := batch[i : i+1]
-		result, rejected, _, err := o.processBatchCaptured(dbCtx, single)
+		result, rejected, _, err := o.processBatchCaptured(dbCtx, single, false)
 		if err == nil {
 			// A healthy order committed on its own; record its outcome (but not batch_size /
 			// batches_total — the drained batch was already counted as poison_isolated).
@@ -57,26 +57,15 @@ func (o *OrderProcessor) isolate(shutdownCtx, dbCtx context.Context, batch []*qu
 		if o.failures[key] >= maxOrderFailures {
 			o.logger.Error(fmt.Sprintf("order processor %s-%s: DEAD-LETTERING poison order %s after %d failures: %s",
 				o.market.BaseSymbol, o.market.QuoteSymbol, key, o.failures[key], err))
+			failures := o.failures[key]
 			delete(o.failures, key)
-			o.metrics.IncDeadLetter()
-			if qe.delivery == nil {
-				// A synthetic expiry event has no broker message to reject; unlike a dead-lettered
-				// real order it isn't gone for good — ExpireDue re-derives it from the book every
-				// tick, so it resurfaces if still due. An operator has to fix the root cause, not
-				// requeue it.
-				o.logger.Warn(fmt.Sprintf("order processor %s-%s: giving up isolating poison expiry for order %s after %d failures — it will resurface on the next expiry sweep",
-					o.market.BaseSymbol, o.market.QuoteSymbol, key, o.failures[key]))
-			} else if rerr := qe.delivery.Reject(); rerr != nil {
-				o.logger.Error(fmt.Sprintf("order processor: reject (dead-letter) failed id=%s: %s", qe.delivery.ID(), rerr))
-			}
+			o.parkPoison(dbCtx, qe, key, failures, err)
 			continue
 		}
 		o.logger.Warn(fmt.Sprintf("order processor %s-%s: poison candidate %s (failure %d/%d), requeueing: %s",
 			o.market.BaseSymbol, o.market.QuoteSymbol, key, o.failures[key], maxOrderFailures, err))
-		if qe.delivery != nil {
-			if nerr := qe.delivery.Nack(); nerr != nil {
-				o.logger.Error(fmt.Sprintf("order processor: nack failed id=%s: %s", qe.delivery.ID(), nerr))
-			}
+		if nerr := qe.delivery.Nack(); nerr != nil {
+			o.logger.Error(fmt.Sprintf("order processor: nack failed id=%s: %s", qe.delivery.ID(), nerr))
 		}
 		requeued = true
 	}
@@ -104,9 +93,6 @@ func orderKey(qe *queuedEvent) uuid.UUID {
 	}
 	if qe.cancel != nil {
 		return qe.cancel.OrderID
-	}
-	if qe.expire != nil {
-		return *qe.expire
 	}
 	return uuid.UUID{}
 }

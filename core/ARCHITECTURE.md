@@ -72,8 +72,9 @@ core consumer (per market)
 The consumer is kept free of I/O — it validates (no DB access) and enqueues. Crucially it
 does **not** acknowledge the message. Under **ack-after-commit**, ownership of the ack/nack
 travels with the event to the matcher, which acknowledges only once the transaction that
-persists the order has committed (a malformed envelope is still rejected/dead-lettered
-immediately, and an invalid/unknown event is dropped-and-acked since it has no DB effect).
+persists the order has committed. A command that can never be processed — malformed, invalid,
+or of an unknown type — is instead parked in the dead-letter queue and acked immediately, since
+it has no DB effect and retrying it would only fail again.
 
 > **Why not ack on enqueue?** Acking the moment the order is buffered would lose it on a
 > commit failure — gone from the broker, never written to the DB. Deferring the ack to

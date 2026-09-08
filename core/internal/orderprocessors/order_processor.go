@@ -65,14 +65,13 @@ type orderRepository interface {
 }
 
 // queuedEvent carries a validated, decoded event together with its broker delivery so
-// the matcher can ack/nack it after the batch commits. delivery is nil for a synthetic
-// expiry event (see buildExpiryBatch), which has no broker message to ack/nack — the
-// matcher's ack/nack helpers must treat that as a no-op.
+// the matcher can ack/nack it after the batch commits. Every queuedEvent originates from a broker
+// message, so delivery is always set — expiry is not an event but a sweep the match callback runs
+// (see buildMatch).
 type queuedEvent struct {
 	delivery *oeq.OrderDelivery
 	open     *oeq.OpenOrderEvent   // set for an open-order event
 	cancel   *oeq.CancelOrderEvent // set for a cancel-order event
-	expire   *uuid.UUID            // set for a synthetic TTL-expiry event
 }
 
 type OrderProcessor struct {
@@ -87,15 +86,15 @@ type OrderProcessor struct {
 	stopMatcher   atomic.Bool
 	// Event-log stream (docs/event-log.md). publisher is nil-able (disables emission). epoch is a
 	// fresh id per core start; seq is a per-market monotonic counter advanced once per book delta,
-	// so the API can detect a gap (missed delta) or restart (changed epoch). Touched only by the
-	// matcher goroutine, so no synchronisation.
+	// so the API can detect a gap (missed delta) or restart (changed epoch)
 	publisher eventPublisher
 	marketRef string
 	epoch     string
-	seq       uint64
+	seq       atomic.Uint64
 	// failures counts consecutive isolation failures per order id; accessed only by the
 	// matcher goroutine. An order is dead-lettered once it reaches maxOrderFailures.
 	failures map[uuid.UUID]int
+	dlq      deadLetterer
 }
 
 // Start hydrates the book from the DB, launches the matcher goroutine, then blocks on
@@ -119,7 +118,8 @@ func (o *OrderProcessor) Start(ctx context.Context) {
 		o.matcher(ctx, dbCtx)
 	}()
 
-	if err := o.queue.WatchForOrderEvents(ctx, o.handleDelivery); err != nil {
+	handle := func(d *oeq.OrderDelivery) { o.handleDelivery(dbCtx, d) }
+	if err := o.queue.WatchForOrderEvents(ctx, handle); err != nil {
 		o.logger.Error(fmt.Sprintf("order processor %s-%s: consumer error: %s",
 			o.market.BaseSymbol, o.market.QuoteSymbol, err))
 	}
@@ -140,6 +140,7 @@ func NewOrderProcessor(
 	repo orderRepository,
 	coreMetrics *metrics.CoreMetrics,
 	publisher eventPublisher,
+	dlq deadLetterer,
 	epoch string,
 ) *OrderProcessor {
 	if log == nil {
@@ -174,5 +175,6 @@ func NewOrderProcessor(
 		},
 		ordersChannel: make(chan *queuedEvent, orderChannelBuffer),
 		failures:      make(map[uuid.UUID]int),
+		dlq:           dlq,
 	}
 }

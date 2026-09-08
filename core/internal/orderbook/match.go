@@ -10,8 +10,19 @@ import (
 // This file holds the taker-matching algorithm: crossing an incoming order against the
 // resting book, recording fills, and settling the taker's own outcome (rest, cancel, or fill).
 
+// ExpireIncoming retires a taker whose TTL elapsed before the matcher reached it — an order can
+// wait in the command queue long enough to outlive its own expiry. It never touches the book and
+// never trades: the whole reservation is released and the order is recorded as cancelled, reported
+// on the live stream as expired.
+func (o *OrderBook) ExpireIncoming(event *oeq.OpenOrderEvent, result *repository.BatchResult) {
+	taker := newOrder(event, o.market.BaseScale)
+	o.settleTakerCompletion(taker, false, result)
+	o.emitTakerOutcome(taker, false, false, statusExpired, result)
+}
+
 // MatchOrder assumes the caller already moved the order's funds balance -> blocked; it
-// never reserves funds itself.
+// never reserves funds itself. It also assumes the caller has already screened the order for
+// expiry (see Expired / ExpireIncoming) — an expired order must never reach the book.
 func (o *OrderBook) MatchOrder(event *oeq.OpenOrderEvent, result *repository.BatchResult) {
 	taker := newOrder(event, o.market.BaseScale)
 
@@ -37,7 +48,7 @@ func (o *OrderBook) MatchOrder(event *oeq.OpenOrderEvent, result *repository.Bat
 	rests := mayRest && o.takerRests(taker)
 	filled := o.takerFilled(taker)
 	o.settleTakerCompletion(taker, rests, result)
-	o.emitTakerOutcome(taker, rests, filled, result)
+	o.emitTakerOutcome(taker, rests, filled, "", result)
 }
 
 // takerFilled reports whether the taker got everything it could. Beyond an exact fill this
@@ -259,8 +270,9 @@ func (o *OrderBook) settleTakerCompletion(t *Order, rests bool, result *reposito
 // emitTakerOutcome writes the taker's orders row with its final status and either rests
 // it (GTC limit remainder) or records its cancelled remainder. filled is the completion
 // verdict from takerFilled — a filled order records no cancelled remainder even if a dust
-// budget was refunded.
-func (o *OrderBook) emitTakerOutcome(t *Order, rests, filled bool, result *repository.BatchResult) {
+// budget was refunded. streamReason overrides the live-stream status when non-empty, leaving the
+// persisted status alone — same convention as closeResting (see statusExpired).
+func (o *OrderBook) emitTakerOutcome(t *Order, rests, filled bool, streamReason string, result *repository.BatchResult) {
 	insert := DeriveInsertParams(t.OpenOrder, o.market)
 	status := takerStatus(t, rests, filled)
 	insert.Status = status
@@ -271,7 +283,11 @@ func (o *OrderBook) emitTakerOutcome(t *Order, rests, filled bool, result *repos
 	if !t.quoteDenom {
 		remaining = t.Remaining
 	}
-	o.recordOrderUpdate(t.OpenOrder.UserID, t.OpenOrder.OrderID, status, t.filledBase, remaining)
+	streamStatus := status
+	if streamReason != "" {
+		streamStatus = streamReason
+	}
+	o.recordOrderUpdate(t.OpenOrder.UserID, t.OpenOrder.OrderID, streamStatus, t.filledBase, remaining)
 
 	if rests {
 		o.rest(t)

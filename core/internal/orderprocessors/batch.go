@@ -40,32 +40,47 @@ func (o *OrderProcessor) buildIncoming(batch []*queuedEvent) []repository.Incomi
 // ProcessBatch's transaction, after funds are reserved, replaying the batch in arrival
 // order so cancels and opens interleave with strict FIFO priority; only funded opens
 // reach the book.
-func (o *OrderProcessor) buildMatch(batch []*queuedEvent) repository.MatchFunc {
+func (o *OrderProcessor) buildMatch(batch []*queuedEvent, sweepExpiries bool) repository.MatchFunc {
 	return func(fundedOrderIDs []uuid.UUID) (*repository.BatchResult, error) {
 		funded := make(map[uuid.UUID]struct{}, len(fundedOrderIDs))
 		for _, id := range fundedOrderIDs {
 			funded[id] = struct{}{}
 		}
 		result := repository.NewBatchResult()
+		now := time.Now().Unix()
+
+		if sweepExpiries {
+			for _, id := range o.book.ExpireDue(now, maxBatchSize) {
+				o.book.ExpireOrder(id, result)
+			}
+		}
+
 		for _, qe := range batch {
 			switch {
 			case qe.open != nil:
-				if _, ok := funded[qe.open.OrderID]; ok {
-					o.book.MatchOrder(qe.open, result)
-				} else {
+				switch {
+				case !isFunded(funded, qe.open.OrderID):
 					o.logger.Debug(fmt.Sprintf("Rejected order %s unsufficient balance", qe.open.OrderID))
 					// Unfunded: rejected at reservation, never reaches the book. Notify its owner
 					// so the private stream still carries a lifecycle event for it.
 					o.book.RecordRejection(qe.open.UserID, qe.open.OrderID)
+				case orderbook.Expired(qe.open, now):
+					// Outlived its TTL while queued: released, never matched, never rested.
+					o.book.ExpireIncoming(qe.open, result)
+				default:
+					o.book.MatchOrder(qe.open, result)
 				}
 			case qe.cancel != nil:
 				o.book.CancelOrder(qe.cancel, result)
-			case qe.expire != nil:
-				o.book.ExpireOrder(*qe.expire, result)
 			}
 		}
 		return result, nil
 	}
+}
+
+func isFunded(funded map[uuid.UUID]struct{}, id uuid.UUID) bool {
+	_, ok := funded[id]
+	return ok
 }
 
 // runBatch processes one micro-batch in a single transaction. On a transient failure it
@@ -73,9 +88,12 @@ func (o *OrderProcessor) buildMatch(batch []*queuedEvent) repository.MatchFunc {
 // isolates the poison order (committing the healthy ones). Returns false only when
 // shutdown is requested mid-recovery.
 func (o *OrderProcessor) runBatch(shutdownCtx, dbCtx context.Context, batch []*queuedEvent) bool {
-	result, rejected, elapsed, err := o.processBatchCaptured(dbCtx, batch)
+	result, rejected, elapsed, err := o.processBatchCaptured(dbCtx, batch, true)
 	if err == nil {
-		o.metrics.ObserveBatch(len(batch), elapsed)
+		if len(batch) > 0 {
+			// A sweep-only batch carries no events; recording it would skew batch_size toward zero.
+			o.metrics.ObserveBatch(len(batch), elapsed)
+		}
 		o.metrics.IncBatch(metrics.BatchCommitted)
 		o.afterCommit(result, rejected)
 		o.ackBatch(batch)
@@ -109,9 +127,9 @@ func (o *OrderProcessor) runBatch(shutdownCtx, dbCtx context.Context, batch []*q
 // processBatchCaptured runs one batch through the repository while capturing the matching result
 // and the funded count, so the caller can emit per-batch metrics. rejected is the number of open
 // orders that failed reservation (incoming open orders minus funded).
-func (o *OrderProcessor) processBatchCaptured(dbCtx context.Context, batch []*queuedEvent) (result *repository.BatchResult, rejected int, elapsed time.Duration, err error) {
+func (o *OrderProcessor) processBatchCaptured(dbCtx context.Context, batch []*queuedEvent, sweepExpiries bool) (result *repository.BatchResult, rejected int, elapsed time.Duration, err error) {
 	incoming := o.buildIncoming(batch)
-	mf := o.buildMatch(batch)
+	mf := o.buildMatch(batch, sweepExpiries)
 	funded := 0
 	start := time.Now()
 	err = o.repo.ProcessBatch(dbCtx, incoming, func(fundedIDs []uuid.UUID) (*repository.BatchResult, error) {
@@ -151,13 +169,8 @@ func (o *OrderProcessor) afterCommit(result *repository.BatchResult, rejected in
 	o.publishStream()
 }
 
-// ackBatch and nackBatch skip a nil delivery: a synthetic expiry event (see buildExpiryBatch)
-// has no broker message behind it, so there is nothing to ack/nack.
 func (o *OrderProcessor) ackBatch(batch []*queuedEvent) {
 	for _, qe := range batch {
-		if qe.delivery == nil {
-			continue
-		}
 		if err := qe.delivery.Ack(); err != nil {
 			o.logger.Error(fmt.Sprintf("order processor: ack failed id=%s: %s", qe.delivery.ID(), err))
 		}
@@ -166,9 +179,6 @@ func (o *OrderProcessor) ackBatch(batch []*queuedEvent) {
 
 func (o *OrderProcessor) nackBatch(batch []*queuedEvent) {
 	for _, qe := range batch {
-		if qe.delivery == nil {
-			continue
-		}
 		if err := qe.delivery.Nack(); err != nil {
 			o.logger.Error(fmt.Sprintf("order processor: nack failed id=%s: %s", qe.delivery.ID(), err))
 		}

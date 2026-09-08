@@ -15,7 +15,7 @@ func TestHydrate_RepopulatesExpiryIndex(t *testing.T) {
 	o := testBook()
 	id := restSellExpiring(o, uuid.New(), 100, 10, unixPtr(1000))
 
-	if got := o.ExpireDue(1000); len(got) != 1 || got[0] != id {
+	if got := o.ExpireDue(1000, maxExpirySweep); len(got) != 1 || got[0] != id {
 		t.Fatalf("ExpireDue after Hydrate = %v, want [%s]", got, id)
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/alex99y/matching-engine/common/pkg/marketdata"
 	"github.com/alex99y/matching-engine/common/pkg/observability"
+	"github.com/alex99y/matching-engine/core/pkg/deadletter"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -23,6 +24,7 @@ const (
 	metricReserveRejections = "reserve_rejections_total"
 	metricPoisonIsolations  = "poison_isolations_total"
 	metricDeadLetters       = "dead_letters_total"
+	metricDLQPublishFails   = "dlq_publish_failures_total"
 	metricBookRebuilds      = "book_rebuilds_total"
 	metricBookOrders        = "book_orders"
 	metricBookBestPrice     = "book_best_price"
@@ -62,6 +64,7 @@ var (
 	marketResult     = []string{"market", "result"}
 	marketSide       = []string{"market", "side"}
 	marketType       = []string{"market", "type"}
+	marketReason     = []string{"market", "reason"}
 	batchSizeBuckets = []float64{1, 2, 4, 8, 16, 32, 64, 96, 128}
 	batchDurBuckets  = []float64{0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1}
 
@@ -70,6 +73,13 @@ var (
 	streamEventTypes = []string{
 		string(marketdata.EventTrade), string(marketdata.EventBook), string(marketdata.EventOrder),
 		string(marketdata.EventSnapshot), string(marketdata.EventHeartbeat),
+	}
+
+	// deadLetterReasons is the closed set of dead_letters_total "reason" label values, pre-bound per
+	// market so the parking-lot path stays allocation-free like the rest of the hot path.
+	deadLetterReasons = []string{
+		string(deadletter.ReasonMalformed), string(deadletter.ReasonInvalid),
+		string(deadletter.ReasonUnknownType), string(deadletter.ReasonPoison),
 	}
 )
 
@@ -84,6 +94,7 @@ type CoreMetrics struct {
 	reserveRejections *observability.CounterMetric
 	poisonIsolations  *observability.CounterMetric
 	deadLetters       *observability.CounterMetric
+	dlqPublishFails   *observability.CounterMetric
 	bookRebuilds      *observability.CounterMetric
 	bookOrders        *observability.GaugeMetric
 	bookBestPrice     *observability.GaugeMetric
@@ -136,7 +147,12 @@ func NewCoreMetrics(pm *observability.PrometheusMetrics) (*CoreMetrics, error) {
 		return nil, err
 	}
 	if c.deadLetters, err = pm.RegisterCounter(observability.CounterDefinition{
-		Name: metricDeadLetters, Help: "Orders dead-lettered after exceeding the failure cap.", LabelKeys: marketLabel,
+		Name: metricDeadLetters, Help: "Order commands parked in the dead-letter queue, by reason.", LabelKeys: marketReason,
+	}); err != nil {
+		return nil, err
+	}
+	if c.dlqPublishFails, err = pm.RegisterCounter(observability.CounterDefinition{
+		Name: metricDLQPublishFails, Help: "Dead-letter publishes that failed, dropping the order entirely.", LabelKeys: marketLabel,
 	}); err != nil {
 		return nil, err
 	}
@@ -189,11 +205,12 @@ type MarketMetrics struct {
 	trades     prometheus.Counter
 	reserveRej prometheus.Counter
 	poison     prometheus.Counter
-	deadLetter prometheus.Counter
+	dlqFails   prometheus.Counter
 	rebuilds   prometheus.Counter
 	batchSize  prometheus.Observer
 	batchDur   prometheus.Observer
 	processed  map[string]prometheus.Counter // outcome -> counter
+	deadLetter map[string]prometheus.Counter // reason -> counter
 	batches    map[string]prometheus.Counter // result -> counter
 	bookOrders map[string]prometheus.Gauge   // side -> gauge
 	bookBest   map[string]prometheus.Gauge   // side -> gauge
@@ -211,7 +228,7 @@ func (c *CoreMetrics) BindMarket(market string) *MarketMetrics {
 		trades:     c.trades.Bind(market),
 		reserveRej: c.reserveRejections.Bind(market),
 		poison:     c.poisonIsolations.Bind(market),
-		deadLetter: c.deadLetters.Bind(market),
+		dlqFails:   c.dlqPublishFails.Bind(market),
 		rebuilds:   c.bookRebuilds.Bind(market),
 		batchSize:  c.batchSize.Bind(market),
 		batchDur:   c.batchDuration.Bind(market),
@@ -235,16 +252,18 @@ func (c *CoreMetrics) BindMarket(market string) *MarketMetrics {
 			SideBuy:  c.bookBestPrice.Bind(market, SideBuy),
 			SideSell: c.bookBestPrice.Bind(market, SideSell),
 		},
-		published: bindStreamTypes(c.streamPublished, market),
-		dropped:   c.streamDropped.Bind(market),
+		deadLetter: bindLabelValues(c.deadLetters, market, deadLetterReasons),
+		published:  bindLabelValues(c.streamPublished, market, streamEventTypes),
+		dropped:    c.streamDropped.Bind(market),
 	}
 }
 
-// bindStreamTypes pre-binds the published counter for every event type of one market.
-func bindStreamTypes(counter *observability.CounterMetric, market string) map[string]prometheus.Counter {
-	m := make(map[string]prometheus.Counter, len(streamEventTypes))
-	for _, t := range streamEventTypes {
-		m[t] = counter.Bind(market, t)
+// bindLabelValues pre-binds counter for one market against every value of its second label, so
+// recording later is a map lookup rather than a label resolution.
+func bindLabelValues(counter *observability.CounterMetric, market string, values []string) map[string]prometheus.Counter {
+	m := make(map[string]prometheus.Counter, len(values))
+	for _, v := range values {
+		m[v] = counter.Bind(market, v)
 	}
 	return m
 }
@@ -291,11 +310,22 @@ func (m *MarketMetrics) IncPoison() {
 	m.poison.Inc()
 }
 
-func (m *MarketMetrics) IncDeadLetter() {
+func (m *MarketMetrics) IncDeadLetter(reason string) {
 	if m == nil {
 		return
 	}
-	m.deadLetter.Inc()
+	if c, ok := m.deadLetter[reason]; ok {
+		c.Inc()
+	}
+}
+
+// IncDLQPublishFailure counts an order dropped because it could not be parked. This is the only
+// path in the engine that loses an order command outright — alert on any increase.
+func (m *MarketMetrics) IncDLQPublishFailure() {
+	if m == nil {
+		return
+	}
+	m.dlqFails.Inc()
 }
 
 func (m *MarketMetrics) IncRebuild() {

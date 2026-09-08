@@ -24,7 +24,7 @@ func TestExpireOrder_RemovesRestingOrderAndReleasesFunds(t *testing.T) {
 	if s := o.Stats(); s.AskOrders != 0 {
 		t.Fatalf("book still has %d resting ask(s) after expiry", s.AskOrders)
 	}
-	if len(o.ExpireDue(math.MaxInt64)) != 0 {
+	if len(o.ExpireDue(math.MaxInt64, maxExpirySweep)) != 0 {
 		t.Fatalf("expired order still present in the expiry index")
 	}
 
@@ -105,7 +105,7 @@ func TestCancelOrder_UnindexesExpiryAndKeepsPlainStatus(t *testing.T) {
 	r := repository.NewBatchResult()
 	o.CancelOrder(&oeq.CancelOrderEvent{OrderID: id}, r)
 
-	if got := o.ExpireDue(math.MaxInt64); len(got) != 0 {
+	if got := o.ExpireDue(math.MaxInt64, maxExpirySweep); len(got) != 0 {
 		t.Fatalf("cancelled order still present in the expiry index: %v", got)
 	}
 	upd := findOrderUpdate(o.DrainStream(), id)

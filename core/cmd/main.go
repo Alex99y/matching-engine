@@ -13,6 +13,7 @@ import (
 	"github.com/alex99y/matching-engine/core/internal/config"
 	coremetrics "github.com/alex99y/matching-engine/core/internal/metrics"
 	"github.com/alex99y/matching-engine/core/internal/orderprocessors"
+	"github.com/alex99y/matching-engine/core/pkg/deadletter"
 	"github.com/alex99y/matching-engine/core/pkg/marketevents"
 	"github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 	"github.com/alex99y/matching-engine/db/pkg/cache"
@@ -96,6 +97,17 @@ func main() {
 	wg.Go(func() { eventPublisher.Run(ctx) })
 	epoch := uuid.NewString()
 
+	// Dead-letter parking lot (me.dlx)
+	deadLetterPublisher, err := deadletter.NewPublisher(rabbitmqClient, log)
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err := deadLetterPublisher.Close(); err != nil {
+			log.Error(fmt.Sprintf("closing dead letter publisher: %v", err))
+		}
+	}()
+
 	instrumentRepository := repository.NewInstrumentRepository(log, postgresqlClient, coreConfig.DBQueryTimeout)
 	marketRepository := repository.NewMarketRepository(log, postgresqlClient, coreConfig.DBQueryTimeout)
 	orderRepository := repository.NewOrderRepository(log, postgresqlClient, dbMetrics, coreConfig.DBQueryTimeout)
@@ -122,8 +134,11 @@ func main() {
 
 	for _, market := range marketsToProcess {
 		marketRef := utils.MergeMarketRef(market.BaseSymbol, market.QuoteSymbol)
+		if err := deadLetterPublisher.DeclareMarket(marketRef); err != nil {
+			panic(err)
+		}
 		queue := order_events_queue.NewOrdersQueue(log, marketRef, rabbitmqClient)
-		p := orderprocessors.NewOrderProcessor(log, market, queue, orderRepository, coreMetrics, eventPublisher, epoch)
+		p := orderprocessors.NewOrderProcessor(log, market, queue, orderRepository, coreMetrics, eventPublisher, deadLetterPublisher, epoch)
 		wg.Go(func() { p.Start(ctx) })
 	}
 
