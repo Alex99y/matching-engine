@@ -10,6 +10,7 @@ import (
 	cmos "github.com/alex99y/matching-engine/common/pkg/os"
 	"github.com/alex99y/matching-engine/common/pkg/rabbitmq"
 	"github.com/alex99y/matching-engine/common/pkg/utils"
+	"github.com/alex99y/matching-engine/core/internal/admin"
 	"github.com/alex99y/matching-engine/core/internal/config"
 	coremetrics "github.com/alex99y/matching-engine/core/internal/metrics"
 	"github.com/alex99y/matching-engine/core/internal/orderprocessors"
@@ -132,6 +133,7 @@ func main() {
 		marketsToProcess = append(marketsToProcess, marketInfo)
 	}
 
+	servedMarkets := make(map[string]admin.MarketController, len(marketsToProcess))
 	for _, market := range marketsToProcess {
 		marketRef := utils.MergeMarketRef(market.BaseSymbol, market.QuoteSymbol)
 		if err := deadLetterPublisher.DeclareMarket(marketRef); err != nil {
@@ -139,8 +141,29 @@ func main() {
 		}
 		queue := order_events_queue.NewOrdersQueue(log, marketRef, rabbitmqClient)
 		p := orderprocessors.NewOrderProcessor(log, market, queue, orderRepository, coreMetrics, eventPublisher, deadLetterPublisher, epoch)
+		servedMarkets[marketRef] = p
 		wg.Go(func() { p.Start(ctx) })
 	}
+
+	// Operator control plane: the per-market circuit breaker, on its own port and behind a token so
+	// the scrapeable metrics port is not also a trading-halt button.
+	adminServer, err := admin.NewServer(
+		coreConfig.AdminPort,
+		coreConfig.AdminToken,
+		admin.NewHandler(admin.NewService(servedMarkets), log),
+		log,
+	)
+	if err != nil {
+		panic(err)
+	}
+	if err := adminServer.Start(); err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err := adminServer.Stop(); err != nil {
+			log.Error(fmt.Sprintf("stopping admin server: %v", err))
+		}
+	}()
 
 	quit, onQuit := cmos.OnSigIntAndTerm()
 	defer onQuit()
