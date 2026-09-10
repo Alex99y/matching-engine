@@ -79,6 +79,10 @@ func (o *OrdersEventsQueue) WatchForOrderEvents(ctx context.Context, handler Ord
 	})
 }
 
+func (o *OrdersEventsQueue) Pause()         { o.queue.Pause() }
+func (o *OrdersEventsQueue) Resume()        { o.queue.Resume() }
+func (o *OrdersEventsQueue) IsPaused() bool { return o.queue.IsPaused() }
+
 func NewOrdersQueue(
 	logger *logger.Logger,
 	marketRef string,

@@ -83,6 +83,10 @@ func newMarketCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newMarketCreateCmd())
 	cmd.AddCommand(newMarketGetCmd())
+	// The circuit breaker reaches a running core over HTTP rather than the database — see coreadmin.go.
+	cmd.AddCommand(newMarketPauseCmd())
+	cmd.AddCommand(newMarketResumeCmd())
+	cmd.AddCommand(newMarketStatusCmd())
 	return cmd
 }
 

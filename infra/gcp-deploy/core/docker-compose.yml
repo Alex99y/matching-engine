@@ -10,7 +10,12 @@ services:
     environment:
       - MARKET_LIST=BTC-USDT
       - METRICS_PORT=9091
+      - ADMIN_PORT=9093
       - DEBUG_LEVEL=debug
       # These variables will be read from the temporary .env file:
       - POSTGRESQL_URL=${POSTGRESQL_URL}
       - RABBITMQ_URL=${RABBITMQ_URL}
+      # Authenticates the per-market circuit breaker (cli market pause/resume). Core will not
+      # start without it. Note ADMIN_PORT is deliberately NOT published in `ports:` above — reach
+      # it from the VM itself or over a private network, never the public interface.
+      - ADMIN_TOKEN=${ADMIN_TOKEN}

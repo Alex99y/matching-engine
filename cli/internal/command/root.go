@@ -47,6 +47,12 @@ var rootCmd = &cobra.Command{
 	Short:        "Matching engine management CLI",
 	SilenceUsage: true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Commands that talk to a service over HTTP instead of the database opt out, so they do not
+		// demand POSTGRESQL_URL for a connection they never use.
+		if cmd.Annotations[annotationSkipDB] == "true" {
+			return nil
+		}
+
 		postgresURL, err := config.GetPostgresURL()
 		if err != nil {
 			return err

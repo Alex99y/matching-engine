@@ -101,6 +101,7 @@ path is allocation-free (`core/internal/metrics`). Metric values are derived fro
 | `me_core_poison_isolations_total` | counter | `market` | Batches that fell into per-order isolation |
 | `me_core_dead_letters_total` | counter | `market`, `reason` | Commands parked in the dead-letter queue — **alert on any increase**. `reason` is one of `malformed`, `invalid`, `unknown_type`, `poison` |
 | `me_core_dlq_publish_failures_total` | counter | `market` | Commands dropped because the parking-lot publish itself failed — the only path that loses an order outright, **alert on any increase** |
+| `me_core_market_paused` | gauge | `market` | 1 while an operator has halted the market with `cli market pause`. Pair with the command backlog panel — a paused market shows a climbing queue by design |
 | `me_core_book_rebuilds_total` | counter | `market` | Book hydrations triggered by a failed batch — **alert on rate** |
 | `me_core_book_orders` | gauge | `market, side` | Resting order count per side (book depth) |
 | `me_core_book_best_price` | gauge | `market, side` | Best bid / best ask (0 when that side is empty) |

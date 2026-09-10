@@ -236,3 +236,119 @@ func TestReopenIgnoresAStaleChannelThatWasAlreadyReplaced(t *testing.T) {
 		t.Fatalf("reopen replaced a channel another caller had already refreshed")
 	}
 }
+
+// newPausableQueue builds a Queue with just the state Pause/Resume/awaitResume touch. Pause also
+// cancels the AMQP consumer, which needs a broker; these tests cover the state machine that decides
+// whether Consume waits or reconnects, which is what a paused market actually depends on.
+func newPausableQueue() *Queue {
+	return &Queue{
+		logger:    logger.NewLogger(logger.Error),
+		queueArgs: QueueArgs{Name: "ETH-USDT"},
+		resumed:   make(chan struct{}),
+	}
+}
+
+// awaitResume must not block a queue that is running — Consume calls it on every loop, including
+// the very first, so a false wait here would stop the market from ever consuming.
+func TestAwaitResumeDoesNotBlockWhenRunning(t *testing.T) {
+	q := newPausableQueue()
+
+	done := make(chan bool, 1)
+	go func() { done <- q.awaitResume(context.Background()) }()
+
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("awaitResume reported shutdown for a running queue")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("awaitResume blocked on a queue that was never paused")
+	}
+}
+
+// The pause has to actually hold, and releasing it has to wake the waiter — that pair is the whole
+// circuit breaker.
+func TestAwaitResumeBlocksUntilResumed(t *testing.T) {
+	q := newPausableQueue()
+	q.paused = true // set directly: Pause also cancels a consumer, which needs a broker
+
+	done := make(chan bool, 1)
+	go func() { done <- q.awaitResume(context.Background()) }()
+
+	select {
+	case <-done:
+		t.Fatal("awaitResume returned while the queue was paused")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	q.Resume()
+
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("awaitResume reported shutdown after a clean resume")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Resume did not wake the waiter")
+	}
+	if q.IsPaused() {
+		t.Fatal("queue still reports paused after Resume")
+	}
+}
+
+// Shutdown must win over a pause, or a paused market would keep its goroutine alive forever and
+// core would never exit.
+func TestAwaitResumeReturnsFalseOnShutdown(t *testing.T) {
+	q := newPausableQueue()
+	q.paused = true
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan bool, 1)
+	go func() { done <- q.awaitResume(ctx) }()
+	cancel()
+
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatal("awaitResume said to keep consuming after ctx was cancelled")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("awaitResume ignored ctx cancellation")
+	}
+}
+
+// Resume is reachable from the admin API at any time, so a spurious one must not close an already
+// closed channel (a panic) or otherwise disturb a running queue.
+func TestResumeOnARunningQueueIsANoop(t *testing.T) {
+	q := newPausableQueue()
+	before := q.resumed
+
+	q.Resume()
+	q.Resume()
+
+	if q.IsPaused() {
+		t.Fatal("Resume paused a running queue")
+	}
+	if q.resumed != before {
+		t.Fatal("Resume on a running queue replaced the signal channel")
+	}
+}
+
+// Each pause needs a fresh signal: reusing the closed one would make the next awaitResume return
+// immediately, so the second pause would never hold.
+func TestResumeReplacesTheSignalChannel(t *testing.T) {
+	q := newPausableQueue()
+	q.paused = true
+	first := q.resumed
+
+	q.Resume()
+
+	if q.resumed == first {
+		t.Fatal("Resume reused the closed channel; the next pause would not hold")
+	}
+	select {
+	case <-first:
+	default:
+		t.Fatal("Resume did not close the channel the waiter was blocked on")
+	}
+}

@@ -55,6 +55,10 @@ func newPoisonBroker(events ...*oeq.OpenOrderEvent) *poisonBroker {
 	return b
 }
 
+func (b *poisonBroker) Pause()         {}
+func (b *poisonBroker) Resume()        {}
+func (b *poisonBroker) IsPaused() bool { return false }
+
 func (b *poisonBroker) count(m map[string]int, id string) int {
 	b.mu.Lock()
 	defer b.mu.Unlock()

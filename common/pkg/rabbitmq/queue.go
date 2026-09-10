@@ -21,6 +21,8 @@ type Queue struct {
 	channelArgs ChannelArgs
 	queueArgs   QueueArgs
 	closed      bool
+	paused      bool
+	resumed     chan struct{}
 	mu          sync.RWMutex
 }
 
@@ -70,6 +72,7 @@ func NewQueue(
 		logger:      logger,
 		channelArgs: channelArgs,
 		queueArgs:   queueArgs,
+		resumed:     make(chan struct{}),
 	}, nil
 }
 
@@ -113,6 +116,62 @@ func (q *Queue) Close() error {
 	defer q.mu.Unlock()
 	q.closed = true
 	return q.channel.Close()
+}
+
+// Pause stops consuming this queue. The broker stops delivering, unacked messages return to the
+// queue, and everything published meanwhile simply accumulates there nothing is rejected or lost.
+func (q *Queue) Pause() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.paused || q.closed {
+		return
+	}
+	q.paused = true
+	// Cancelling the consumer closes its deliveries channel, which is what lets consumeOnce return.
+	// The channel itself stays usable, so Resume is just another ConsumeWithContext on it.
+	if err := q.channel.Cancel(q.consumerTag(), false); err != nil {
+		q.logger.Error(fmt.Sprintf("rabbitmq: cancel consumer for %q: %v", q.queueArgs.Name, err))
+	}
+}
+
+// Resume restarts consumption, draining whatever accumulated while paused. Idempotent.
+func (q *Queue) Resume() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if !q.paused {
+		return
+	}
+	q.paused = false
+	close(q.resumed)
+	q.resumed = make(chan struct{})
+}
+
+func (q *Queue) IsPaused() bool {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	return q.paused
+}
+
+func (q *Queue) consumerTag() string {
+	return "me-consumer-" + q.queueArgs.Name
+}
+
+func (q *Queue) awaitResume(ctx context.Context) bool {
+	q.mu.RLock()
+	paused, resumed := q.paused, q.resumed
+	q.mu.RUnlock()
+	if !paused {
+		return true
+	}
+
+	q.logger.Info(fmt.Sprintf("rabbitmq: consumption of %q paused", q.queueArgs.Name))
+	select {
+	case <-resumed:
+		q.logger.Info(fmt.Sprintf("rabbitmq: consumption of %q resumed", q.queueArgs.Name))
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (q *Queue) snapshot() (*amqp091.Channel, string) {
@@ -248,11 +307,14 @@ func (q *Queue) reopen(stale *amqp091.Channel) error {
 // Deliveries are processed sequentially to guarantee FIFO ordering within the queue.
 func (q *Queue) consumeOnce(ctx context.Context, callback ConsumeCallback) error {
 	ch, name := q.snapshot()
+	q.mu.RLock()
+	tag := q.consumerTag()
+	q.mu.RUnlock()
 
 	deliveries, err := ch.ConsumeWithContext(
 		ctx,
 		name,
-		"",    // consumer tag — broker generates one
+		tag,   // explicit, so Pause has a consumer to cancel
 		false, // auto-ack
 		false, // exclusive
 		false, // no-local
@@ -275,12 +337,23 @@ func (q *Queue) consumeOnce(ctx context.Context, callback ConsumeCallback) error
 
 // Consume blocks until ctx is cancelled, processing each delivery sequentially.
 // On unexpected channel closure it reopens the channel and resumes automatically.
+// While paused it blocks on the resume signal instead of returning, so pausing is invisible to
+// callers that treat a return as shutdown.
 func (q *Queue) Consume(ctx context.Context, callback ConsumeCallback) error {
 	for {
+		if !q.awaitResume(ctx) {
+			return nil
+		}
+
 		err := q.consumeOnce(ctx, callback)
 		if ctx.Err() != nil {
 			return nil
 		}
+
+		if q.IsPaused() {
+			continue
+		}
+
 		q.logger.Error(fmt.Sprintf("rabbitmq: consumer channel closed (%v) — reopening", err))
 
 		select {

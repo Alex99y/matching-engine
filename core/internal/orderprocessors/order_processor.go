@@ -55,6 +55,9 @@ type eventPublisher interface {
 // orderEventsQueue is the subset of order_events_queue.OrdersEventsQueue the processor needs.
 type orderEventsQueue interface {
 	WatchForOrderEvents(ctx context.Context, handler oeq.OrderDeliveryHandler) error
+	Pause()
+	Resume()
+	IsPaused() bool
 }
 
 // orderRepository is the subset of repository.OrderRepository the processor needs.
@@ -83,7 +86,6 @@ type OrderProcessor struct {
 	book          *orderbook.OrderBook // owned and mutated solely by the matcher goroutine
 	ordersChannel chan *queuedEvent
 	metrics       *metrics.MarketMetrics // per-market pre-bound handles; nil disables recording
-	stopMatcher   atomic.Bool
 	// Event-log stream (docs/event-log.md). publisher is nil-able (disables emission). epoch is a
 	// fresh id per core start; seq is a per-market monotonic counter advanced once per book delta,
 	// so the API can detect a gap (missed delta) or restart (changed epoch)
@@ -127,11 +129,20 @@ func (o *OrderProcessor) Start(ctx context.Context) {
 	<-matcherDone
 }
 
-// Stop prevents the consumer from queueing further events to the matcher; in-flight
-// events are requeued. Full shutdown still requires cancelling the context passed to Start.
-func (o *OrderProcessor) Stop() {
-	o.stopMatcher.Store(true)
+// Pause halts trading on this market: the consumer stops, and commands accumulate in the broker
+// queue until Resume drains them. The book is untouched and the matcher keeps running, so resting
+// orders still expire and release their funds while the market is down.
+func (o *OrderProcessor) Pause() {
+	o.queue.Pause()
+	o.metrics.SetPaused(true)
 }
+
+func (o *OrderProcessor) Resume() {
+	o.queue.Resume()
+	o.metrics.SetPaused(false)
+}
+
+func (o *OrderProcessor) IsPaused() bool { return o.queue.IsPaused() }
 
 func NewOrderProcessor(
 	log *logger.Logger,
