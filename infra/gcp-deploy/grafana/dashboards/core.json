@@ -395,7 +395,7 @@
       },
       "gridPos": {
         "h": 6,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 25
       },
@@ -429,8 +429,8 @@
       },
       "gridPos": {
         "h": 6,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 8,
         "y": 25
       },
       "fieldConfig": {
@@ -465,6 +465,55 @@
         {
           "refId": "A",
           "expr": "sum(increase(me_core_dlq_publish_failures_total{market=~\"$market\"}[1h]))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Paused markets",
+      "description": "Markets an operator has halted with `cli market pause`. Their command queues grow by design while paused \u2014 see the backlog panel below. Non-zero outside a planned halt means someone left a market down.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 25
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(me_core_market_paused{market=~\"$market\"})"
         }
       ]
     },
