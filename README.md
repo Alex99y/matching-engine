@@ -71,11 +71,25 @@ make -C db migrate
 
 ### 3. Core (matching engine)
 
-> `core` needs to be configured (its own environment file) before it will run.
+> `core` needs to be configured (its own environment file) before it will run. Besides the database
+> and broker URLs it requires `ADMIN_PORT` and `ADMIN_TOKEN` — core refuses to start without a token
+> rather than exposing its admin API anonymously. See `core/.env`.
 
 ```sh
 make -C core run
 ```
+
+Trading can be halted and restarted per market without stopping the process:
+
+```sh
+export CORE_ADMIN_URL=http://localhost:9093 ADMIN_TOKEN=<the token from core/.env>
+cli market status
+cli market pause  --market BTC-USDT   # orders queue in the broker; nothing is rejected or lost
+cli market resume --market BTC-USDT   # the backlog drains in arrival order
+```
+
+While a market is paused its cancels are held too, so resting orders cannot be withdrawn and their
+funds stay blocked. The halt lives in the running process: restarting core resumes every market.
 
 ### 4. API
 
