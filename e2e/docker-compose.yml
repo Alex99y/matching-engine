@@ -88,6 +88,10 @@ services:
       # accepted and then queue forever with no consumer.
       MARKET_LIST: ETH-USDT,BTC-USDT,ETH-BTC
       METRICS_PORT: "9092"
+      # Required by core even though the suite does not drive the circuit breaker: it refuses to
+      # start without a token rather than exposing pause/resume anonymously.
+      ADMIN_PORT: "9093"
+      ADMIN_TOKEN: e2e-admin-token
     depends_on:
       rabbitmq:
         condition: service_healthy
