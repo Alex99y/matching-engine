@@ -25,6 +25,7 @@ const (
 	metricPoisonIsolations  = "poison_isolations_total"
 	metricDeadLetters       = "dead_letters_total"
 	metricDLQPublishFails   = "dlq_publish_failures_total"
+	metricMarketPaused      = "market_paused"
 	metricBookRebuilds      = "book_rebuilds_total"
 	metricBookOrders        = "book_orders"
 	metricBookBestPrice     = "book_best_price"
@@ -95,6 +96,7 @@ type CoreMetrics struct {
 	poisonIsolations  *observability.CounterMetric
 	deadLetters       *observability.CounterMetric
 	dlqPublishFails   *observability.CounterMetric
+	marketPaused      *observability.GaugeMetric
 	bookRebuilds      *observability.CounterMetric
 	bookOrders        *observability.GaugeMetric
 	bookBestPrice     *observability.GaugeMetric
@@ -156,6 +158,11 @@ func NewCoreMetrics(pm *observability.PrometheusMetrics) (*CoreMetrics, error) {
 	}); err != nil {
 		return nil, err
 	}
+	if c.marketPaused, err = pm.RegisterGauge(observability.GaugeDefinition{
+		Name: metricMarketPaused, Help: "1 while trading on this market is paused by an operator.", LabelKeys: marketLabel,
+	}); err != nil {
+		return nil, err
+	}
 	if c.bookRebuilds, err = pm.RegisterCounter(observability.CounterDefinition{
 		Name: metricBookRebuilds, Help: "Book rebuilds (hydrations) triggered by a failed batch.", LabelKeys: marketLabel,
 	}); err != nil {
@@ -206,6 +213,7 @@ type MarketMetrics struct {
 	reserveRej prometheus.Counter
 	poison     prometheus.Counter
 	dlqFails   prometheus.Counter
+	paused     prometheus.Gauge
 	rebuilds   prometheus.Counter
 	batchSize  prometheus.Observer
 	batchDur   prometheus.Observer
@@ -229,6 +237,7 @@ func (c *CoreMetrics) BindMarket(market string) *MarketMetrics {
 		reserveRej: c.reserveRejections.Bind(market),
 		poison:     c.poisonIsolations.Bind(market),
 		dlqFails:   c.dlqPublishFails.Bind(market),
+		paused:     c.marketPaused.Bind(market),
 		rebuilds:   c.bookRebuilds.Bind(market),
 		batchSize:  c.batchSize.Bind(market),
 		batchDur:   c.batchDuration.Bind(market),
@@ -326,6 +335,19 @@ func (m *MarketMetrics) IncDLQPublishFailure() {
 		return
 	}
 	m.dlqFails.Inc()
+}
+
+// SetPaused publishes the operator halt state so a paused market is visible on the dashboard rather
+// than looking like a market that simply stopped receiving orders.
+func (m *MarketMetrics) SetPaused(paused bool) {
+	if m == nil {
+		return
+	}
+	if paused {
+		m.paused.Set(1)
+		return
+	}
+	m.paused.Set(0)
 }
 
 func (m *MarketMetrics) IncRebuild() {
