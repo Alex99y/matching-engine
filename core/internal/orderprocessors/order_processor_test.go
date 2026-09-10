@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/core/pkg/deadletter"
 	oeq "github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
@@ -21,6 +22,7 @@ import (
 // cancelled so Start closes the channel and the matcher drains and exits.
 type fakeQueue struct {
 	deliveries []*oeq.OrderDelivery
+	paused     atomic.Bool
 }
 
 func (q *fakeQueue) WatchForOrderEvents(ctx context.Context, handler oeq.OrderDeliveryHandler) error {
@@ -30,6 +32,10 @@ func (q *fakeQueue) WatchForOrderEvents(ctx context.Context, handler oeq.OrderDe
 	<-ctx.Done()
 	return nil
 }
+
+func (q *fakeQueue) Pause()         { q.paused.Store(true) }
+func (q *fakeQueue) Resume()        { q.paused.Store(false) }
+func (q *fakeQueue) IsPaused() bool { return q.paused.Load() }
 
 // fakeRepo records calls and lets a test force ProcessBatch to fail a number of times.
 type fakeRepo struct {
@@ -174,4 +180,31 @@ func runUntilWithin(t *testing.T, d time.Duration, cond func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("condition not met before timeout")
+}
+
+// The admin API halts a market through the processor, which owns nothing itself — it delegates to
+// the queue, where stopping consumption actually happens.
+func TestPauseAndResumeDelegateToTheQueue(t *testing.T) {
+	q := &fakeQueue{}
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, &fakeRepo{}, nil, nil, nil, "")
+
+	if p.IsPaused() {
+		t.Fatal("a new processor must start trading, not paused")
+	}
+
+	p.Pause()
+	if !q.IsPaused() || !p.IsPaused() {
+		t.Fatal("Pause did not reach the queue")
+	}
+
+	// Idempotent: the admin API is reachable at any time and a repeated pause must be harmless.
+	p.Pause()
+	if !p.IsPaused() {
+		t.Fatal("a second Pause un-paused the market")
+	}
+
+	p.Resume()
+	if q.IsPaused() || p.IsPaused() {
+		t.Fatal("Resume did not reach the queue")
+	}
 }

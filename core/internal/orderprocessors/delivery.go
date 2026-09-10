@@ -24,12 +24,6 @@ func (o *OrderProcessor) handleDelivery(ctx context.Context, d *oeq.OrderDeliver
 		}
 		return
 	}
-	if o.stopMatcher.Load() {
-		if err := d.Nack(); err != nil {
-			o.logger.Error(fmt.Sprintf("order processor: nack while stopping failed: %s", err))
-		}
-		return
-	}
 	if qe.open != nil {
 		o.metrics.IncReceived()
 	}
