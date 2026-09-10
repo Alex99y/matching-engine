@@ -1,0 +1,11 @@
+# Every Dockerfile here builds from the workspace root (the Go images need the shared
+# vendor/ tree, the ui image needs both ui/ and ts-sdk/), so the context is the whole repo.
+# These are the parts no image consumes — without them the daemon ships ~170MB of
+# node_modules and git history on every build.
+.git
+.github
+**/node_modules
+**/dist
+**/bin
+**/coverage
+reviews
