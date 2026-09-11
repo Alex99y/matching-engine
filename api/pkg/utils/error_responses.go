@@ -2,13 +2,14 @@ package utils
 
 import (
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	commonutils "github.com/alex99y/matching-engine/common/pkg/utils"
 	"github.com/gofiber/fiber/v3"
 	requestid "github.com/gofiber/fiber/v3/middleware/requestid"
 )
 
-type ErrorResponse struct {
-	Message string `json:"message"`
-}
+// ErrorResponse is an alias for the shared body so existing api references keep working while there
+// is only one definition of the shape.
+type ErrorResponse = commonutils.ErrorResponse
 
 func NewServerErrorResponse(
 	c fiber.Ctx,
@@ -27,5 +28,5 @@ func NewServerErrorResponse(
 }
 
 func NewErrorResponse(c fiber.Ctx, status int, message string) error {
-	return c.Status(status).JSON(ErrorResponse{Message: message})
+	return commonutils.NewErrorResponse(c, status, message)
 }

@@ -91,6 +91,15 @@ cli market resume --market BTC-USDT   # the backlog drains in arrival order
 While a market is paused its cancels are held too, so resting orders cannot be withdrawn and their
 funds stay blocked. The halt lives in the running process: restarting core resumes every market.
 
+The same admin API cleans up after a frozen account — freezing stops new orders, but whatever the
+user already has resting stays in the book with their funds blocked:
+
+```sh
+cli user freeze        --username alice     # required first; the cancel refuses otherwise
+cli user orders        --username alice
+cli user cancel-orders --username alice --all
+```
+
 ### 4. API
 
 > `api` needs to be configured (its own environment file) before it will run.

@@ -55,6 +55,7 @@ type eventPublisher interface {
 // orderEventsQueue is the subset of order_events_queue.OrdersEventsQueue the processor needs.
 type orderEventsQueue interface {
 	WatchForOrderEvents(ctx context.Context, handler oeq.OrderDeliveryHandler) error
+	EmitCancelOrder(ctx context.Context, orderID uuid.UUID) error
 	Pause()
 	Resume()
 	IsPaused() bool
@@ -143,6 +144,11 @@ func (o *OrderProcessor) Resume() {
 }
 
 func (o *OrderProcessor) IsPaused() bool { return o.queue.IsPaused() }
+
+// EmitCancel queues a cancel for one of this market's orders on behalf of the admin API.
+func (o *OrderProcessor) EmitCancel(ctx context.Context, orderID uuid.UUID) error {
+	return o.queue.EmitCancelOrder(ctx, orderID)
+}
 
 func NewOrderProcessor(
 	log *logger.Logger,

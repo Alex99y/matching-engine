@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
+	"github.com/alex99y/matching-engine/common/pkg/utils"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -44,6 +45,8 @@ func RegisterAdminRoutes(app fiber.Router, token string, handler *Handler) {
 	admin.Get("/markets", handler.Status)
 	admin.Post("/markets/:market/pause", handler.Pause)
 	admin.Post("/markets/:market/resume", handler.Resume)
+	admin.Get("/users/:username/orders", handler.ListUserOrders)
+	admin.Post("/users/:username/orders/cancel", handler.CancelUserOrders)
 }
 
 // requireToken compares in constant time so a caller cannot recover the token by timing its guesses.
@@ -52,7 +55,7 @@ func requireToken(token string) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		got := strings.TrimPrefix(c.Get(fiber.HeaderAuthorization), bearerPrefix)
 		if subtle.ConstantTimeCompare([]byte(got), want) != 1 {
-			return errorResponse(c, fiber.StatusUnauthorized, "unauthorized")
+			return utils.NewErrorResponse(c, fiber.StatusUnauthorized, "unauthorized")
 		}
 		return c.Next()
 	}
