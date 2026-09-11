@@ -26,6 +26,9 @@ func newUserCmd() *cobra.Command {
 	cmd.AddCommand(newUserBalanceCmd())
 	cmd.AddCommand(newUserFreezeCmd())
 	cmd.AddCommand(newUserUnfreezeCmd())
+	// Order management reaches a running core over HTTP rather than the database — see coreadmin.go.
+	cmd.AddCommand(newUserOrdersCmd())
+	cmd.AddCommand(newUserCancelOrdersCmd())
 	return cmd
 }
 

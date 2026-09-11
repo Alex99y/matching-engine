@@ -6,6 +6,7 @@ import (
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/common/pkg/rabbitmq"
+	"github.com/google/uuid"
 )
 
 type OrdersEventsQueue struct {
@@ -77,6 +78,23 @@ func (o *OrdersEventsQueue) WatchForOrderEvents(ctx context.Context, handler Ord
 			nack:  args.Nack,
 		})
 	})
+}
+
+// EmitCancelOrder publishes a cancel onto this market's own command queue.
+// Used by the admin API to cancel a user's orders.
+func (o *OrdersEventsQueue) EmitCancelOrder(ctx context.Context, orderID uuid.UUID) error {
+	event, err := NewCancelOrderEvent(&CancelOrderEvent{OrderID: orderID, MarketRef: o.marketRef})
+	if err != nil {
+		return fmt.Errorf("emit cancel: %w", err)
+	}
+	raw, err := event.ToBytes()
+	if err != nil {
+		return fmt.Errorf("emit cancel: %w", err)
+	}
+	if err := o.queue.Publish(ctx, orderID.String(), raw, true); err != nil {
+		return fmt.Errorf("emit cancel: publish: %w", err)
+	}
+	return nil
 }
 
 func (o *OrdersEventsQueue) Pause()         { o.queue.Pause() }

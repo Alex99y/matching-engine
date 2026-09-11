@@ -23,6 +23,8 @@ import (
 type fakeQueue struct {
 	deliveries []*oeq.OrderDelivery
 	paused     atomic.Bool
+	mu         sync.Mutex
+	cancelled  []uuid.UUID
 }
 
 func (q *fakeQueue) WatchForOrderEvents(ctx context.Context, handler oeq.OrderDeliveryHandler) error {
@@ -31,6 +33,19 @@ func (q *fakeQueue) WatchForOrderEvents(ctx context.Context, handler oeq.OrderDe
 	}
 	<-ctx.Done()
 	return nil
+}
+
+func (q *fakeQueue) EmitCancelOrder(ctx context.Context, orderID uuid.UUID) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.cancelled = append(q.cancelled, orderID)
+	return nil
+}
+
+func (q *fakeQueue) cancelledOrders() []uuid.UUID {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return append([]uuid.UUID(nil), q.cancelled...)
 }
 
 func (q *fakeQueue) Pause()         { q.paused.Store(true) }
@@ -206,5 +221,23 @@ func TestPauseAndResumeDelegateToTheQueue(t *testing.T) {
 	p.Resume()
 	if q.IsPaused() || p.IsPaused() {
 		t.Fatal("Resume did not reach the queue")
+	}
+}
+
+// The admin API cancels a user's orders by publishing onto the market's own command queue, so the
+// cancel is applied by the matcher in turn rather than by reaching into the book from another
+// goroutine.
+func TestEmitCancelPublishesToTheQueue(t *testing.T) {
+	q := &fakeQueue{}
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, &fakeRepo{}, nil, nil, nil, "")
+
+	orderID := uuid.New()
+	if err := p.EmitCancel(context.Background(), orderID); err != nil {
+		t.Fatal(err)
+	}
+
+	got := q.cancelledOrders()
+	if len(got) != 1 || got[0] != orderID {
+		t.Fatalf("queue saw %v, want [%s]", got, orderID)
 	}
 }

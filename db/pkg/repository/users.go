@@ -95,6 +95,7 @@ type User struct {
 	Username     string
 	Email        string
 	PasswordHash string
+	Frozen       bool
 }
 
 func (r *UserRepository) GetUserByUsername(ctx context.Context, username string) (*User, error) {
@@ -102,14 +103,14 @@ func (r *UserRepository) GetUserByUsername(ctx context.Context, username string)
 	defer cancel()
 
 	query := `
-		SELECT id, username, email, password_hash
+		SELECT id, username, email, password_hash, frozen
 		FROM users
 		WHERE username = $1
 	`
 	row := r.psql.QueryRowContext(ctxWithTimeout, query, username)
 	user := &User{}
 
-	err := row.Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash)
+	err := row.Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.Frozen)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("%s %w", error_prefix, ErrUserNotFound)

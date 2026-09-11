@@ -1,31 +1,38 @@
 package admin_test
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/core/internal/admin"
+	"github.com/alex99y/matching-engine/db/pkg/repository"
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 )
 
 const testToken = "s3cret-token"
 
 type fakeMarket struct{ paused bool }
 
-func (f *fakeMarket) Pause()         { f.paused = true }
-func (f *fakeMarket) Resume()        { f.paused = false }
-func (f *fakeMarket) IsPaused() bool { return f.paused }
+func (f *fakeMarket) Pause()                                                  { f.paused = true }
+func (f *fakeMarket) Resume()                                                 { f.paused = false }
+func (f *fakeMarket) IsPaused() bool                                          { return f.paused }
+func (f *fakeMarket) EmitCancel(ctx context.Context, orderID uuid.UUID) error { return nil }
 
 func newTestApp(t *testing.T, markets map[string]admin.MarketController) *fiber.App {
 	t.Helper()
 	log := logger.NewLogger(logger.Error)
 	app := fiber.New()
-	admin.RegisterAdminRoutes(app, testToken, admin.NewHandler(admin.NewService(markets), log))
+	svc := admin.NewService(markets, &fakeUsers{byName: map[string]*repository.User{}}, &fakeOrders{}, &fakeCache{})
+	admin.RegisterAdminRoutes(app, testToken, admin.NewHandler(svc, log))
 	return app
 }
 
@@ -146,7 +153,9 @@ func TestStatusListsEveryServedMarketSorted(t *testing.T) {
 // to build the server rather than start without auth.
 func TestNewServerRejectsAnEmptyToken(t *testing.T) {
 	log := logger.NewLogger(logger.Error)
-	handler := admin.NewHandler(admin.NewService(map[string]admin.MarketController{}), log)
+	svc := admin.NewService(map[string]admin.MarketController{},
+		&fakeUsers{byName: map[string]*repository.User{}}, &fakeOrders{}, &fakeCache{})
+	handler := admin.NewHandler(svc, log)
 
 	_, err := admin.NewServer(0, "", handler, log)
 	if err == nil {
@@ -154,5 +163,325 @@ func TestNewServerRejectsAnEmptyToken(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ADMIN_TOKEN") {
 		t.Fatalf("error %q should name the variable an operator has to set", err)
+	}
+}
+
+// --- user order management -------------------------------------------------------------------
+
+const (
+	ethMarketID = 1
+	btcMarketID = 2
+	// A market that exists in the database but that this core does not run a matcher for.
+	unservedMarketID = 3
+)
+
+type fakeUsers struct{ byName map[string]*repository.User }
+
+func (f *fakeUsers) GetUserByUsername(ctx context.Context, username string) (*repository.User, error) {
+	user, ok := f.byName[username]
+	if !ok {
+		return nil, repository.ErrUserNotFound
+	}
+	return user, nil
+}
+
+// fakeOrders enforces the user_id filter the real queries apply, so the cross-user test asserts
+// something real rather than passing because the fake ignores scoping.
+type fakeOrders struct{ rows []repository.OrderRow }
+
+func (f *fakeOrders) GetOrdersByUser(ctx context.Context, userID uuid.UUID, showOpen, showCancelled bool,
+	_, _ *int, _, _ *time.Time, limit int) ([]repository.OrderRow, error) {
+	var out []repository.OrderRow
+	for _, r := range f.rows {
+		if r.UserID != userID {
+			continue
+		}
+		if showOpen && !showCancelled && r.MarketID == nil {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func (f *fakeOrders) GetOrdersByIDs(ctx context.Context, userID uuid.UUID, ids []uuid.UUID) ([]repository.OrderRow, error) {
+	want := make(map[uuid.UUID]struct{}, len(ids))
+	for _, id := range ids {
+		want[id] = struct{}{}
+	}
+	var out []repository.OrderRow
+	for _, r := range f.rows {
+		if r.UserID != userID {
+			continue
+		}
+		if _, ok := want[r.ID]; ok {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+type fakeCache struct{}
+
+func (f *fakeCache) GetMarketByID(id int) (*repository.Market, error) {
+	switch id {
+	case ethMarketID:
+		return &repository.Market{ID: id, BaseSymbol: "ETH", QuoteSymbol: "USDT"}, nil
+	case btcMarketID:
+		return &repository.Market{ID: id, BaseSymbol: "BTC", QuoteSymbol: "USDT"}, nil
+	case unservedMarketID:
+		return &repository.Market{ID: id, BaseSymbol: "ETH", QuoteSymbol: "BTC"}, nil
+	}
+	return nil, repository.ErrMarketNotFound
+}
+
+// cancellingMarket records what the admin path published, so a test can tell "queued" apart from
+// "reported as queued but never sent".
+type cancellingMarket struct {
+	fakeMarket
+	cancelled []uuid.UUID
+}
+
+func (m *cancellingMarket) EmitCancel(ctx context.Context, orderID uuid.UUID) error {
+	m.cancelled = append(m.cancelled, orderID)
+	return nil
+}
+
+func openOrder(id, userID uuid.UUID, marketID int) repository.OrderRow {
+	m := marketID
+	side := "buy"
+	return repository.OrderRow{ID: id, UserID: userID, MarketID: &m, Side: &side, Type: "limit", TimeInForce: "GTC"}
+}
+
+func closedOrder(id, userID uuid.UUID) repository.OrderRow {
+	return repository.OrderRow{ID: id, UserID: userID, Type: "limit", TimeInForce: "GTC"}
+}
+
+type userFixture struct {
+	app    *fiber.App
+	eth    *cancellingMarket
+	btc    *cancellingMarket
+	alice  *repository.User
+	orders *fakeOrders
+}
+
+func newUserFixture(t *testing.T, frozen bool, rows func(aliceID uuid.UUID) []repository.OrderRow) *userFixture {
+	t.Helper()
+	alice := &repository.User{ID: uuid.New(), Username: "alice", Frozen: frozen}
+	eth, btc := &cancellingMarket{}, &cancellingMarket{}
+	orders := &fakeOrders{rows: rows(alice.ID)}
+
+	log := logger.NewLogger(logger.Error)
+	svc := admin.NewService(
+		map[string]admin.MarketController{"ETH-USDT": eth, "BTC-USDT": btc},
+		&fakeUsers{byName: map[string]*repository.User{"alice": alice}},
+		orders,
+		&fakeCache{},
+	)
+	app := fiber.New()
+	admin.RegisterAdminRoutes(app, testToken, admin.NewHandler(svc, log))
+
+	return &userFixture{app: app, eth: eth, btc: btc, alice: alice, orders: orders}
+}
+
+func postJSON(t *testing.T, app *fiber.App, path, body string) (int, []byte) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, out
+}
+
+// The guard that makes this safe to operate: without a freeze, a mistyped username would wipe a
+// healthy user's book, and the user could re-place everything immediately anyway.
+func TestCancelRefusesUnlessTheUserIsFrozen(t *testing.T) {
+	f := newUserFixture(t, false, func(id uuid.UUID) []repository.OrderRow {
+		return []repository.OrderRow{openOrder(uuid.New(), id, ethMarketID)}
+	})
+
+	status, body := postJSON(t, f.app, "/admin/users/alice/orders/cancel", `{"all":true}`)
+	if status != http.StatusConflict {
+		t.Fatalf("status = %d (%s), want 409", status, body)
+	}
+	if !strings.Contains(string(body), "freeze") {
+		t.Fatalf("409 body should tell the operator to freeze first, got %s", body)
+	}
+	if len(f.eth.cancelled) != 0 {
+		t.Fatal("orders were cancelled for an unfrozen user")
+	}
+}
+
+func TestCancelAllPublishesEveryOpenOrderAcrossMarkets(t *testing.T) {
+	ethOrder, btcOrder, closed := uuid.New(), uuid.New(), uuid.New()
+	f := newUserFixture(t, true, func(id uuid.UUID) []repository.OrderRow {
+		return []repository.OrderRow{
+			openOrder(ethOrder, id, ethMarketID),
+			openOrder(btcOrder, id, btcMarketID),
+			closedOrder(closed, id),
+		}
+	})
+
+	status, body := postJSON(t, f.app, "/admin/users/alice/orders/cancel", `{"all":true}`)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200", status, body)
+	}
+
+	var summary admin.CancelSummary
+	if err := json.Unmarshal(body, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Queued != 2 || summary.Skipped != 0 {
+		t.Fatalf("queued=%d skipped=%d, want 2/0 — closed orders are filtered out by the query: %+v",
+			summary.Queued, summary.Skipped, summary.Results)
+	}
+	if len(f.eth.cancelled) != 1 || f.eth.cancelled[0] != ethOrder {
+		t.Fatalf("ETH market saw %v, want [%s]", f.eth.cancelled, ethOrder)
+	}
+	if len(f.btc.cancelled) != 1 || f.btc.cancelled[0] != btcOrder {
+		t.Fatalf("BTC market saw %v, want [%s]", f.btc.cancelled, btcOrder)
+	}
+}
+
+// An order this core cannot reach must never come back as a success: it is still live, and the
+// operator has to know that to act on it.
+func TestCancelReportsUnreachableOrdersWithoutBlockingTheRest(t *testing.T) {
+	reachable, onPaused, onUnserved, closed := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	f := newUserFixture(t, true, func(id uuid.UUID) []repository.OrderRow {
+		return []repository.OrderRow{
+			openOrder(reachable, id, ethMarketID),
+			openOrder(onPaused, id, btcMarketID),
+			openOrder(onUnserved, id, unservedMarketID),
+			closedOrder(closed, id),
+		}
+	})
+	f.btc.Pause()
+
+	// Explicit ids, so the closed order is included rather than filtered out by the open-only query.
+	body := fmt.Sprintf(`{"order_ids":[%q,%q,%q,%q]}`, reachable, onPaused, onUnserved, closed)
+	status, raw := postJSON(t, f.app, "/admin/users/alice/orders/cancel", body)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200 — unreachable orders are results, not request failures", status, raw)
+	}
+
+	var summary admin.CancelSummary
+	if err := json.Unmarshal(raw, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Queued != 1 || summary.Skipped != 3 {
+		t.Fatalf("queued=%d skipped=%d, want 1/3: %+v", summary.Queued, summary.Skipped, summary.Results)
+	}
+
+	reasons := map[string]string{}
+	for _, r := range summary.Results {
+		reasons[r.OrderID] = r.Reason
+	}
+	if reasons[reachable.String()] != "" {
+		t.Fatalf("reachable order was skipped: %q", reasons[reachable.String()])
+	}
+	for _, tc := range []struct{ id, want string }{
+		{onPaused.String(), "paused"},
+		{onUnserved.String(), "not served"},
+		{closed.String(), "not open"},
+	} {
+		if !strings.Contains(reasons[tc.id], tc.want) {
+			t.Fatalf("reason for %s = %q, want it to mention %q", tc.id, reasons[tc.id], tc.want)
+		}
+	}
+	if len(f.eth.cancelled) != 1 {
+		t.Fatalf("the reachable order should still have been published, got %v", f.eth.cancelled)
+	}
+	if len(f.btc.cancelled) != 0 {
+		t.Fatal("published to a paused market")
+	}
+}
+
+// The repository queries are user-scoped; an admin acting on alice must not be able to cancel bob's
+// order by pasting its id.
+func TestCancelCannotReachAnotherUsersOrder(t *testing.T) {
+	bobOrder := uuid.New()
+	bobID := uuid.New()
+	f := newUserFixture(t, true, func(aliceID uuid.UUID) []repository.OrderRow {
+		return []repository.OrderRow{openOrder(bobOrder, bobID, ethMarketID)}
+	})
+
+	status, raw := postJSON(t, f.app, "/admin/users/alice/orders/cancel", fmt.Sprintf(`{"order_ids":[%q]}`, bobOrder))
+	if status != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200", status, raw)
+	}
+
+	var summary admin.CancelSummary
+	if err := json.Unmarshal(raw, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Queued != 0 || len(summary.Results) != 0 {
+		t.Fatalf("another user's order was targeted: %+v", summary)
+	}
+	if len(f.eth.cancelled) != 0 {
+		t.Fatalf("published a cancel for another user's order: %v", f.eth.cancelled)
+	}
+}
+
+func TestCancelRequiresATarget(t *testing.T) {
+	f := newUserFixture(t, true, func(uuid.UUID) []repository.OrderRow { return nil })
+
+	status, _ := postJSON(t, f.app, "/admin/users/alice/orders/cancel", `{}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for neither all nor order_ids", status)
+	}
+}
+
+func TestListUserOrdersReportsFrozenAndReachability(t *testing.T) {
+	onEth, onPaused := uuid.New(), uuid.New()
+	f := newUserFixture(t, true, func(id uuid.UUID) []repository.OrderRow {
+		return []repository.OrderRow{openOrder(onEth, id, ethMarketID), openOrder(onPaused, id, btcMarketID)}
+	})
+	f.btc.Pause()
+
+	status, body := request(t, f.app, http.MethodGet, "/admin/users/alice/orders", testToken)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200", status, body)
+	}
+
+	var out admin.UserOrders
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.Frozen {
+		t.Fatal("frozen flag not reported")
+	}
+	if len(out.Orders) != 2 {
+		t.Fatalf("got %d orders, want 2", len(out.Orders))
+	}
+
+	byID := map[string]admin.UserOrder{}
+	for _, o := range out.Orders {
+		byID[o.OrderID] = o
+	}
+	if !byID[onEth.String()].Reachable {
+		t.Fatal("order on a running market should be reachable")
+	}
+	// Reachability is shown up front so the operator sees the problem before attempting the cancel.
+	if paused := byID[onPaused.String()]; paused.Reachable || !strings.Contains(paused.Unreachable, "paused") {
+		t.Fatalf("order on a paused market = %+v, want unreachable with a paused reason", paused)
+	}
+}
+
+func TestUnknownUserIs404(t *testing.T) {
+	f := newUserFixture(t, true, func(uuid.UUID) []repository.OrderRow { return nil })
+
+	if status, _ := request(t, f.app, http.MethodGet, "/admin/users/nobody/orders", testToken); status != http.StatusNotFound {
+		t.Fatalf("list = %d, want 404", status)
+	}
+	if status, _ := postJSON(t, f.app, "/admin/users/nobody/orders/cancel", `{"all":true}`); status != http.StatusNotFound {
+		t.Fatalf("cancel = %d, want 404", status)
 	}
 }

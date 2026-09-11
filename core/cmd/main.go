@@ -112,6 +112,7 @@ func main() {
 	instrumentRepository := repository.NewInstrumentRepository(log, postgresqlClient, coreConfig.DBQueryTimeout)
 	marketRepository := repository.NewMarketRepository(log, postgresqlClient, coreConfig.DBQueryTimeout)
 	orderRepository := repository.NewOrderRepository(log, postgresqlClient, dbMetrics, coreConfig.DBQueryTimeout)
+	userRepository := repository.NewUserRepository(log, postgresqlClient, coreConfig.DBQueryTimeout)
 
 	const cacheRefreshSeconds = 5 * 60
 	cacheService := cache.NewCacheService(log, marketRepository, instrumentRepository, cacheRefreshSeconds)
@@ -150,7 +151,7 @@ func main() {
 	adminServer, err := admin.NewServer(
 		coreConfig.AdminPort,
 		coreConfig.AdminToken,
-		admin.NewHandler(admin.NewService(servedMarkets), log),
+		admin.NewHandler(admin.NewService(servedMarkets, userRepository, orderRepository, cacheService), log),
 		log,
 	)
 	if err != nil {

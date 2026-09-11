@@ -1,6 +1,7 @@
 package command
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +31,9 @@ var (
 	errAdminURLRequired   = errors.New("core admin URL is required: set " + coreAdminURLEnv + " or pass --core-url")
 	errAdminTokenRequired = errors.New("admin token is required: set " + coreAdminTokenEnv + " or pass --token")
 	errMarketRefRequired  = errors.New("--market is required (format: BASE-QUOTE)")
+
+	errCancelTargetRequired  = errors.New("pass --all or at least one --order-id")
+	errCancelTargetAmbiguous = errors.New("--all and --order-id are mutually exclusive")
 )
 
 // coreAdminClient talks to core's admin API — the per-market circuit breaker. Unlike every other
@@ -78,7 +82,7 @@ func (c *coreAdminClient) setPaused(marketRef string, paused bool) (*marketStatu
 	path := fmt.Sprintf("/admin/markets/%s/%s", url.PathEscape(marketRef), action)
 
 	var out marketStatus
-	if err := c.do(http.MethodPost, path, &out); err != nil {
+	if err := c.do(http.MethodPost, path, nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -86,18 +90,30 @@ func (c *coreAdminClient) setPaused(marketRef string, paused bool) (*marketStatu
 
 func (c *coreAdminClient) status() ([]marketStatus, error) {
 	var out []marketStatus
-	if err := c.do(http.MethodGet, "/admin/markets", &out); err != nil {
+	if err := c.do(http.MethodGet, "/admin/markets", nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *coreAdminClient) do(method, path string, out any) error {
-	req, err := http.NewRequest(method, c.baseURL+path, nil)
+func (c *coreAdminClient) do(method, path string, in, out any) error {
+	var payload io.Reader
+	if in != nil {
+		encoded, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		payload = bytes.NewReader(encoded)
+	}
+
+	req, err := http.NewRequest(method, c.baseURL+path, payload)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -111,21 +127,189 @@ func (c *coreAdminClient) do(method, path string, out any) error {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("core admin api: %s: %s", resp.Status, apiMessage(body))
+		return fmt.Errorf("core admin api: %s: %s", resp.Status, utils.APIErrorMessage(body))
 	}
 	return json.Unmarshal(body, out)
 }
 
-// apiMessage pulls the message out of an error body, falling back to the raw body so a response
-// from something that is not core (a proxy, the wrong port) is still legible.
-func apiMessage(body []byte) string {
-	var payload struct {
-		Message string `json:"message"`
+type userOrder struct {
+	OrderID     string  `json:"order_id"`
+	Market      string  `json:"market"`
+	Side        string  `json:"side"`
+	Price       *uint64 `json:"price"`
+	Remaining   *uint64 `json:"remaining"`
+	Type        string  `json:"type"`
+	Open        bool    `json:"open"`
+	Reachable   bool    `json:"reachable"`
+	Unreachable string  `json:"unreachable_reason"`
+}
+
+type userOrders struct {
+	Username string      `json:"username"`
+	Frozen   bool        `json:"frozen"`
+	Orders   []userOrder `json:"orders"`
+}
+
+type cancelResult struct {
+	OrderID string `json:"order_id"`
+	Market  string `json:"market"`
+	Queued  bool   `json:"queued"`
+	Reason  string `json:"reason"`
+}
+
+type cancelSummary struct {
+	Username string         `json:"username"`
+	Queued   int            `json:"queued"`
+	Skipped  int            `json:"skipped"`
+	Results  []cancelResult `json:"results"`
+}
+
+func (c *coreAdminClient) userOrders(username string, includeCancelled bool) (*userOrders, error) {
+	path := "/admin/users/" + url.PathEscape(username) + "/orders"
+	if includeCancelled {
+		path += "?cancelled=true"
 	}
-	if err := json.Unmarshal(body, &payload); err == nil && payload.Message != "" {
-		return payload.Message
+	var out userOrders
+	if err := c.do(http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
 	}
-	return strings.TrimSpace(string(body))
+	return &out, nil
+}
+
+func (c *coreAdminClient) cancelUserOrders(username string, orderIDs []string, all bool) (*cancelSummary, error) {
+	body := map[string]any{"all": all}
+	if len(orderIDs) > 0 {
+		body["order_ids"] = orderIDs
+	}
+	var out cancelSummary
+	if err := c.do(http.MethodPost, "/admin/users/"+url.PathEscape(username)+"/orders/cancel", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func newUserOrdersCmd() *cobra.Command {
+	var username, coreURL, token string
+	var includeCancelled bool
+
+	cmd := &cobra.Command{
+		Use:         "orders",
+		Short:       "List a user's orders as core sees them",
+		Annotations: map[string]string{annotationSkipDB: "true"},
+		Long: "Lists the user's open orders, whether the account is frozen, and whether core can\n" +
+			"actually cancel each one — an order on a paused or unserved market is reported as\n" +
+			"unreachable rather than silently failing later.",
+		Example: "  cli user orders --username alice\n  cli user orders --username alice --cancelled",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			username = strings.TrimSpace(username)
+			if username == "" {
+				return errUserBalanceUsernameRequired
+			}
+			client, err := newCoreAdminClient(coreURL, token)
+			if err != nil {
+				return err
+			}
+			result, err := client.userOrders(username, includeCancelled)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("user %s (frozen: %t)\n", result.Username, result.Frozen)
+			if len(result.Orders) == 0 {
+				fmt.Println("no orders")
+				return nil
+			}
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "ORDER ID\tMARKET\tSIDE\tPRICE\tREMAINING\tSTATE")
+			for _, o := range result.Orders {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+					o.OrderID, utils.DefaultIfBlank(o.Market, "-"), utils.DefaultIfBlank(o.Side, "-"), utils.FormatUint64PtrOr(o.Price, "-"), utils.FormatUint64PtrOr(o.Remaining, "-"), orderState(o))
+			}
+			return w.Flush()
+		},
+	}
+
+	cmd.Flags().StringVar(&username, "username", "", "username of the user")
+	cmd.Flags().BoolVar(&includeCancelled, "cancelled", false, "include cancelled orders")
+	addCoreAdminFlags(cmd, &coreURL, &token)
+	return cmd
+}
+
+func newUserCancelOrdersCmd() *cobra.Command {
+	var username, coreURL, token string
+	var orderIDs []string
+	var all bool
+
+	cmd := &cobra.Command{
+		Use:         "cancel-orders",
+		Short:       "Cancel a frozen user's orders",
+		Annotations: map[string]string{annotationSkipDB: "true"},
+		Long: "Publishes a cancel for each targeted order, releasing the funds it had blocked.\n\n" +
+			"The account must be frozen first (`cli user freeze`): that guards against wiping the\n" +
+			"wrong user's book on a mistyped username, and stops them re-placing what you cancel.\n\n" +
+			"Cancels are published, not applied — the matcher processes each in turn. Re-run\n" +
+			"`cli user orders` to confirm the outcome.",
+		Example: "  cli user cancel-orders --username alice --all\n" +
+			"  cli user cancel-orders --username alice --order-id <uuid> --order-id <uuid>",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			username = strings.TrimSpace(username)
+			if username == "" {
+				return errUserBalanceUsernameRequired
+			}
+			if !all && len(orderIDs) == 0 {
+				return errCancelTargetRequired
+			}
+			if all && len(orderIDs) > 0 {
+				return errCancelTargetAmbiguous
+			}
+
+			client, err := newCoreAdminClient(coreURL, token)
+			if err != nil {
+				return err
+			}
+			summary, err := client.cancelUserOrders(username, orderIDs, all)
+			if err != nil {
+				return err
+			}
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "ORDER ID\tMARKET\tRESULT")
+			for _, r := range summary.Results {
+				outcome := "queued"
+				if !r.Queued {
+					outcome = "SKIPPED: " + r.Reason
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\n", r.OrderID, utils.DefaultIfBlank(r.Market, "-"), outcome)
+			}
+			if err := w.Flush(); err != nil {
+				return err
+			}
+
+			fmt.Printf("\n%d cancel(s) queued, %d skipped.\n", summary.Queued, summary.Skipped)
+			if summary.Skipped > 0 {
+				fmt.Println("Skipped orders are still live — resolve the reason above and re-run.")
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&username, "username", "", "username of the user")
+	cmd.Flags().StringArrayVar(&orderIDs, "order-id", nil, "order id to cancel (repeatable)")
+	cmd.Flags().BoolVar(&all, "all", false, "cancel every open order the user has")
+	addCoreAdminFlags(cmd, &coreURL, &token)
+	return cmd
+}
+
+func orderState(o userOrder) string {
+	switch {
+	case !o.Open:
+		return "closed"
+	case o.Reachable:
+		return "open"
+	default:
+		return "open (" + o.Unreachable + ")"
+	}
 }
 
 func newMarketPauseCmd() *cobra.Command  { return newSetPausedCmd(true) }

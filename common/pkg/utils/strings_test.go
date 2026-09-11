@@ -30,3 +30,33 @@ func TestNilIfBlank(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+func TestDefaultIfBlank(t *testing.T) {
+	tests := []struct{ name, in, want string }{
+		{"value is kept", "ETH-USDT", "ETH-USDT"},
+		{"empty takes the fallback", "", "-"},
+		{"whitespace counts as blank", "   ", "-"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := utils.DefaultIfBlank(tt.in, "-"); got != tt.want {
+				t.Fatalf("DefaultIfBlank(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatUint64PtrOr(t *testing.T) {
+	v := uint64(1000)
+	if got := utils.FormatUint64PtrOr(&v, "-"); got != "1000" {
+		t.Fatalf("got %q, want 1000", got)
+	}
+	if got := utils.FormatUint64PtrOr(nil, "-"); got != "-" {
+		t.Fatalf("nil got %q, want the fallback", got)
+	}
+	// Zero is a real value, not an absence — it must not be confused with nil.
+	zero := uint64(0)
+	if got := utils.FormatUint64PtrOr(&zero, "-"); got != "0" {
+		t.Fatalf("zero got %q, want 0", got)
+	}
+}
