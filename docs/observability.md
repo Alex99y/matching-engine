@@ -20,6 +20,66 @@ Prometheus scrapes all of the above (`infra/local-deploy/prometheus/prometheus.y
 
 ---
 
+## Dashboards
+
+Three dashboards are provisioned from `infra/local-deploy/grafana/dashboards/`. Note that
+`make stack-up` brings up **only Postgres and RabbitMQ** — Grafana and Prometheus live in the full
+compose file:
+
+```sh
+docker compose -f infra/local-deploy/docker-compose.yml up -d prometheus grafana
+```
+
+Grafana is then on **http://localhost:10000** (Prometheus on `:9090`). The captures below are from a
+live local run under load, so they double as a reference for what "healthy" looks like.
+
+> The captures predate the dead-letter and circuit-breaker panels added to `me-core`
+> (**Dead-letters by reason**, **DLQ publish failures**, **Paused markets**, **Dead-letter queue
+> depth**). Everything else matches; re-capture `core_1`/`core_2` to bring them level.
+
+### `me-core` — Matching Engine — Core
+
+Scoped by a **`market`** template variable (top left), so every panel is one market at a time.
+
+![Core dashboard — throughput and batching](grafana-dashboards/core_1.png)
+
+*Throughput* — `orders_received` against `trades`, and the stacked outcome mix
+(`cancelled`/`filled`/`open`/`partially_filled`/`rejected`) that shows at a glance whether orders are
+resting, crossing, or being turned away. *Latency & Batching* — the `batch_duration` p50/p95/p99 SLI,
+batch size, and batch outcomes (`committed`/`poison_isolated`/`transient_fail`).
+
+![Core dashboard — health, order book and queue](grafana-dashboards/core_2.png)
+
+*Health* — the resilience counters, all expected to sit at **0**; any of them moving is the signal to
+investigate. *Order Book* — resting depth per side and best bid/ask. *Queue* — the RabbitMQ command
+backlog, which answers "is core keeping up?".
+
+### `me-api` — Matching Engine — API
+
+![API dashboard — HTTP](grafana-dashboards/api_1.png)
+
+*HTTP* — request rate by status, error ratio, and latency both per route (p95) and aggregate
+(p50/p95/p99), plus in-flight requests as the saturation signal. Latency is keyed on the **route
+template**, so `/api/v1/markets/:market/candles` is one series rather than one per market.
+
+![API dashboard — publishing and event-log stream](grafana-dashboards/api_2.png)
+
+*Order Publishing* — the API→broker hop: publishes by result and p95 latency. *Event-Log Stream
+(consumer)* — events received by type, **cache resyncs** (the stream-correctness SLI, expected flat at
+0), connected SSE clients, and clients dropped for lagging.
+
+### `me-db` — Matching Engine — Database
+
+Scoped by a **`service`** variable (`api` / `core` / All), since both processes embed the repository
+and pool.
+
+![Database dashboard — pool and queries](grafana-dashboards/db_1.png)
+
+*Connection Pool* — open/in-use/idle per service, and pool waits as the exhaustion signal. *Queries* —
+p95 latency and rate per `operation`, plus errors broken down by SQLSTATE `class`.
+
+---
+
 ## Naming conventions
 
 - Namespace **`me`** (matching engine), subsystem per module: **`api`**, **`db`**, **`core`**.
@@ -139,9 +199,14 @@ series for this system:
   up?" signal.
 - `rabbitmq_queue_messages_unacked`, `rabbitmq_connections`, `rabbitmq_channels`, node memory/health.
 
-> The broker is configured with `prometheus.return_per_object_metrics = false`, so
-> `rabbitmq_queue_messages_ready` is an **aggregate across all queues** (no per-queue/per-market
-> label). Set it to `true` for a per-market breakdown (costs one series per queue).
+> The broker runs with `prometheus.return_per_object_metrics = true`
+> (`infra/local-deploy/rabbitmq/rabbitmq.conf`), so these carry a **`queue`** label and the backlog can
+> be read per market. That is what makes a paused market legible — its queue climbs while the others
+> stay flat — and it is why the dead-letter queues are separable as `queue=~"me\.dlq\..*"`.
+>
+> The cost is one series per queue. This deployment has two per market (the command queue and its
+> parking lot) plus the ephemeral `amq.gen-*` subscriber queues, so it is negligible here; on a broker
+> with thousands of queues, turn it back off and lose the per-market breakdown.
 
 ---
 
@@ -153,11 +218,10 @@ series for this system:
 | `me_api_order_publish_duration_seconds` | `0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1` |
 | `me_db_query_duration_seconds` | `0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25` |
 | `me_core_batch_duration_seconds` | `0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1` |
-| `me_core_batch_size` | `1, 2, 4, 8, 16, 24, 32` (count, not seconds) |
+| `me_core_batch_size` | `1, 2, 4, 8, 16, 32, 64, 96, 128` (count, not seconds) |
 
-> ⚠️ `me_core_batch_size` buckets top out at **32**, but `maxBatchSize` is now **128**. Batches larger
-> than 32 all fall into the `+Inf` bucket, so `histogram_quantile` saturates at 32 and under-reports
-> true batch size. Extend the buckets (e.g. `…, 32, 64, 96, 128`) to read it accurately.
+The batch-size buckets run to **128** to match `maxBatchSize`, so `histogram_quantile` reads a full
+batch accurately instead of saturating below the cap.
 
 ---
 
