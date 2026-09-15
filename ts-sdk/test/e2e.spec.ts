@@ -142,13 +142,13 @@ function startServer(): Promise<Server> {
         case "GET /api/v1/orders/":
           sendJson(
             200,
-            '[{"id":"order-1","type":"limit","time_in_force":"gtc","have_quantity":5,"want_quantity":10000000000000000000,"created_at":1700000000,"open_order":{"price":2000,"side":"buy","remaining_have":5,"remaining_want":10}}]',
+            '[{"id":"order-1","type":"limit","time_in_force":"gtc","status":"open","have_quantity":5,"want_quantity":10000000000000000000,"created_at":1700000000,"open_order":{"price":2000,"side":"buy","remaining_have":5,"remaining_want":10}}]',
           );
           return;
         case "GET /api/v1/orders/order-1":
           sendJson(
             200,
-            '{"id":"order-1","type":"limit","time_in_force":"gtc","have_quantity":5,"want_quantity":10,"created_at":1700000000}',
+            '{"id":"order-1","type":"limit","time_in_force":"gtc","status":"filled","have_quantity":5,"want_quantity":10,"created_at":1700000000}',
           );
           return;
         case "GET /api/v1/users/balances":

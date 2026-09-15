@@ -563,7 +563,10 @@ paths:
           schema: { type: string }
         - name: show_open
           in: query
-          description: 'Set to "true" to include open orders.'
+          description: >-
+            Set to "true" to include open orders. Pending bracket exits (status
+            "pending") are included too: they are live and cancellable but have no
+            open_order block, so read status rather than assuming open_order is set.
           schema: { type: string, enum: ["true", "false"] }
         - name: show_cancelled
           in: query
@@ -1027,6 +1030,26 @@ components:
           description: >-
             Reject the order instead of matching it if it would take liquidity on arrival.
             Valid only for limit gtc orders. Not returned on order reads.
+        take_profit_price:
+          type: integer
+          format: int64
+          minimum: 1
+          description: >-
+            Makes this a bracket entry. Once the entry fills, an opposite-side market
+            exit is armed for what it received and fires when the last trade price
+            reaches this level (at or above for a buy entry, at or below for a sell).
+            Must be a multiple of price_quantum and, for a limit buy, above the price
+            (below it for a limit sell).
+        stop_loss_price:
+          type: integer
+          format: int64
+          minimum: 1
+          description: >-
+            Same exit as take_profit_price, fired when the last trade price reaches this
+            level (at or below for a buy entry, at or above for a sell). Must be a
+            multiple of price_quantum and, for a limit buy, below the price (above it for
+            a limit sell). Either or both triggers may be set; whichever hits first fires
+            the single exit.
       required: [order_side, order_type, order_tif, market]
 
     BatchCreateOrderResult:
@@ -1034,6 +1057,13 @@ components:
       properties:
         index: { type: integer, format: int32, description: Index of this order in the submitted batch. }
         order_id: { type: string, format: uuid }
+        exit_order_id:
+          type: string
+          format: uuid
+          description: >-
+            Present only when the request carried take_profit_price or stop_loss_price:
+            the id the bracket exit will have. The exit does not exist until the entry
+            fills; watch this id on the user stream or poll GET /orders/{id}.
         error: { type: string }
       required: [index]
 
@@ -1111,6 +1141,12 @@ components:
         client_order_id: { type: string }
         type: { type: string, enum: [limit, market] }
         time_in_force: { type: string, enum: [gtc, ioc, fok] }
+        status:
+          type: string
+          enum: [pending, open, filled, partially_filled, cancelled]
+          description: >-
+            Persisted lifecycle state. "pending" is a bracket exit waiting for its
+            trigger: funds already blocked, no open_order block.
         side:
           type: string
           enum: [buy, sell]
@@ -1121,6 +1157,20 @@ components:
         want_quantity: { type: integer, format: int64, minimum: 0 }
         created_at: { type: integer, format: int64, description: unix seconds }
         expires_at: { type: integer, format: int64, description: unix seconds }
+        take_profit_price:
+          type: integer
+          format: int64
+          minimum: 1
+          description: On an entry, the trigger it was submitted with; on its exit, the trigger it waits on.
+        stop_loss_price:
+          type: integer
+          format: int64
+          minimum: 1
+          description: On an entry, the trigger it was submitted with; on its exit, the trigger it waits on.
+        parent_order_id:
+          type: string
+          format: uuid
+          description: Present only on a bracket exit — the entry that armed it.
         open_order:
           allOf: [{ $ref: "#/components/schemas/OpenOrder" }]
           description: Present only while the order still has an open, unfilled remainder.
@@ -1133,7 +1183,7 @@ components:
           description: >-
             Every fill against this order. Only present on GET /orders/{id};
             GET /orders (the list endpoint) never populates this field.
-      required: [id, type, time_in_force, have_quantity, want_quantity, created_at]
+      required: [id, type, time_in_force, status, have_quantity, want_quantity, created_at]
 
     CandleJSON:
       type: object

@@ -23,16 +23,25 @@ var (
 )
 
 type OrderToPublish struct {
-	ClientOrderID string
-	MarketID      string
-	Side          order_events_queue.OrderSide
-	Type          order_events_queue.OrderType
-	TimeInForce   order_events_queue.TimeInForce
-	Price         uint64
-	Quantity      uint64
-	QuoteQty      *uint64
-	ExpiresAt     *int64
-	PostOnly      bool
+	ClientOrderID   string
+	MarketID        string
+	Side            order_events_queue.OrderSide
+	Type            order_events_queue.OrderType
+	TimeInForce     order_events_queue.TimeInForce
+	Price           uint64
+	Quantity        uint64
+	QuoteQty        *uint64
+	ExpiresAt       *int64
+	PostOnly        bool
+	TakeProfitPrice *uint64
+	StopLossPrice   *uint64
+}
+
+// PublishedOrder is the outcome of a queued order. ExitOrderID is set only for a bracket entry:
+// the exit does not exist yet (core arms it when the entry fills) but its id is already known.
+type PublishedOrder struct {
+	OrderID     uuid.UUID
+	ExitOrderID *uuid.UUID
 }
 
 type GetOrdersFilter struct {
@@ -136,7 +145,7 @@ func (o *OrderService) PublishOrderToQueue(
 	ctx context.Context,
 	userID uuid.UUID,
 	order *OrderToPublish,
-) (*uuid.UUID, error) {
+) (*PublishedOrder, error) {
 	market, err := o.cacheService.GetMarketByRef(order.MarketID)
 	if err != nil {
 		return nil, ErrMarketNotFound
@@ -148,18 +157,20 @@ func (o *OrderService) PublishOrderToQueue(
 	}
 
 	openEvent := &order_events_queue.OpenOrderEvent{
-		OrderID:       orderID,
-		UserID:        userID,
-		ClientOrderID: order.ClientOrderID,
-		Side:          order.Side,
-		Type:          order.Type,
-		TimeInForce:   order.TimeInForce,
-		MarketID:      market.ID,
-		Price:         order.Price,
-		Quantity:      order.Quantity,
-		QuoteQty:      order.QuoteQty,
-		ExpiresAt:     order.ExpiresAt,
-		PostOnly:      order.PostOnly,
+		OrderID:         orderID,
+		UserID:          userID,
+		ClientOrderID:   order.ClientOrderID,
+		Side:            order.Side,
+		Type:            order.Type,
+		TimeInForce:     order.TimeInForce,
+		MarketID:        market.ID,
+		Price:           order.Price,
+		Quantity:        order.Quantity,
+		QuoteQty:        order.QuoteQty,
+		ExpiresAt:       order.ExpiresAt,
+		PostOnly:        order.PostOnly,
+		TakeProfitPrice: order.TakeProfitPrice,
+		StopLossPrice:   order.StopLossPrice,
 	}
 
 	if err := order_events_queue.ValidateOrderEvent(
@@ -194,7 +205,12 @@ func (o *OrderService) PublishOrderToQueue(
 		return nil, fmt.Errorf("publish order event: %w", err)
 	}
 
-	return &orderID, nil
+	published := &PublishedOrder{OrderID: orderID}
+	if openEvent.HasTriggers() {
+		exitID := order_events_queue.ExitOrderID(orderID)
+		published.ExitOrderID = &exitID
+	}
+	return published, nil
 }
 
 func (o *OrderService) CancelOrder(ctx context.Context, userID uuid.UUID, orderID uuid.UUID) error {

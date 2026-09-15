@@ -164,6 +164,64 @@ func ValidateOrderEvent(order *OpenOrderEvent, constraints MarketConstraints) er
 		return fmt.Errorf("%w: expires_at is only valid for GoodTillCancel orders", ErrInvalidOrderEvent)
 	}
 
+	if order.ParentOrderID != nil {
+		return fmt.Errorf("%w: parent_order_id is reserved for engine-created exits", ErrInvalidOrderEvent)
+	}
+	return validateTriggers(order, constraints)
+}
+
+// validateTriggers checks a bracket entry's trigger prices. The exit sits on the opposite side,
+// so a buy's take profit must be above its price and its stop loss below; a sell's are mirrored.
+// A market entry has no price to anchor to, so only the two triggers' relative order is checked.
+func validateTriggers(order *OpenOrderEvent, c MarketConstraints) error {
+	if !order.HasTriggers() {
+		return nil
+	}
+	if err := validateTriggerPrice("take_profit_price", order.TakeProfitPrice, c); err != nil {
+		return err
+	}
+	if err := validateTriggerPrice("stop_loss_price", order.StopLossPrice, c); err != nil {
+		return err
+	}
+
+	above, below := order.TakeProfitPrice, order.StopLossPrice
+	aboveName, belowName := "take_profit_price", "stop_loss_price"
+	if order.Side == SellOrder {
+		above, below = below, above
+		aboveName, belowName = belowName, aboveName
+	}
+	if above != nil && below != nil && *below >= *above {
+		return fmt.Errorf("%w: %s %d must be above %s %d for a %s order",
+			ErrInvalidOrderEvent, aboveName, *above, belowName, *below, order.Side)
+	}
+	if order.Type != LimitOrder {
+		return nil
+	}
+	if above != nil && *above <= order.Price {
+		return fmt.Errorf("%w: %s %d must be above the limit price %d for a %s order",
+			ErrInvalidOrderEvent, aboveName, *above, order.Price, order.Side)
+	}
+	if below != nil && *below >= order.Price {
+		return fmt.Errorf("%w: %s %d must be below the limit price %d for a %s order",
+			ErrInvalidOrderEvent, belowName, *below, order.Price, order.Side)
+	}
+	return nil
+}
+
+func validateTriggerPrice(name string, price *uint64, c MarketConstraints) error {
+	if price == nil {
+		return nil
+	}
+	if *price == 0 {
+		return fmt.Errorf("%w: %s must be non-zero", ErrInvalidOrderEvent, name)
+	}
+	if *price > maxStorableAmount {
+		return fmt.Errorf("%w: %s %d overflows storable maximum", ErrInvalidOrderEvent, name, *price)
+	}
+	if c.PriceQuantum > 0 && *price%c.PriceQuantum != 0 {
+		return fmt.Errorf("%w: %s %d is not a multiple of tick size %d",
+			ErrInvalidOrderEvent, name, *price, c.PriceQuantum)
+	}
 	return nil
 }
 

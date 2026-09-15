@@ -153,6 +153,7 @@ describe("parseOrder", () => {
     id: "o1",
     type: "limit",
     time_in_force: "gtc",
+    status: "open",
     have_quantity: 100n,
     want_quantity: 200n,
     created_at: 1700000000,
@@ -246,6 +247,37 @@ describe("parseOrder", () => {
   it("parseOrders throws ParseError when not an array", () => {
     expect(() => parseOrders("nope")).toThrow(ParseError);
   });
+
+  it("requires status", () => {
+    const { status: _status, ...withoutStatus } = base;
+    expect(() => parseOrder(withoutStatus)).toThrow(ParseError);
+  });
+
+  it("parses a pending bracket exit", () => {
+    const order = parseOrder({
+      ...base,
+      status: "pending",
+      take_profit_price: 150n,
+      stop_loss_price: 50n,
+      parent_order_id: "entry-1",
+    });
+    expect(order.status).toBe("pending");
+    expect(order.takeProfitPrice).toBe(150n);
+    expect(order.stopLossPrice).toBe(50n);
+    expect(order.parentOrderId).toBe("entry-1");
+    expect(order.openOrder).toBeUndefined();
+  });
+
+  it("omits bracket fields when absent or null", () => {
+    const order = parseOrder({ ...base, take_profit_price: null, parent_order_id: null });
+    expect(order).not.toHaveProperty("takeProfitPrice");
+    expect(order).not.toHaveProperty("stopLossPrice");
+    expect(order).not.toHaveProperty("parentOrderId");
+  });
+
+  it("throws ParseError when a trigger price is not an integer", () => {
+    expect(() => parseOrder({ ...base, stop_loss_price: "50" })).toThrow(ParseError);
+  });
 });
 
 describe("parseBatchCreateOrderResponse", () => {
@@ -258,6 +290,13 @@ describe("parseBatchCreateOrderResponse", () => {
     });
     expect(resp.results[0]).toEqual({ index: 0, orderId: "abc" });
     expect(resp.results[1]).toEqual({ index: 1, error: "market not found" });
+  });
+
+  it("maps exit_order_id for a bracket entry", () => {
+    const resp = parseBatchCreateOrderResponse({
+      results: [{ index: 0, order_id: "abc", exit_order_id: "abc-exit" }],
+    });
+    expect(resp.results[0]).toEqual({ index: 0, orderId: "abc", exitOrderId: "abc-exit" });
   });
 
   it("throws ParseError when results is missing", () => {

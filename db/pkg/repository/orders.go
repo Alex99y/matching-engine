@@ -39,6 +39,10 @@ type OrderRow struct {
 	ExpiresAt            *int64
 	Type                 string
 	TimeInForce          string
+	Status               string
+	TakeProfitPrice      *uint64
+	StopLossPrice        *uint64
+	ParentOrderID        *uuid.UUID
 	Side                 *string
 	Price                *uint64
 	MarketID             *int
@@ -74,10 +78,14 @@ type InsertOrderParams struct {
 	// one of the OrderStatus* constants. Callers that build params for the matcher's
 	// batch flush set it from the matching outcome; ProcessBatch sets it to
 	// OrderStatusCancelled for orders rejected at reservation time.
-	Status      string
-	Type        string
-	TimeInForce string
-	ExpiresAt   *time.Time
+	Status          string
+	Type            string
+	TimeInForce     string
+	ExpiresAt       *time.Time
+	TakeProfitPrice *uint64
+	StopLossPrice   *uint64
+	// ParentOrderID links a bracket exit to the entry that armed it; nil for every other order.
+	ParentOrderID *uuid.UUID
 }
 
 type InsertOpenOrderParams struct {
@@ -109,6 +117,10 @@ func (o *OrderRepository) getOrder(ctx context.Context, where string, args ...an
 			orders.expires_at,
 			orders.type,
 			orders.time_in_force,
+			orders.status,
+			orders.take_profit_price,
+			orders.stop_loss_price,
+			orders.parent_order_id,
 			open_orders.price,
 			open_orders.market_id,
 			open_orders.side,
@@ -141,6 +153,10 @@ func (o *OrderRepository) getOrder(ctx context.Context, where string, args ...an
 		&expiresAt,
 		&row.Type,
 		&row.TimeInForce,
+		&row.Status,
+		&row.TakeProfitPrice,
+		&row.StopLossPrice,
+		&row.ParentOrderID,
 		&row.Price,
 		&row.MarketID,
 		&row.Side,
@@ -223,6 +239,10 @@ func (o *OrderRepository) GetOrderByIDWithMatches(ctx context.Context, userID, o
 			orders.expires_at,
 			orders.type,
 			orders.time_in_force,
+			orders.status,
+			orders.take_profit_price,
+			orders.stop_loss_price,
+			orders.parent_order_id,
 			open_orders.price,
 			open_orders.market_id,
 			open_orders.side,
@@ -271,6 +291,7 @@ func (o *OrderRepository) GetOrderByIDWithMatches(ctx context.Context, userID, o
 		if err := rows.Scan(
 			&row.ID, &clientOrderID, &row.UserID, &row.HaveInstrumentID, &row.WantInstrumentID,
 			&haveQty, &wantQty, &createdAt, &expiresAt, &row.Type, &row.TimeInForce,
+			&row.Status, &row.TakeProfitPrice, &row.StopLossPrice, &row.ParentOrderID,
 			&row.Price, &row.MarketID, &row.Side, &row.ORemainingHaveAmount, &row.ORemainingWantAmount,
 			&row.CRemainingHaveAmount, &row.CRemainingWantAmount, &cancelledAt,
 			&matchID, &matchPrice, &matchBaseAmount, &matchQuoteAmount, &matchFee, &matchIsTaker, &matchTime,
@@ -357,6 +378,10 @@ func (o *OrderRepository) GetOrdersByUser(
 		"orders.expires_at",
 		"orders.type",
 		"orders.time_in_force",
+		"orders.status",
+		"orders.take_profit_price",
+		"orders.stop_loss_price",
+		"orders.parent_order_id",
 	}
 	var joins []string
 
@@ -393,7 +418,9 @@ func (o *OrderRepository) GetOrdersByUser(
 
 	switch {
 	case showOpenOrders && !showCanceledOrders:
-		sb.WriteString("\nAND open_orders.order_id IS NOT NULL")
+		// A pending bracket exit is live and cancellable like a resting order, but has no
+		// open_orders row; it belongs in the same list.
+		sb.WriteString("\nAND (open_orders.order_id IS NOT NULL OR orders.status = 'pending')")
 	case showCanceledOrders && !showOpenOrders:
 		sb.WriteString("\nAND cancelled_orders.order_id IS NOT NULL")
 	}
@@ -453,6 +480,10 @@ func (o *OrderRepository) GetOrdersByUser(
 			&expiresAt,
 			&row.Type,
 			&row.TimeInForce,
+			&row.Status,
+			&row.TakeProfitPrice,
+			&row.StopLossPrice,
+			&row.ParentOrderID,
 		}
 		if showOpenOrders {
 			scanArgs = append(scanArgs,
@@ -526,6 +557,10 @@ func (o *OrderRepository) GetOrdersByIDs(ctx context.Context, userID uuid.UUID, 
 			orders.expires_at,
 			orders.type,
 			orders.time_in_force,
+			orders.status,
+			orders.take_profit_price,
+			orders.stop_loss_price,
+			orders.parent_order_id,
 			open_orders.price,
 			open_orders.market_id,
 			open_orders.side,
@@ -567,6 +602,10 @@ func (o *OrderRepository) GetOrdersByIDs(ctx context.Context, userID uuid.UUID, 
 			&expiresAt,
 			&row.Type,
 			&row.TimeInForce,
+			&row.Status,
+			&row.TakeProfitPrice,
+			&row.StopLossPrice,
+			&row.ParentOrderID,
 			&row.Price,
 			&row.MarketID,
 			&row.Side,

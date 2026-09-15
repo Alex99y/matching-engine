@@ -30,6 +30,8 @@ export const BIGINT_WIRE_FIELDS: ReadonlySet<string> = new Set([
   "base_amount",
   "quote_amount",
   "fee",
+  "take_profit_price",
+  "stop_loss_price",
 ]);
 
 // V8 (Node 21.7+, all of Node 22) passes a third `context` argument to the

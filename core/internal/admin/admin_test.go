@@ -196,7 +196,8 @@ func (f *fakeOrders) GetOrdersByUser(ctx context.Context, userID uuid.UUID, show
 		if r.UserID != userID {
 			continue
 		}
-		if showOpen && !showCancelled && r.MarketID == nil {
+		// Mirrors the repository's open-only filter: resting orders plus pending bracket exits.
+		if showOpen && !showCancelled && r.MarketID == nil && r.Status != repository.OrderStatusPending {
 			continue
 		}
 		out = append(out, r)
@@ -221,16 +222,27 @@ func (f *fakeOrders) GetOrdersByIDs(ctx context.Context, userID uuid.UUID, ids [
 	return out, nil
 }
 
+const (
+	ethInstrumentID  = 10
+	btcInstrumentID  = 11
+	usdtInstrumentID = 20
+)
+
 type fakeCache struct{}
 
+func (f *fakeCache) GetMarkets() []repository.Market {
+	return []repository.Market{
+		{ID: ethMarketID, BaseSymbol: "ETH", QuoteSymbol: "USDT", BaseInstrumentID: ethInstrumentID, QuoteInstrumentID: usdtInstrumentID},
+		{ID: btcMarketID, BaseSymbol: "BTC", QuoteSymbol: "USDT", BaseInstrumentID: btcInstrumentID, QuoteInstrumentID: usdtInstrumentID},
+		{ID: unservedMarketID, BaseSymbol: "ETH", QuoteSymbol: "BTC", BaseInstrumentID: ethInstrumentID, QuoteInstrumentID: btcInstrumentID},
+	}
+}
+
 func (f *fakeCache) GetMarketByID(id int) (*repository.Market, error) {
-	switch id {
-	case ethMarketID:
-		return &repository.Market{ID: id, BaseSymbol: "ETH", QuoteSymbol: "USDT"}, nil
-	case btcMarketID:
-		return &repository.Market{ID: id, BaseSymbol: "BTC", QuoteSymbol: "USDT"}, nil
-	case unservedMarketID:
-		return &repository.Market{ID: id, BaseSymbol: "ETH", QuoteSymbol: "BTC"}, nil
+	for _, m := range f.GetMarkets() {
+		if m.ID == id {
+			return &m, nil
+		}
 	}
 	return nil, repository.ErrMarketNotFound
 }
@@ -255,6 +267,17 @@ func openOrder(id, userID uuid.UUID, marketID int) repository.OrderRow {
 
 func closedOrder(id, userID uuid.UUID) repository.OrderRow {
 	return repository.OrderRow{ID: id, UserID: userID, Type: "limit", TimeInForce: "GTC"}
+}
+
+// pendingExit is a parked bracket exit: no open_orders row, so no MarketID — only its instrument
+// pair says which market it belongs to. A sell exit has base as its have instrument.
+func pendingExit(id, userID uuid.UUID, haveInstrumentID, wantInstrumentID int) repository.OrderRow {
+	return repository.OrderRow{
+		ID: id, UserID: userID, Type: "market", TimeInForce: "IOC",
+		Status:           repository.OrderStatusPending,
+		HaveInstrumentID: haveInstrumentID,
+		WantInstrumentID: wantInstrumentID,
+	}
 }
 
 type userFixture struct {
@@ -401,6 +424,43 @@ func TestCancelReportsUnreachableOrdersWithoutBlockingTheRest(t *testing.T) {
 	}
 	if len(f.btc.cancelled) != 0 {
 		t.Fatal("published to a paused market")
+	}
+}
+
+// A pending bracket exit holds blocked funds without an open_orders row, so the operator sweep must
+// still reach it — through its instrument pair — or a frozen account could keep a live exit.
+func TestCancelReachesPendingExitsThroughTheirInstrumentPair(t *testing.T) {
+	onEth, onBtc, onUnserved := uuid.New(), uuid.New(), uuid.New()
+	f := newUserFixture(t, true, func(id uuid.UUID) []repository.OrderRow {
+		return []repository.OrderRow{
+			pendingExit(onEth, id, ethInstrumentID, usdtInstrumentID), // sell exit on ETH-USDT
+			pendingExit(onBtc, id, usdtInstrumentID, btcInstrumentID), // buy exit on BTC-USDT
+			pendingExit(onUnserved, id, ethInstrumentID, btcInstrumentID),
+		}
+	})
+
+	status, raw := postJSON(t, f.app, "/admin/users/alice/orders/cancel", `{"all":true}`)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200", status, raw)
+	}
+
+	var summary admin.CancelSummary
+	if err := json.Unmarshal(raw, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Queued != 2 || summary.Skipped != 1 {
+		t.Fatalf("queued=%d skipped=%d, want 2/1: %+v", summary.Queued, summary.Skipped, summary.Results)
+	}
+	if len(f.eth.cancelled) != 1 || f.eth.cancelled[0] != onEth {
+		t.Fatalf("ETH market saw %v, want [%s]", f.eth.cancelled, onEth)
+	}
+	if len(f.btc.cancelled) != 1 || f.btc.cancelled[0] != onBtc {
+		t.Fatalf("BTC market saw %v, want [%s]", f.btc.cancelled, onBtc)
+	}
+	for _, r := range summary.Results {
+		if r.OrderID == onUnserved.String() && !strings.Contains(r.Reason, "not served") {
+			t.Fatalf("unserved exit reason = %q, want it to mention \"not served\"", r.Reason)
+		}
 	}
 }
 

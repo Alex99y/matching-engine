@@ -113,6 +113,14 @@ function reqBigInt(obj: Record<string, unknown>, key: string): bigint {
   throw new ParseError(`expected field "${key}" to be an integer`);
 }
 
+function optBigInt(obj: Record<string, unknown>, key: string): bigint | undefined {
+  const v = obj[key];
+  if (v === undefined || v === null) {
+    return undefined;
+  }
+  return reqBigInt(obj, key);
+}
+
 export function parseInstrument(raw: unknown): Instrument {
   const o = asRecord(raw, "instrument");
   return {
@@ -258,6 +266,7 @@ export function parseOrder(raw: unknown): Order {
     id: reqString(o, "id"),
     type: reqString(o, "type"),
     timeInForce: reqString(o, "time_in_force"),
+    status: reqString(o, "status"),
     haveQuantity: reqBigInt(o, "have_quantity"),
     wantQuantity: reqBigInt(o, "want_quantity"),
     createdAt: reqNumber(o, "created_at"),
@@ -266,6 +275,9 @@ export function parseOrder(raw: unknown): Order {
   const clientOrderId = optString(o, "client_order_id");
   const side = optString(o, "side");
   const expiresAt = optNumber(o, "expires_at");
+  const takeProfitPrice = optBigInt(o, "take_profit_price");
+  const stopLossPrice = optBigInt(o, "stop_loss_price");
+  const parentOrderId = optString(o, "parent_order_id");
   const openOrder = o["open_order"] != null ? parseOpenOrder(o["open_order"]) : undefined;
   const cancelledOrder =
     o["cancelled_order"] != null ? parseCancelledOrder(o["cancelled_order"]) : undefined;
@@ -276,6 +288,9 @@ export function parseOrder(raw: unknown): Order {
     ...(clientOrderId !== undefined ? { clientOrderId } : {}),
     ...(side !== undefined ? { side } : {}),
     ...(expiresAt !== undefined ? { expiresAt } : {}),
+    ...(takeProfitPrice !== undefined ? { takeProfitPrice } : {}),
+    ...(stopLossPrice !== undefined ? { stopLossPrice } : {}),
+    ...(parentOrderId !== undefined ? { parentOrderId } : {}),
     ...(openOrder !== undefined ? { openOrder } : {}),
     ...(cancelledOrder !== undefined ? { cancelledOrder } : {}),
     ...(matches !== undefined ? { matches } : {}),
@@ -290,10 +305,12 @@ export function parseBatchCreateOrderResult(raw: unknown): BatchCreateOrderResul
   const o = asRecord(raw, "batch create order result");
   const index = reqNumber(o, "index");
   const orderId = optString(o, "order_id");
+  const exitOrderId = optString(o, "exit_order_id");
   const error = optString(o, "error");
   return {
     index,
     ...(orderId !== undefined ? { orderId } : {}),
+    ...(exitOrderId !== undefined ? { exitOrderId } : {}),
     ...(error !== undefined ? { error } : {}),
   };
 }

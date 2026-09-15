@@ -48,18 +48,31 @@ type OrderEvent struct {
 
 // OpenOrderEvent carries all fields needed to place a new order in the book.
 type OpenOrderEvent struct {
-	OrderID       uuid.UUID   `json:"order_id"`
-	ClientOrderID string      `json:"client_order_id"`
-	MarketID      int         `json:"market_id"`
-	UserID        uuid.UUID   `json:"user_id"`
-	Side          OrderSide   `json:"side"`
-	Type          OrderType   `json:"type"`
-	TimeInForce   TimeInForce `json:"time_in_force"`
-	Price         uint64      `json:"price"`
-	Quantity      uint64      `json:"quantity"`
-	QuoteQty      *uint64     `json:"quote_qty,omitempty"`
-	ExpiresAt     *int64      `json:"expires_at,omitempty"`
-	PostOnly      bool        `json:"post_only,omitempty"`
+	OrderID         uuid.UUID   `json:"order_id"`
+	ClientOrderID   string      `json:"client_order_id"`
+	MarketID        int         `json:"market_id"`
+	UserID          uuid.UUID   `json:"user_id"`
+	Side            OrderSide   `json:"side"`
+	Type            OrderType   `json:"type"`
+	TimeInForce     TimeInForce `json:"time_in_force"`
+	Price           uint64      `json:"price"`
+	Quantity        uint64      `json:"quantity"`
+	QuoteQty        *uint64     `json:"quote_qty,omitempty"`
+	ExpiresAt       *int64      `json:"expires_at,omitempty"`
+	PostOnly        bool        `json:"post_only,omitempty"`
+	TakeProfitPrice *uint64     `json:"take_profit_price,omitempty"`
+	StopLossPrice   *uint64     `json:"stop_loss_price,omitempty"`
+	ParentOrderID   *uuid.UUID  `json:"parent_order_id,omitempty"`
+}
+
+func (o *OpenOrderEvent) HasTriggers() bool {
+	return o.TakeProfitPrice != nil || o.StopLossPrice != nil
+}
+
+// ExitOrderID derives the bracket exit's id from its entry's, so the API can announce it at
+// creation and the engine needs neither a generator nor an extra column to find it again.
+func ExitOrderID(entryID uuid.UUID) uuid.UUID {
+	return uuid.NewSHA1(entryID, []byte("exit"))
 }
 
 // CancelOrderEvent requests cancellation of an existing open order.

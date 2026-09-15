@@ -26,6 +26,8 @@ var (
 	ErrUserNotFound    = errors.New("user not found")
 	ErrUserNotFrozen   = errors.New("user must be frozen before their orders can be cancelled")
 	ErrNoTarget        = errors.New("specify order_ids or all")
+	// errNotLive: the order is neither resting nor a pending exit, so there is nothing to cancel.
+	errNotLive = errors.New("order is not live")
 )
 
 // Per-order reasons a cancel could not be published. They are outcomes, not failures of the request:
@@ -60,6 +62,7 @@ type orderRepository interface {
 
 type marketCache interface {
 	GetMarketByID(id int) (*repository.Market, error)
+	GetMarkets() []repository.Market
 }
 
 type MarketStatus struct {
@@ -96,6 +99,7 @@ type UserOrder struct {
 	Remaining     *uint64 `json:"remaining,omitempty"`
 	Type          string  `json:"type"`
 	TimeInForce   string  `json:"time_in_force"`
+	Status        string  `json:"status"`
 	CreatedAt     int64   `json:"created_at"`
 	Open          bool    `json:"open"`
 	Reachable     bool    `json:"reachable"`
@@ -200,13 +204,11 @@ func (s *Service) CancelUserOrders(ctx context.Context, username string, orderID
 // cancel will not refuse for the same reason moments later, so they ask here rather than each
 // deciding for themselves.
 func (s *Service) reach(row *repository.OrderRow) (marketRef string, market MarketController, reason string) {
-	// MarketID is populated from open_orders, so its absence means the order is not resting.
-	if row.MarketID == nil {
-		return "", nil, reasonNotOpen
-	}
-
-	marketRef, err := s.marketRef(*row.MarketID)
+	marketRef, err := s.rowMarketRef(row)
 	if err != nil {
+		if errors.Is(err, errNotLive) {
+			return "", nil, reasonNotOpen
+		}
 		return "", nil, reasonMarketNotServed
 	}
 
@@ -246,6 +248,7 @@ func (s *Service) describe(row *repository.OrderRow) UserOrder {
 		Market:        marketRef,
 		Type:          row.Type,
 		TimeInForce:   row.TimeInForce,
+		Status:        row.Status,
 		CreatedAt:     row.CreatedAt,
 		Open:          row.MarketID != nil,
 		Price:         row.Price,
@@ -257,6 +260,23 @@ func (s *Service) describe(row *repository.OrderRow) UserOrder {
 		out.Side = *row.Side
 	}
 	return out
+}
+
+// rowMarketRef finds the market from an order
+func (s *Service) rowMarketRef(row *repository.OrderRow) (string, error) {
+	if row.MarketID != nil {
+		return s.marketRef(*row.MarketID)
+	}
+	if row.Status != repository.OrderStatusPending {
+		return "", errNotLive
+	}
+	for _, m := range s.cache.GetMarkets() {
+		if (m.BaseInstrumentID == row.HaveInstrumentID && m.QuoteInstrumentID == row.WantInstrumentID) ||
+			(m.BaseInstrumentID == row.WantInstrumentID && m.QuoteInstrumentID == row.HaveInstrumentID) {
+			return utils.MergeMarketRef(m.BaseSymbol, m.QuoteSymbol), nil
+		}
+	}
+	return "", repository.ErrMarketNotFound
 }
 
 func (s *Service) marketRef(marketID int) (string, error) {

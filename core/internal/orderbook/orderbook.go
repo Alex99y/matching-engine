@@ -42,6 +42,14 @@ type OrderBook struct {
 	// expiries indexes resting orders with a TTL, ordered by expiry time, so ExpireDue
 	// (expiry.go) finds due orders in O(k log n) instead of scanning the whole book.
 	expiries *btree.BTreeG[*expiryEntry]
+	// Bracket exits parked until the last trade price reaches a trigger (see triggers.go).
+	pending   map[uuid.UUID]*pendingExit
+	fireAbove *btree.BTreeG[*triggerEntry]
+	fireBelow *btree.BTreeG[*triggerEntry]
+	// lastPrice is the market's most recent trade price, the reference every trigger is judged
+	// against. hasLast is false until the market has traded at least once.
+	lastPrice uint64
+	hasLast   bool
 	// stream accumulates the live market-data events of the current batch (see stream.go). It is
 	// drained by the matcher after the batch commits. A rebuilt book starts with an empty stream,
 	// so events of a failed (rolled-back) batch are never emitted.
@@ -163,16 +171,16 @@ func NewOrderBook(
 		panic("market cannot be nil")
 	}
 
-	bids := btree.NewG(btreeDegree, priceLess)
-	asks := btree.NewG(btreeDegree, priceLess)
-	expiries := btree.NewG(btreeDegree, expiryLess)
 	return &OrderBook{
-		logger:   log,
-		market:   market,
-		bids:     bids,
-		asks:     asks,
-		expiries: expiries,
-		index:    make(map[uuid.UUID]orderLocator),
-		stream:   newStreamEvents(),
+		logger:    log,
+		market:    market,
+		bids:      btree.NewG(btreeDegree, priceLess),
+		asks:      btree.NewG(btreeDegree, priceLess),
+		expiries:  btree.NewG(btreeDegree, expiryLess),
+		pending:   make(map[uuid.UUID]*pendingExit),
+		fireAbove: btree.NewG(btreeDegree, triggerAboveLess),
+		fireBelow: btree.NewG(btreeDegree, triggerBelowLess),
+		index:     make(map[uuid.UUID]orderLocator),
+		stream:    newStreamEvents(),
 	}
 }

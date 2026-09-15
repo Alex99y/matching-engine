@@ -234,15 +234,18 @@ func TestPublishOrderToQueueSuccess(t *testing.T) {
 	svc := newTestService(&fakeOrderRepository{}, btcUsdtCache(), pub)
 	userID := uuid.New()
 
-	orderID, err := svc.PublishOrderToQueue(context.Background(), userID, &orders.OrderToPublish{
+	published, err := svc.PublishOrderToQueue(context.Background(), userID, &orders.OrderToPublish{
 		MarketID: "BTC-USDT", Side: oeq.BuyOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
 		Price: 100, Quantity: 5,
 	})
 	if err != nil {
 		t.Fatalf("PublishOrderToQueue: %v", err)
 	}
-	if orderID == nil {
-		t.Fatal("orderID is nil")
+	if published == nil {
+		t.Fatal("published is nil")
+	}
+	if published.ExitOrderID != nil {
+		t.Fatalf("ExitOrderID = %v for an order without triggers, want nil", published.ExitOrderID)
 	}
 	if len(pub.calls) != 1 || pub.calls[0].marketRef != "BTC-USDT" {
 		t.Fatalf("calls = %+v, want one publish to BTC-USDT", pub.calls)
@@ -251,8 +254,56 @@ func TestPublishOrderToQueueSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeOpenOrder: %v", err)
 	}
-	if open.OrderID != *orderID || open.UserID != userID || open.MarketID != 1 || open.Price != 100 || open.Quantity != 5 {
+	if open.OrderID != published.OrderID || open.UserID != userID || open.MarketID != 1 || open.Price != 100 || open.Quantity != 5 {
 		t.Fatalf("decoded event = %+v, unexpected shape", open)
+	}
+}
+
+// A bracket entry's triggers must reach the event unchanged, and the exit id the caller is told
+// must be the one core will derive from the entry id when the exit is armed.
+func TestPublishOrderToQueueBracketAnnouncesExitID(t *testing.T) {
+	pub := &fakePublisher{}
+	svc := newTestService(&fakeOrderRepository{}, btcUsdtCache(), pub)
+
+	tp, sl := uint64(150), uint64(50)
+	published, err := svc.PublishOrderToQueue(context.Background(), uuid.New(), &orders.OrderToPublish{
+		MarketID: "BTC-USDT", Side: oeq.BuyOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+		Price: 100, Quantity: 5, TakeProfitPrice: &tp, StopLossPrice: &sl,
+	})
+	if err != nil {
+		t.Fatalf("PublishOrderToQueue: %v", err)
+	}
+	if published.ExitOrderID == nil || *published.ExitOrderID != oeq.ExitOrderID(published.OrderID) {
+		t.Fatalf("ExitOrderID = %v, want %s", published.ExitOrderID, oeq.ExitOrderID(published.OrderID))
+	}
+	open, err := pub.calls[0].event.DecodeOpenOrder()
+	if err != nil {
+		t.Fatalf("DecodeOpenOrder: %v", err)
+	}
+	if open.TakeProfitPrice == nil || *open.TakeProfitPrice != tp || open.StopLossPrice == nil || *open.StopLossPrice != sl {
+		t.Fatalf("decoded event triggers = (%v, %v), want (150, 50)", open.TakeProfitPrice, open.StopLossPrice)
+	}
+	if open.ParentOrderID != nil {
+		t.Fatalf("entry published with ParentOrderID %v, want nil", open.ParentOrderID)
+	}
+}
+
+// Trigger prices on the wrong side of the entry are a client mistake and must be reported as
+// ErrInvalidOrder before anything is published — same gate as every other validation failure.
+func TestPublishOrderToQueueBracketOnWrongSideRejected(t *testing.T) {
+	pub := &fakePublisher{}
+	svc := newTestService(&fakeOrderRepository{}, btcUsdtCache(), pub)
+
+	tp := uint64(90) // a buy takes profit above its price, not below
+	_, err := svc.PublishOrderToQueue(context.Background(), uuid.New(), &orders.OrderToPublish{
+		MarketID: "BTC-USDT", Side: oeq.BuyOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+		Price: 100, Quantity: 5, TakeProfitPrice: &tp,
+	})
+	if !errors.Is(err, orders.ErrInvalidOrder) {
+		t.Fatalf("err = %v, want ErrInvalidOrder", err)
+	}
+	if len(pub.calls) != 0 {
+		t.Fatalf("published %d events, want 0", len(pub.calls))
 	}
 }
 

@@ -58,6 +58,14 @@ describe("parseWithBigInts", () => {
     expect(out.is_taker).toBe(true);
   });
 
+  it("decodes bracket trigger prices as bigint", () => {
+    const out = parseWithBigInts(
+      '{"take_profit_price":18446744073709551615,"stop_loss_price":1}',
+    ) as { take_profit_price: bigint; stop_loss_price: bigint };
+    expect(out.take_profit_price).toBe(18446744073709551615n);
+    expect(out.stop_loss_price).toBe(1n);
+  });
+
   it("revives bigint fields inside nested arrays", () => {
     const out = parseWithBigInts('[{"remaining_have":10},{"remaining_have":20}]') as Array<{
       remaining_have: bigint;

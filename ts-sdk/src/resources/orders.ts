@@ -86,6 +86,8 @@ export async function createOrders(
     if (p.quoteQty !== undefined) item["quote_qty"] = p.quoteQty;
     if (p.expiresAt !== undefined) item["expires_at"] = p.expiresAt;
     if (p.postOnly !== undefined) item["post_only"] = p.postOnly;
+    if (p.takeProfitPrice !== undefined) item["take_profit_price"] = p.takeProfitPrice;
+    if (p.stopLossPrice !== undefined) item["stop_loss_price"] = p.stopLossPrice;
     return item;
   });
 

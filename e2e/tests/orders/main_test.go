@@ -53,6 +53,23 @@ func diffAgainst(t *testing.T, ctx context.Context, token string, before assert.
 	return env.DiffAgainst(t, ctx, token, before)
 }
 
+// exitFills sums an order's fills, checking each one traded at price as taker — the shape a
+// fired bracket exit must have: it is a market IOC lifting the liquidity the test put there,
+// and may take it in more than one match.
+func exitFills(t *testing.T, o client.Order, price uint64) (base, quote, fee uint64) {
+	t.Helper()
+	assert.Traded(t, o)
+	for _, m := range o.Matches {
+		if m.Price != price || !m.IsTaker {
+			t.Fatalf("exit fill %+v, want a taker fill at %d", m, price)
+		}
+		base += m.BaseAmount
+		quote += m.QuoteAmount
+		fee += m.Fee
+	}
+	return base, quote, fee
+}
+
 func containsOrder(orders []client.Order, id string) bool {
 	for _, o := range orders {
 		if o.ID == id {

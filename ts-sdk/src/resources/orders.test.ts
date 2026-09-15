@@ -15,6 +15,7 @@ const orderRow = {
   id: "o1",
   type: "limit",
   time_in_force: "gtc",
+  status: "open",
   have_quantity: 100n,
   want_quantity: 200n,
   created_at: 1700000000,
@@ -125,6 +126,8 @@ describe("orders.createOrders", () => {
     expect(body[0]?.["expires_at"]).toBe(1700000900);
     expect(body[0]).not.toHaveProperty("price");
     expect(body[0]).not.toHaveProperty("post_only");
+    expect(body[0]).not.toHaveProperty("take_profit_price");
+    expect(body[0]).not.toHaveProperty("stop_loss_price");
   });
 
   it("sends post_only when set on a limit gtc order", async () => {
@@ -144,6 +147,46 @@ describe("orders.createOrders", () => {
     ]);
     const body = request.mock.calls[0]?.[2]?.body as Record<string, unknown>[];
     expect(body[0]?.["post_only"]).toBe(true);
+  });
+
+  it("sends bracket triggers and returns the exit order id", async () => {
+    const { transport, request } = stubTransport({
+      results: [{ index: 0, order_id: "entry", exit_order_id: "entry-exit" }],
+    });
+    const resp = await createOrders(transport, TOKEN, [
+      {
+        market: "ETH-USDT",
+        side: OrderSide.Buy,
+        type: OrderType.Limit,
+        timeInForce: TimeInForce.GoodTillCancel,
+        price: 2000n,
+        quantity: 5n,
+        takeProfitPrice: 2500n,
+        stopLossPrice: 1500n,
+      },
+    ]);
+    const body = request.mock.calls[0]?.[2]?.body as Record<string, unknown>[];
+    expect(body[0]?.["take_profit_price"]).toBe(2500n);
+    expect(body[0]?.["stop_loss_price"]).toBe(1500n);
+    expect(resp.results[0]?.exitOrderId).toBe("entry-exit");
+  });
+
+  it("rejects a bracket on the wrong side without calling the API", async () => {
+    const { transport, request } = stubTransport({ results: [] });
+    await expect(
+      createOrders(transport, TOKEN, [
+        {
+          market: "ETH-USDT",
+          side: OrderSide.Buy,
+          type: OrderType.Limit,
+          timeInForce: TimeInForce.GoodTillCancel,
+          price: 2000n,
+          quantity: 5n,
+          takeProfitPrice: 1500n,
+        },
+      ]),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("returns per-item error for failed items", async () => {

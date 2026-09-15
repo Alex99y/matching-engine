@@ -771,3 +771,52 @@ func TestLimitFillOrKillAcrossLevels(t *testing.T) {
 		}
 	})
 }
+
+// Found live on ETH-USDT (18-decimal base, price 1e9+1): a market buy's leftover budget could
+// still "afford" ~1e9 base quanta whose quote cost floors to zero, so every iteration bought them
+// for nothing, the budget never moved, and the loop ran until the maker was exhausted — 147k
+// partial-fill writes in one batch, past Postgres' parameter limit, wedging the market. Dust
+// must end the walk, and the leftover is refunded as filled.
+func TestMarketBuyDoesNotLoopOnZeroCostDust(t *testing.T) {
+	const scale = 1_000_000_000_000_000_000 // 1e18
+	o := NewOrderBook(logger.NewLogger(logger.Error), &repository.Market{
+		ID: 1, BaseInstrumentID: baseInstr, QuoteInstrumentID: quoteInstr, BaseScale: scale,
+	})
+	seller := uuid.New()
+	const price, makerQty = 1_000_000_001, 10_000_000_000_000_000 // 0.01 base
+	o.Hydrate([]repository.OpenOrderHydration{{
+		OrderID: uuid.New(), UserID: seller, Side: "sell", Price: price, Type: "limit", TimeInForce: "GTC",
+		RemainingHaveAmount: makerQty, RemainingWantAmount: quoteAmount(price, makerQty, scale),
+	}})
+
+	// A budget that buys most of the maker and leaves 1 quote quantum: at this price that
+	// quantum affords 999,999,999 base quanta costing 0.999… → 0 quote.
+	budget := quoteAmount(price, makerQty, scale) - 1
+	buyer := uuid.New()
+	r := repository.NewBatchResult()
+	o.MatchOrder(&oeq.OpenOrderEvent{
+		OrderID: uuid.New(), UserID: buyer, MarketID: 1,
+		Side: oeq.BuyOrder, Type: oeq.MarketOrder, TimeInForce: oeq.ImmediateOrCancel,
+		QuoteQty: &budget,
+	}, r)
+
+	if len(r.Matches) != 1 {
+		t.Fatalf("%d fills, want exactly 1 — the zero-cost remainder must not be traded", len(r.Matches))
+	}
+	if len(r.OpenOrderUpdates) > 1 {
+		t.Fatalf("%d partial-fill updates for one maker, want at most 1", len(r.OpenOrderUpdates))
+	}
+	for _, m := range r.Matches {
+		if m.MatchSellAmount == 0 {
+			t.Fatalf("a fill transferred %d base for zero quote: %+v", m.MatchBuyAmount, m)
+		}
+	}
+	bq := delta(t, r, buyer, quoteInstr)
+	if bq.BlockedDelta != -int64(budget) || bq.BalanceDelta != 1 {
+		t.Fatalf("buyer quote: blocked=%d balance=%d, want the budget released and the 1 dust quantum refunded", bq.BlockedDelta, bq.BalanceDelta)
+	}
+	if got := r.NewOrders[0].Status; got != repository.OrderStatusFilled {
+		t.Fatalf("status=%q want filled — the leftover is dust", got)
+	}
+	assertConserved(t, r)
+}

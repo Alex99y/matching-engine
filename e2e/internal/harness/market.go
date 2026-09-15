@@ -3,6 +3,8 @@ package harness
 import (
 	"context"
 	"fmt"
+	"math"
+	"math/bits"
 
 	"github.com/alex99y/matching-engine/e2e/internal/client"
 )
@@ -54,9 +56,25 @@ func ResolveMarket(ctx context.Context, c *client.Client, ref string) (MarketRul
 	}, nil
 }
 
-// Notional mirrors core's quoteAmount: price × qty ÷ BaseScale, in quote quanta.
+// Notional mirrors core's quoteAmount: price × qty ÷ BaseScale, in quote quanta. The 128-bit
+// intermediate is not optional: on an 18-decimal base the product overflows uint64 for any
+// realistic price, and a bare multiply silently produces a small wrong number.
 func (r MarketRules) Notional(price, qty uint64) uint64 {
-	return price * qty / r.BaseScale
+	return MulDiv(price, qty, r.BaseScale)
+}
+
+// MulDiv returns a × b ÷ d without overflowing the product, saturating when even the quotient
+// does not fit. d == 0 is treated as 1.
+func MulDiv(a, b, d uint64) uint64 {
+	if d == 0 {
+		d = 1
+	}
+	hi, lo := bits.Mul64(a, b)
+	if hi >= d {
+		return math.MaxUint64
+	}
+	q, _ := bits.Div64(hi, lo, d)
+	return q
 }
 
 func pow10(n int) uint64 {

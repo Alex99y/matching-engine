@@ -13,6 +13,25 @@
 
 ### Added
 
+- Bracket orders (take profit / stop loss). `CreateOrderParams.takeProfitPrice`
+  and `CreateOrderParams.stopLossPrice` (`bigint`, optional, either or both)
+  turn an order into a bracket entry: once it fills, the engine arms one
+  opposite-side market exit for what the entry received and fires it when the
+  last trade price reaches a trigger. Sent as `take_profit_price` /
+  `stop_loss_price` only when set. The SDK mirrors the API's side rules
+  client-side (a limit buy takes profit above `price` and stops below; a sell
+  is mirrored; both triggers must be on the correct side of each other) and
+  rejects violations with `ValidationError`; tick alignment is left to the API.
+- `BatchCreateOrderResult.exitOrderId` — the id the bracket exit will have,
+  present only when the request carried a trigger price. The exit does not
+  exist until the entry fills.
+- `Order.status` (`string`, always present) — the persisted lifecycle state
+  (`pending | open | filled | partially_filled | cancelled`). `Order.takeProfitPrice`,
+  `Order.stopLossPrice` (`bigint`, optional) and `Order.parentOrderId`
+  (`string`, optional; only on a bracket exit, pointing at its entry).
+- `OrderStatus.Pending` (`"pending"`) — a bracket exit waiting for its trigger.
+  `getOrders({ showOpen: true })` now includes pending exits; they carry no
+  `openOrder` block, so read `status` rather than assuming `openOrder` is set.
 - `CreateOrderParams.postOnly` (`boolean`, optional) — rejects the order
   instead of matching it if it would take liquidity on arrival. Sent as
   `post_only` only when set. Valid only for limit GTC orders; the SDK rejects

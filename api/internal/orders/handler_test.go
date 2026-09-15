@@ -255,6 +255,73 @@ func TestCreateOrderHandlerForwardsPostOnly(t *testing.T) {
 	}
 }
 
+// The wire names take_profit_price / stop_loss_price must reach the event, and the response must
+// carry exit_order_id so a client can watch for the exit before core has created it.
+func TestCreateOrderHandlerBracketForwardsTriggersAndReturnsExitID(t *testing.T) {
+	pub := &fakePublisher{}
+	app := newTestApp(&fakeOrderRepository{}, btcUsdtCache(), pub)
+
+	body := []map[string]any{{
+		"order_side": "buy", "order_type": "limit", "order_tif": "gtc",
+		"market": "BTC-USDT", "price": 100, "quantity": 5,
+		"take_profit_price": 150, "stop_loss_price": 50,
+	}}
+	resp, err := app.Test(jsonRequest("POST", "/orders/", body))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+	var got orders.BatchCreateOrderResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Results) != 1 || got.Results[0].OrderID == nil || got.Results[0].ExitOrderID == nil {
+		t.Fatalf("results = %+v, want one success with an exit id", got.Results)
+	}
+	if *got.Results[0].ExitOrderID != oeq.ExitOrderID(*got.Results[0].OrderID) {
+		t.Fatalf("exit_order_id = %s, want %s", got.Results[0].ExitOrderID, oeq.ExitOrderID(*got.Results[0].OrderID))
+	}
+	open, err := pub.calls[0].event.DecodeOpenOrder()
+	if err != nil {
+		t.Fatalf("DecodeOpenOrder: %v", err)
+	}
+	if open.TakeProfitPrice == nil || *open.TakeProfitPrice != 150 || open.StopLossPrice == nil || *open.StopLossPrice != 50 {
+		t.Fatalf("published triggers = (%v, %v), want (150, 50)", open.TakeProfitPrice, open.StopLossPrice)
+	}
+}
+
+// A pending exit has no open_orders row, so status and the bracket fields are the only way a
+// client can recognise it in a listing; they must survive the row → response mapping.
+func TestGetOrderHandlerExposesStatusAndBracketFields(t *testing.T) {
+	id, parent := uuid.New(), uuid.New()
+	tp, sl := uint64(150), uint64(50)
+	repo := &fakeOrderRepository{orderByIDWithMatches: &repository.OrderRow{
+		ID: id, HaveInstrumentID: 10, WantInstrumentID: 20, HaveQuantity: 5,
+		Status: repository.OrderStatusPending, TakeProfitPrice: &tp, StopLossPrice: &sl, ParentOrderID: &parent,
+	}}
+	app := newTestApp(repo, btcUsdtCache(), &fakePublisher{})
+
+	resp, err := app.Test(jsonRequest("GET", "/orders/"+id.String(), nil))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	var got orders.OrderResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Status != "pending" || got.OpenOrder != nil {
+		t.Fatalf("status = %q, open_order = %v; want pending with no open_order block", got.Status, got.OpenOrder)
+	}
+	if got.TakeProfitPrice == nil || *got.TakeProfitPrice != 150 || got.StopLossPrice == nil || *got.StopLossPrice != 50 {
+		t.Fatalf("triggers = (%v, %v), want (150, 50)", got.TakeProfitPrice, got.StopLossPrice)
+	}
+	if got.ParentOrderID == nil || *got.ParentOrderID != parent {
+		t.Fatalf("parent_order_id = %v, want %s", got.ParentOrderID, parent)
+	}
+}
+
 func TestCreateOrderHandlerAllFailReturns422(t *testing.T) {
 	app := newTestApp(&fakeOrderRepository{}, btcUsdtCache(), &fakePublisher{})
 

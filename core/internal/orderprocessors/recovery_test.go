@@ -101,7 +101,10 @@ func (b *poisonBroker) WatchForOrderEvents(ctx context.Context, handler oeq.Orde
 // poisonRepo fails ProcessBatch with ErrPoison for any batch containing the poison order;
 // healthy orders commit. It runs match (mutating the book) to mimic the real flush-time
 // failure that leaves the book dirty.
-type poisonRepo struct{ poison uuid.UUID }
+type poisonRepo struct {
+	noPending
+	poison uuid.UUID
+}
 
 func (r *poisonRepo) ProcessBatch(ctx context.Context, incoming []repository.IncomingOrder, match repository.MatchFunc) error {
 	ids := make([]uuid.UUID, len(incoming))

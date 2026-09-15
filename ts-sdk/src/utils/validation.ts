@@ -108,6 +108,49 @@ export function validateCreateOrderParams(params: CreateOrderParams): void {
   ) {
     throw new ValidationError("postOnly requires a limit gtc order");
   }
+
+  validateTriggers(params);
+}
+
+// Mirrors the API's bracket rules: the exit is opposite-side, so a buy takes profit above
+// its price and stops below, and a sell is mirrored. A market entry has no price to anchor
+// to, so only the two triggers' relative order is checked. Tick alignment needs the market
+// and is left to the API.
+function validateTriggers(params: CreateOrderParams): void {
+  if (params.takeProfitPrice === undefined && params.stopLossPrice === undefined) {
+    return;
+  }
+  if (params.takeProfitPrice !== undefined && params.takeProfitPrice <= 0n) {
+    throw new ValidationError("takeProfitPrice must be positive");
+  }
+  if (params.stopLossPrice !== undefined && params.stopLossPrice <= 0n) {
+    throw new ValidationError("stopLossPrice must be positive");
+  }
+
+  const isBuy = params.side === OrderSide.Buy;
+  const above = isBuy ? params.takeProfitPrice : params.stopLossPrice;
+  const below = isBuy ? params.stopLossPrice : params.takeProfitPrice;
+  const aboveName = isBuy ? "takeProfitPrice" : "stopLossPrice";
+  const belowName = isBuy ? "stopLossPrice" : "takeProfitPrice";
+
+  if (above !== undefined && below !== undefined && below >= above) {
+    throw new ValidationError(
+      `${aboveName} must be above ${belowName} for a ${params.side} order`,
+    );
+  }
+  if (params.type !== OrderType.Limit || params.price === undefined) {
+    return;
+  }
+  if (above !== undefined && above <= params.price) {
+    throw new ValidationError(
+      `${aboveName} must be above price for a ${params.side} order`,
+    );
+  }
+  if (below !== undefined && below >= params.price) {
+    throw new ValidationError(
+      `${belowName} must be below price for a ${params.side} order`,
+    );
+  }
 }
 
 export function validateBatchCreateOrderParams(params: CreateOrderParams[]): void {
