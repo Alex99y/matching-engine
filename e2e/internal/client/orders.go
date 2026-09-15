@@ -24,23 +24,29 @@ const (
 
 // NewOrder is one entry in a POST /orders batch. Price/Quantity are raw instrument quanta.
 // QuoteQty is set only for a market buy (its spend budget); ExpiresAt only for GTC.
+// TakeProfitPrice / StopLossPrice make it a bracket entry: once filled, an opposite-side market
+// exit is armed for what it received and fires at either trigger.
 type NewOrder struct {
-	ClientOrderID string      `json:"client_order_id,omitempty"`
-	Side          OrderSide   `json:"order_side"`
-	Type          OrderType   `json:"order_type"`
-	TimeInForce   TimeInForce `json:"order_tif"`
-	Market        string      `json:"market"`
-	Price         uint64      `json:"price,omitempty"`
-	Quantity      uint64      `json:"quantity,omitempty"`
-	QuoteQty      *uint64     `json:"quote_qty,omitempty"`
-	ExpiresAt     *int64      `json:"expires_at,omitempty"`
-	PostOnly      bool        `json:"post_only,omitempty"`
+	ClientOrderID   string      `json:"client_order_id,omitempty"`
+	Side            OrderSide   `json:"order_side"`
+	Type            OrderType   `json:"order_type"`
+	TimeInForce     TimeInForce `json:"order_tif"`
+	Market          string      `json:"market"`
+	Price           uint64      `json:"price,omitempty"`
+	Quantity        uint64      `json:"quantity,omitempty"`
+	QuoteQty        *uint64     `json:"quote_qty,omitempty"`
+	ExpiresAt       *int64      `json:"expires_at,omitempty"`
+	PostOnly        bool        `json:"post_only,omitempty"`
+	TakeProfitPrice *uint64     `json:"take_profit_price,omitempty"`
+	StopLossPrice   *uint64     `json:"stop_loss_price,omitempty"`
 }
 
 type CreateResult struct {
 	Index   int     `json:"index"`
 	OrderID *string `json:"order_id,omitempty"`
-	Error   *string `json:"error,omitempty"`
+	// ExitOrderID is announced for a bracket entry: the id its exit will have once it fills.
+	ExitOrderID *string `json:"exit_order_id,omitempty"`
+	Error       *string `json:"error,omitempty"`
 }
 
 type CancelResult struct {
@@ -67,19 +73,33 @@ type Match struct {
 	MatchTime   int64  `json:"match_time"`
 }
 
+// Order statuses as persisted and returned by the API. "pending" is a bracket exit waiting
+// for its trigger: funds blocked, no open_order leg.
+const (
+	StatusPending         = "pending"
+	StatusOpen            = "open"
+	StatusFilled          = "filled"
+	StatusPartiallyFilled = "partially_filled"
+	StatusCancelled       = "cancelled"
+)
+
 type Order struct {
-	ID             string    `json:"id"`
-	ClientOrderID  string    `json:"client_order_id,omitempty"`
-	Type           string    `json:"type"`
-	TimeInForce    string    `json:"time_in_force"`
-	Side           *string   `json:"side,omitempty"`
-	HaveQuantity   uint64    `json:"have_quantity"`
-	WantQuantity   uint64    `json:"want_quantity"`
-	CreatedAt      int64     `json:"created_at"`
-	ExpiresAt      *int64    `json:"expires_at,omitempty"`
-	OpenOrder      *OrderLeg `json:"open_order,omitempty"`
-	CancelledOrder *OrderLeg `json:"cancelled_order,omitempty"`
-	Matches        []Match   `json:"matches,omitempty"` // only populated by GetOrder
+	ID              string    `json:"id"`
+	ClientOrderID   string    `json:"client_order_id,omitempty"`
+	Type            string    `json:"type"`
+	TimeInForce     string    `json:"time_in_force"`
+	Status          string    `json:"status"`
+	Side            *string   `json:"side,omitempty"`
+	HaveQuantity    uint64    `json:"have_quantity"`
+	WantQuantity    uint64    `json:"want_quantity"`
+	CreatedAt       int64     `json:"created_at"`
+	ExpiresAt       *int64    `json:"expires_at,omitempty"`
+	TakeProfitPrice *uint64   `json:"take_profit_price,omitempty"`
+	StopLossPrice   *uint64   `json:"stop_loss_price,omitempty"`
+	ParentOrderID   *string   `json:"parent_order_id,omitempty"` // only on a bracket exit
+	OpenOrder       *OrderLeg `json:"open_order,omitempty"`
+	CancelledOrder  *OrderLeg `json:"cancelled_order,omitempty"`
+	Matches         []Match   `json:"matches,omitempty"` // only populated by GetOrder
 }
 
 // OrdersFilter is the query for ListOrders. Zero values are omitted.
@@ -134,6 +154,26 @@ func (c *Client) CreateOrder(ctx context.Context, token string, order NewOrder) 
 		return "", &OrderRejectedError{Reason: "no order id returned"}
 	}
 	return *r.OrderID, nil
+}
+
+// CreateBracketOrder submits a bracket entry and returns its id together with the id of the
+// exit the engine will arm when it fills. The exit does not exist yet at return time.
+func (c *Client) CreateBracketOrder(ctx context.Context, token string, order NewOrder) (orderID, exitID string, err error) {
+	results, err := c.CreateOrders(ctx, token, []NewOrder{order})
+	if err != nil {
+		return "", "", err
+	}
+	if len(results) != 1 {
+		return "", "", &OrderRejectedError{Reason: "expected exactly one result"}
+	}
+	r := results[0]
+	if r.Error != nil {
+		return "", "", &OrderRejectedError{Reason: *r.Error}
+	}
+	if r.OrderID == nil || r.ExitOrderID == nil {
+		return "", "", &OrderRejectedError{Reason: "bracket order returned without both ids"}
+	}
+	return *r.OrderID, *r.ExitOrderID, nil
 }
 
 func (c *Client) CancelOrders(ctx context.Context, token string, orderIDs []string) ([]CancelResult, error) {

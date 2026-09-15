@@ -8,8 +8,10 @@ import (
 )
 
 // Order-update statuses carried on the private stream. "rejected" and "expired" are
-// stream-only distinctions — both persist as "cancelled" (see core's stream.go).
+// stream-only distinctions — both persist as "cancelled" (see core's stream.go). "pending" is
+// a bracket exit that has just been armed.
 const (
+	StatusPending         = "pending"
 	StatusOpen            = "open"
 	StatusFilled          = "filled"
 	StatusPartiallyFilled = "partially_filled"

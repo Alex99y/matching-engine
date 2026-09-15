@@ -24,6 +24,10 @@ func WithTIF(t client.TimeInForce) OrderOpt { return func(o *client.NewOrder) { 
 func PostOnly() OrderOpt                    { return func(o *client.NewOrder) { o.PostOnly = true } }
 func WithClientOrderID(id string) OrderOpt  { return func(o *client.NewOrder) { o.ClientOrderID = id } }
 func ExpiresAt(unixSec int64) OrderOpt      { return func(o *client.NewOrder) { o.ExpiresAt = &unixSec } }
+func TakeProfit(price uint64) OrderOpt {
+	return func(o *client.NewOrder) { o.TakeProfitPrice = &price }
+}
+func StopLoss(price uint64) OrderOpt { return func(o *client.NewOrder) { o.StopLossPrice = &price } }
 
 // Price is ticks × the market's price quantum (ticks >= 1).
 func Price(m harness.MarketRules, ticks uint64) uint64 { return ticks * m.PriceQuantum }
@@ -75,7 +79,8 @@ func TradablePrice(m harness.MarketRules) uint64 {
 	if qty == 0 {
 		return m.PriceQuantum
 	}
-	price := ceilDiv(minAssertableNotional*m.BaseScale, qty)
+	// notional × BaseScale overflows uint64 on an 18-decimal base; +qty-1 makes it a ceiling.
+	price := harness.MulDiv(minAssertableNotional, m.BaseScale, qty) + 1
 	return ceilDiv(price, m.PriceQuantum) * m.PriceQuantum
 }
 

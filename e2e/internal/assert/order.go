@@ -9,8 +9,9 @@ import (
 	"github.com/alex99y/matching-engine/e2e/internal/stream"
 )
 
-// The REST order response has no status field — the suite infers state from which legs are
-// present (open_order / cancelled_order / matches). The live stream carries the real status.
+// Most of the suite infers an order's state from which legs are present (open_order /
+// cancelled_order / matches); the persisted status is also on the response, and is the only
+// way to see a pending bracket exit, which has no leg at all until it fires or is cancelled.
 
 // Resting asserts o is still in the book and returns its open leg.
 func Resting(t testing.TB, o client.Order) client.OrderLeg {
@@ -69,6 +70,30 @@ func EventuallyNotResting(t testing.TB, ctx context.Context, c *client.Client, t
 			return fmt.Errorf("order %s is still resting: %+v", o.ID, *o.OpenOrder)
 		}
 		return nil
+	})
+}
+
+// Pending asserts o is a parked bracket exit: status pending, nothing resting, nothing
+// cancelled, nothing traded.
+func Pending(t testing.TB, o client.Order) {
+	t.Helper()
+	if o.Status != client.StatusPending || o.OpenOrder != nil || o.CancelledOrder != nil || len(o.Matches) != 0 {
+		t.Fatalf("assert.Pending: order %s is %q (%s), want a pending exit", o.ID, o.Status, describe(o))
+	}
+}
+
+// EventuallyStatus polls until orderID is readable with one of the given statuses, and
+// returns it. It is the completion signal for a bracket exit, which is never "resting" — it
+// goes from pending straight to filled / partially_filled / cancelled.
+func EventuallyStatus(t testing.TB, ctx context.Context, c *client.Client, token, orderID string, statuses ...string) client.Order {
+	t.Helper()
+	return eventuallyOrder(t, ctx, c, token, orderID, func(o client.Order) error {
+		for _, s := range statuses {
+			if o.Status == s {
+				return nil
+			}
+		}
+		return fmt.Errorf("order %s is %q, want one of %v", o.ID, o.Status, statuses)
 	})
 }
 
