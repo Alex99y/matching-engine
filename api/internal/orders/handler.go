@@ -28,12 +28,19 @@ type CreateOrderRequest struct {
 	QuoteQty      *uint64                        `json:"quote_qty,omitempty"`
 	ExpiresAt     *int64                         `json:"expires_at,omitempty"`
 	PostOnly      bool                           `json:"post_only,omitempty"`
+	// TakeProfitPrice / StopLossPrice turn the order into a bracket entry: once it fills, an
+	// opposite-side market exit is armed for what it received and fires at either trigger.
+	TakeProfitPrice *uint64 `json:"take_profit_price,omitempty"`
+	StopLossPrice   *uint64 `json:"stop_loss_price,omitempty"`
 }
 
 type BatchCreateOrderResult struct {
 	Index   int        `json:"index"`
 	OrderID *uuid.UUID `json:"order_id,omitempty"`
-	Error   *string    `json:"error,omitempty"`
+	// ExitOrderID is the id the bracket exit will have once the entry fills; only present when
+	// the request carried a trigger price.
+	ExitOrderID *uuid.UUID `json:"exit_order_id,omitempty"`
+	Error       *string    `json:"error,omitempty"`
 }
 
 type BatchCreateOrderResponse struct {
@@ -76,32 +83,40 @@ type OrderMatch struct {
 }
 
 type OrderResponse struct {
-	ID             uuid.UUID       `json:"id"`
-	ClientOrderID  string          `json:"client_order_id,omitempty"`
-	Type           string          `json:"type"`
-	TimeInForce    string          `json:"time_in_force"`
-	Side           *string         `json:"side,omitempty"`
-	HaveQuantity   uint64          `json:"have_quantity"`
-	WantQuantity   uint64          `json:"want_quantity"`
-	CreatedAt      int64           `json:"created_at"`
-	ExpiresAt      *int64          `json:"expires_at,omitempty"`
-	OpenOrder      *OpenOrder      `json:"open_order,omitempty"`
-	CancelledOrder *CancelledOrder `json:"cancelled_order,omitempty"`
+	ID              uuid.UUID       `json:"id"`
+	ClientOrderID   string          `json:"client_order_id,omitempty"`
+	Type            string          `json:"type"`
+	TimeInForce     string          `json:"time_in_force"`
+	Status          string          `json:"status"`
+	Side            *string         `json:"side,omitempty"`
+	HaveQuantity    uint64          `json:"have_quantity"`
+	WantQuantity    uint64          `json:"want_quantity"`
+	CreatedAt       int64           `json:"created_at"`
+	ExpiresAt       *int64          `json:"expires_at,omitempty"`
+	TakeProfitPrice *uint64         `json:"take_profit_price,omitempty"`
+	StopLossPrice   *uint64         `json:"stop_loss_price,omitempty"`
+	ParentOrderID   *uuid.UUID      `json:"parent_order_id,omitempty"`
+	OpenOrder       *OpenOrder      `json:"open_order,omitempty"`
+	CancelledOrder  *CancelledOrder `json:"cancelled_order,omitempty"`
 	// Matches is only populated by GET /orders/:id, never by the list endpoint.
 	Matches []OrderMatch `json:"matches,omitempty"`
 }
 
 func orderRowToResponse(row *repository.OrderRow) OrderResponse {
 	resp := OrderResponse{
-		ID:            row.ID,
-		ClientOrderID: row.ClientOrderID,
-		Type:          row.Type,
-		TimeInForce:   row.TimeInForce,
-		Side:          row.Side,
-		HaveQuantity:  row.HaveQuantity,
-		WantQuantity:  row.WantQuantity,
-		CreatedAt:     row.CreatedAt,
-		ExpiresAt:     row.ExpiresAt,
+		ID:              row.ID,
+		ClientOrderID:   row.ClientOrderID,
+		Type:            row.Type,
+		TimeInForce:     row.TimeInForce,
+		Status:          row.Status,
+		Side:            row.Side,
+		HaveQuantity:    row.HaveQuantity,
+		WantQuantity:    row.WantQuantity,
+		CreatedAt:       row.CreatedAt,
+		ExpiresAt:       row.ExpiresAt,
+		TakeProfitPrice: row.TakeProfitPrice,
+		StopLossPrice:   row.StopLossPrice,
+		ParentOrderID:   row.ParentOrderID,
 	}
 
 	if row.Price != nil && row.Side != nil &&
@@ -234,20 +249,22 @@ func (o *OrderHandler) CreateOrder(c fiber.Ctx) error {
 	results := make([]BatchCreateOrderResult, len(reqs))
 
 	for i, req := range reqs {
-		orderID, err := o.orderService.PublishOrderToQueue(
+		published, err := o.orderService.PublishOrderToQueue(
 			c.Context(),
 			userID,
 			&OrderToPublish{
-				ClientOrderID: req.ClientOrderID,
-				MarketID:      req.Market,
-				Side:          req.OrderSide,
-				Type:          req.OrderType,
-				TimeInForce:   req.TimeInForce,
-				Price:         req.Price,
-				Quantity:      req.Quantity,
-				QuoteQty:      req.QuoteQty,
-				ExpiresAt:     req.ExpiresAt,
-				PostOnly:      req.PostOnly,
+				ClientOrderID:   req.ClientOrderID,
+				MarketID:        req.Market,
+				Side:            req.OrderSide,
+				Type:            req.OrderType,
+				TimeInForce:     req.TimeInForce,
+				Price:           req.Price,
+				Quantity:        req.Quantity,
+				QuoteQty:        req.QuoteQty,
+				ExpiresAt:       req.ExpiresAt,
+				PostOnly:        req.PostOnly,
+				TakeProfitPrice: req.TakeProfitPrice,
+				StopLossPrice:   req.StopLossPrice,
 			},
 		)
 		if err != nil {
@@ -266,7 +283,7 @@ func (o *OrderHandler) CreateOrder(c fiber.Ctx) error {
 			}
 			results[i] = BatchCreateOrderResult{Index: i, Error: &errStr}
 		} else {
-			results[i] = BatchCreateOrderResult{Index: i, OrderID: orderID}
+			results[i] = BatchCreateOrderResult{Index: i, OrderID: &published.OrderID, ExitOrderID: published.ExitOrderID}
 		}
 	}
 

@@ -352,3 +352,106 @@ func TestPostOnlyRequiresLimitGTC(t *testing.T) {
 		t.Fatalf("post-only market order accepted: %v", err)
 	}
 }
+
+// A bracket's triggers must sit on the correct side of the entry: the exit is opposite-side, so a
+// buy takes profit above and stops below, and a sell is mirrored. Market entries have no price to
+// anchor to and are only checked against each other. The table pins each boundary from both sides.
+func TestValidateTriggers(t *testing.T) {
+	limitBuy := validLimit() // price 100
+	limitSell := func() *OpenOrderEvent {
+		o := validLimit()
+		o.Side = SellOrder
+		return o
+	}
+
+	accept := []struct {
+		name        string
+		order       *OpenOrderEvent
+		constraints MarketConstraints
+	}{
+		{"buy tp above price", withTriggers(limitBuy, 150, 0), MarketConstraints{}},
+		{"buy sl below price", withTriggers(limitBuy, 0, 50), MarketConstraints{}},
+		{"buy both", withTriggers(limitBuy, 150, 50), MarketConstraints{}},
+		{"sell tp below price", withTriggers(limitSell(), 50, 0), MarketConstraints{}},
+		{"sell sl above price", withTriggers(limitSell(), 0, 150), MarketConstraints{}},
+		{"sell both", withTriggers(limitSell(), 50, 150), MarketConstraints{}},
+		{"market buy only needs sl below tp", withTriggers(validMarketBuy(), 150, 50), MarketConstraints{}},
+		{"market sell only needs tp below sl", withTriggers(validMarketSell(), 50, 150), MarketConstraints{}},
+		{"triggers on the tick", withTriggers(limitBuy, 200, 50), MarketConstraints{PriceQuantum: 50}},
+	}
+	for _, tt := range accept {
+		t.Run("accept "+tt.name, func(t *testing.T) {
+			if err := ValidateOrderEvent(tt.order, tt.constraints); err != nil {
+				t.Fatalf("rejected a valid bracket: %v", err)
+			}
+		})
+	}
+
+	reject := []struct {
+		name        string
+		order       *OpenOrderEvent
+		constraints MarketConstraints
+	}{
+		{"zero tp", withTriggers(limitBuy, 0, 0).setTP(0), MarketConstraints{}},
+		{"tp overflows storable", withTriggers(limitBuy, math.MaxInt64+1, 0), MarketConstraints{}},
+		{"tp off the tick", withTriggers(limitBuy, 151, 0), MarketConstraints{PriceQuantum: 50}},
+		{"sl off the tick", withTriggers(limitBuy, 0, 51), MarketConstraints{PriceQuantum: 50}},
+		{"buy tp at price", withTriggers(limitBuy, 100, 0), MarketConstraints{}},
+		{"buy tp below price", withTriggers(limitBuy, 90, 0), MarketConstraints{}},
+		{"buy sl at price", withTriggers(limitBuy, 0, 100), MarketConstraints{}},
+		{"buy sl above price", withTriggers(limitBuy, 0, 110), MarketConstraints{}},
+		{"sell tp at price", withTriggers(limitSell(), 100, 0), MarketConstraints{}},
+		{"sell tp above price", withTriggers(limitSell(), 110, 0), MarketConstraints{}},
+		{"sell sl at price", withTriggers(limitSell(), 0, 100), MarketConstraints{}},
+		{"sell sl below price", withTriggers(limitSell(), 0, 90), MarketConstraints{}},
+		{"market buy sl above tp", withTriggers(validMarketBuy(), 50, 150), MarketConstraints{}},
+		{"market buy sl equals tp", withTriggers(validMarketBuy(), 100, 100), MarketConstraints{}},
+		{"market sell tp above sl", withTriggers(validMarketSell(), 150, 50), MarketConstraints{}},
+		{"parent id from outside", func() *OpenOrderEvent {
+			o := validLimit()
+			id := uuid.New()
+			o.ParentOrderID = &id
+			return o
+		}(), MarketConstraints{}},
+	}
+	for _, tt := range reject {
+		t.Run("reject "+tt.name, func(t *testing.T) {
+			if err := ValidateOrderEvent(tt.order, tt.constraints); !errors.Is(err, ErrInvalidOrderEvent) {
+				t.Fatalf("accepted an invalid bracket, err = %v", err)
+			}
+		})
+	}
+}
+
+// withTriggers copies the order and sets whichever trigger is non-zero.
+func withTriggers(o *OpenOrderEvent, tp, sl uint64) *OpenOrderEvent {
+	c := *o
+	c.TakeProfitPrice, c.StopLossPrice = nil, nil
+	if tp != 0 {
+		c.TakeProfitPrice = ptr(tp)
+	}
+	if sl != 0 {
+		c.StopLossPrice = ptr(sl)
+	}
+	return &c
+}
+
+func (o *OpenOrderEvent) setTP(v uint64) *OpenOrderEvent {
+	o.TakeProfitPrice = ptr(v)
+	return o
+}
+
+// The exit id must be a pure function of the entry id: the API announces it before core ever
+// sees the order, and core recomputes it at arm time with nothing else to go on.
+func TestExitOrderIDIsDeterministicAndDistinct(t *testing.T) {
+	entry := uuid.New()
+	if ExitOrderID(entry) != ExitOrderID(entry) {
+		t.Fatal("same entry, different exit ids")
+	}
+	if ExitOrderID(entry) == entry {
+		t.Fatal("exit id collides with its entry")
+	}
+	if ExitOrderID(entry) == ExitOrderID(uuid.New()) {
+		t.Fatal("different entries, same exit id")
+	}
+}
