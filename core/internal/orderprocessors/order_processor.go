@@ -66,6 +66,8 @@ type orderEventsQueue interface {
 type orderRepository interface {
 	ProcessBatch(ctx context.Context, incoming []repository.IncomingOrder, match repository.MatchFunc) error
 	LoadOpenOrders(ctx context.Context, marketID int) ([]repository.OpenOrderHydration, error)
+	LoadPendingOrders(ctx context.Context, marketID int) ([]repository.PendingOrderHydration, error)
+	LoadLastPrice(ctx context.Context, marketID int) (price uint64, ok bool, err error)
 }
 
 // queuedEvent carries a validated, decoded event together with its broker delivery so

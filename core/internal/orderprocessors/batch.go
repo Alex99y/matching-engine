@@ -40,7 +40,12 @@ func (o *OrderProcessor) buildIncoming(batch []*queuedEvent) []repository.Incomi
 // ProcessBatch's transaction, after funds are reserved, replaying the batch in arrival
 // order so cancels and opens interleave with strict FIFO priority; only funded opens
 // reach the book.
-func (o *OrderProcessor) buildMatch(batch []*queuedEvent, sweepExpiries bool) repository.MatchFunc {
+//
+// With sweep set, due expiries are reaped and due bracket exits fired before the batch's own
+// events — an exit whose trigger was hit takes priority over anything that arrived after. Both
+// sweeps are off during isolation (recovery.go) so a poisoned sweep cannot be blamed on an
+// innocent order.
+func (o *OrderProcessor) buildMatch(batch []*queuedEvent, sweep bool) repository.MatchFunc {
 	return func(fundedOrderIDs []uuid.UUID) (*repository.BatchResult, error) {
 		funded := make(map[uuid.UUID]struct{}, len(fundedOrderIDs))
 		for _, id := range fundedOrderIDs {
@@ -49,9 +54,12 @@ func (o *OrderProcessor) buildMatch(batch []*queuedEvent, sweepExpiries bool) re
 		result := repository.NewBatchResult()
 		now := time.Now().Unix()
 
-		if sweepExpiries {
+		if sweep {
 			for _, id := range o.book.ExpireDue(now, maxBatchSize) {
 				o.book.ExpireOrder(id, result)
+			}
+			for _, id := range o.book.TriggeredExits(maxBatchSize) {
+				o.book.FireExit(id, result)
 			}
 		}
 
@@ -83,11 +91,22 @@ func isFunded(funded map[uuid.UUID]struct{}, id uuid.UUID) bool {
 	return ok
 }
 
+// batchOutcome is what runBatch tells the matcher loop: whether the batch committed as one, and
+// whether the loop may go on at all.
+type batchOutcome int
+
+const (
+	batchCommitted batchOutcome = iota
+	// batchRecovered: the batch did not commit as one — it was requeued or isolated — and the
+	// book was rebuilt. Work that depends on the batch's effects must not assume them.
+	batchRecovered
+	batchShutdown
+)
+
 // runBatch processes one micro-batch in a single transaction. On a transient failure it
 // rebuilds the book, requeues the batch, and backs off. On a deterministic data error it
-// isolates the poison order (committing the healthy ones). Returns false only when
-// shutdown is requested mid-recovery.
-func (o *OrderProcessor) runBatch(shutdownCtx, dbCtx context.Context, batch []*queuedEvent) bool {
+// isolates the poison order (committing the healthy ones).
+func (o *OrderProcessor) runBatch(shutdownCtx, dbCtx context.Context, batch []*queuedEvent) batchOutcome {
 	result, rejected, elapsed, err := o.processBatchCaptured(dbCtx, batch, true)
 	if err == nil {
 		if len(batch) > 0 {
@@ -97,7 +116,7 @@ func (o *OrderProcessor) runBatch(shutdownCtx, dbCtx context.Context, batch []*q
 		o.metrics.IncBatch(metrics.BatchCommitted)
 		o.afterCommit(result, rejected)
 		o.ackBatch(batch)
-		return true
+		return batchCommitted
 	}
 
 	o.logger.Error(fmt.Sprintf("order processor %s-%s: batch failed: %s",
@@ -107,21 +126,27 @@ func (o *OrderProcessor) runBatch(shutdownCtx, dbCtx context.Context, batch []*q
 	o.metrics.IncRebuild()
 	if !o.loadBook(shutdownCtx, dbCtx) {
 		o.nackBatch(batch)
-		return false
+		return batchShutdown
 	}
 
 	if errors.Is(err, repository.ErrPoison) {
 		// At least one order fails deterministically — isolate it so the rest commit.
 		o.metrics.IncBatch(metrics.BatchPoisonIsolated)
 		o.metrics.IncPoison()
-		return o.isolate(shutdownCtx, dbCtx, batch)
+		if !o.isolate(shutdownCtx, dbCtx, batch) {
+			return batchShutdown
+		}
+		return batchRecovered
 	}
 
 	// Transient infrastructure failure: requeue the whole batch and back off so a sick
 	// dependency does not spin the matcher (the bug that let one batch retry ~48k times).
 	o.metrics.IncBatch(metrics.BatchTransientFail)
 	o.nackBatch(batch)
-	return o.backoff(shutdownCtx, transientBackoff)
+	if !o.backoff(shutdownCtx, transientBackoff) {
+		return batchShutdown
+	}
+	return batchRecovered
 }
 
 // processBatchCaptured runs one batch through the repository while capturing the matching result

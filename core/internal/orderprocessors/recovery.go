@@ -97,15 +97,13 @@ func orderKey(qe *queuedEvent) uuid.UUID {
 	return uuid.UUID{}
 }
 
-// loadBook rebuilds the in-memory book from the persisted open orders, retrying until
-// it succeeds or shutdown is requested (returning false in that case). It is used both
-// for initial hydration and for recovery after a failed batch.
+// loadBook rebuilds the in-memory book from the persisted state, retrying until it succeeds or
+// shutdown is requested (returning false in that case). It is used both for initial hydration
+// and for recovery after a failed batch.
 func (o *OrderProcessor) loadBook(shutdownCtx, dbCtx context.Context) bool {
 	for {
-		rows, err := o.repo.LoadOpenOrders(dbCtx, o.market.ID)
+		book, err := o.hydrate(dbCtx)
 		if err == nil {
-			book := orderbook.NewOrderBook(o.logger, o.market)
-			book.Hydrate(rows)
 			o.book = book
 			return true
 		}
@@ -117,4 +115,30 @@ func (o *OrderProcessor) loadBook(shutdownCtx, dbCtx context.Context) bool {
 		case <-time.After(rebuildBackoff):
 		}
 	}
+}
+
+// hydrate reads the three pieces of state a book is rebuilt from: resting orders, parked bracket
+// exits, and the last trade price their triggers are judged against. The three reads are not one
+// snapshot, which is safe because this goroutine is the market's only writer.
+func (o *OrderProcessor) hydrate(dbCtx context.Context) (*orderbook.OrderBook, error) {
+	open, err := o.repo.LoadOpenOrders(dbCtx, o.market.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load open orders: %w", err)
+	}
+	pending, err := o.repo.LoadPendingOrders(dbCtx, o.market.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load pending orders: %w", err)
+	}
+	lastPrice, traded, err := o.repo.LoadLastPrice(dbCtx, o.market.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load last price: %w", err)
+	}
+
+	book := orderbook.NewOrderBook(o.logger, o.market)
+	book.Hydrate(open)
+	book.HydratePending(pending)
+	if traded {
+		book.SetLastPrice(lastPrice)
+	}
+	return book, nil
 }

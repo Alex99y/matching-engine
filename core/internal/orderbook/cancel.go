@@ -9,18 +9,20 @@ import (
 // This file covers a resting order leaving the book other than by a fill: a user cancel
 // (CancelOrder) or a TTL reap (ExpireOrder — see expiry.go for the due-order index). Both
 // share removeResting (detach from the book) and closeResting (release funds, record the
-// terminal status) and differ only in why the order left.
+// terminal status) and differ only in why the order left. A user cancel can also target a
+// parked bracket exit (triggers.go), which is not in the book at all.
 
 // CancelOrder removes a resting order, releases its remaining reservation and records
 // the cancellation. A miss is a normal logical race (the order may have filled, never
 // existed, or already been cancelled) and is an idempotent no-op.
 func (o *OrderBook) CancelOrder(event *oeq.CancelOrderEvent, result *repository.BatchResult) {
-	stored, ok := o.removeResting(event.OrderID)
-	if !ok {
-		// @TODO(P-events): emit cancel-reject event once Queue 2 exists.
+	if stored, ok := o.removeResting(event.OrderID); ok {
+		o.closeResting(stored, result, "")
 		return
 	}
-	o.closeResting(stored, result, "")
+	if p, ok := o.removePending(event.OrderID); ok {
+		o.closePending(p, result)
+	}
 }
 
 // ExpireOrder has the same book/fund/persistence effects as CancelOrder — only the live
@@ -35,8 +37,12 @@ func (o *OrderBook) ExpireOrder(orderID uuid.UUID, result *repository.BatchResul
 }
 
 // RestingOwner addresses a private stream event at an order the matcher could not act on; a cancel
-// event carries no user id of its own.
+// event carries no user id of its own. A parked bracket exit counts: its funds are blocked and a
+// cancel can target it just like a resting order.
 func (o *OrderBook) RestingOwner(orderID uuid.UUID) (uuid.UUID, bool) {
+	if p, ok := o.pending[orderID]; ok {
+		return p.event.UserID, true
+	}
 	loc, ok := o.index[orderID]
 	if !ok {
 		return uuid.Nil, false
@@ -107,4 +113,5 @@ func (o *OrderBook) closeResting(stored *Order, result *repository.BatchResult, 
 	}
 	o.recordOrderUpdate(stored.OpenOrder.UserID, stored.OpenOrder.OrderID, streamStatus,
 		stored.OpenOrder.Quantity-stored.Remaining, stored.Remaining)
+	o.armExit(stored, result)
 }

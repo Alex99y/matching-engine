@@ -79,6 +79,7 @@ func (o *OrderBook) markLevel(side oeq.OrderSide, price uint64) {
 }
 
 func (o *OrderBook) recordTrade(price, qty uint64, takerSide oeq.OrderSide) {
+	o.SetLastPrice(price)
 	o.stream.trades = append(o.stream.trades, marketdata.Trade{
 		Price:     price,
 		Quantity:  qty,

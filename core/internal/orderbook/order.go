@@ -37,11 +37,28 @@ type Order struct {
 	// lastPrice is the price of the most recent fill — the prevailing price against which a
 	// leftover quote budget is judged spendable or dust (see OrderBook.takerFilled).
 	lastPrice uint64
+
+	// received is what this order's fills have credited it net of fees (base for a buy, quote
+	// for a sell). Tracked only for a bracket entry: it sizes the exit and is already blocked.
+	received uint64
+	// persisted marks an order whose orders row already exists — a fired bracket exit — so its
+	// outcome is written as a status update rather than an insert.
+	persisted bool
+}
+
+// hasExit reports whether this order arms a bracket exit when it completes: it carries a
+// trigger price and is not itself an exit.
+func (ord *Order) hasExit() bool {
+	return ord.OpenOrder.HasTriggers() && ord.OpenOrder.ParentOrderID == nil
 }
 
 func (ord *Order) canTrade(price, baseScale uint64) bool {
 	if ord.quoteDenom {
-		return affordableBase(ord.RemainingQuote, price, baseScale) > 0
+		// A budget whose affordable base costs no quote at all is dust, not buying power: the
+		// fill would hand out base for free without touching the budget, and the loop in match
+		// would repeat it until the maker was gone — one partial-fill write per iteration.
+		affordable := affordableBase(ord.RemainingQuote, price, baseScale)
+		return quoteAmount(price, affordable, baseScale) > 0
 	}
 	return ord.Remaining > 0
 }

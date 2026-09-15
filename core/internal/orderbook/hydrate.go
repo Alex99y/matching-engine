@@ -20,20 +20,22 @@ func (o *OrderBook) Hydrate(rows []repository.OpenOrderHydration) {
 	for _, r := range rows {
 		base := hydrateBase(r)
 		event := &oeq.OpenOrderEvent{
-			OrderID:     r.OrderID,
-			UserID:      r.UserID,
-			MarketID:    o.market.ID,
-			Side:        oeq.OrderSide(r.Side),
-			Type:        oeq.OrderType(r.Type),
-			TimeInForce: tifFromDB(r.TimeInForce),
-			Price:       r.Price,
-			Quantity:    base,
-			ExpiresAt:   r.ExpiresAt,
+			OrderID:         r.OrderID,
+			UserID:          r.UserID,
+			MarketID:        o.market.ID,
+			Side:            oeq.OrderSide(r.Side),
+			Type:            oeq.OrderType(r.Type),
+			TimeInForce:     tifFromDB(r.TimeInForce),
+			Price:           r.Price,
+			Quantity:        base,
+			ExpiresAt:       r.ExpiresAt,
+			TakeProfitPrice: r.TakeProfitPrice,
+			StopLossPrice:   r.StopLossPrice,
 		}
 		if r.ClientOrderID != nil {
 			event.ClientOrderID = *r.ClientOrderID
 		}
-		o.rest(&Order{OpenOrder: event, Remaining: base})
+		o.rest(&Order{OpenOrder: event, Remaining: base, received: r.Received})
 	}
 }
 
@@ -53,10 +55,13 @@ func hydrateBase(r repository.OpenOrderHydration) uint64 {
 // Market sell: base-denominated;  have_qty = qty       (want unknown until executed)
 func DeriveInsertParams(event *oeq.OpenOrderEvent, market *repository.Market) repository.InsertOrderParams {
 	p := repository.InsertOrderParams{
-		ID:          event.OrderID,
-		UserID:      event.UserID,
-		Type:        string(event.Type), // 'limit'/'market' already match the DB enum
-		TimeInForce: tifToDB(event.TimeInForce),
+		ID:              event.OrderID,
+		UserID:          event.UserID,
+		Type:            string(event.Type), // 'limit'/'market' already match the DB enum
+		TimeInForce:     tifToDB(event.TimeInForce),
+		TakeProfitPrice: event.TakeProfitPrice,
+		StopLossPrice:   event.StopLossPrice,
+		ParentOrderID:   event.ParentOrderID,
 	}
 
 	if event.ClientOrderID != "" {

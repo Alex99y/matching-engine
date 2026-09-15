@@ -53,7 +53,20 @@ func (q *fakeQueue) Resume()        { q.paused.Store(false) }
 func (q *fakeQueue) IsPaused() bool { return q.paused.Load() }
 
 // fakeRepo records calls and lets a test force ProcessBatch to fail a number of times.
+// noPending satisfies the bracket-exit half of orderRepository for fakes whose tests never park an
+// exit: nothing pending, market never traded.
+type noPending struct{}
+
+func (noPending) LoadPendingOrders(ctx context.Context, marketID int) ([]repository.PendingOrderHydration, error) {
+	return nil, nil
+}
+
+func (noPending) LoadLastPrice(ctx context.Context, marketID int) (uint64, bool, error) {
+	return 0, false, nil
+}
+
 type fakeRepo struct {
+	noPending
 	mu            sync.Mutex
 	processCalls  int
 	loadCalls     int

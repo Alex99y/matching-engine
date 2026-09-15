@@ -17,6 +17,7 @@ import (
 // expiry sweep actually reaped without touching OrderProcessor.book directly — that field is
 // owned exclusively by the matcher goroutine, so the test must not read it.
 type expiryHydrationRepo struct {
+	noPending
 	mu      sync.Mutex
 	orders  []repository.OpenOrderHydration
 	batches int
@@ -88,6 +89,7 @@ func TestMatcherExpiresRestingOrderOnSweep(t *testing.T) {
 // expiry sweep keeps re-deriving it: the exact shape of the permanent isolate/rebuild loop that
 // quarantine exists to break. It also counts hydrations, which is what makes the wedge observable.
 type poisonExpiryRepo struct {
+	noPending
 	mu       sync.Mutex
 	orders   []repository.OpenOrderHydration
 	batches  int

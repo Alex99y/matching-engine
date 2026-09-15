@@ -24,8 +24,11 @@ func (o *OrderBook) ExpireIncoming(event *oeq.OpenOrderEvent, result *repository
 // never reserves funds itself. It also assumes the caller has already screened the order for
 // expiry (see Expired / ExpireIncoming) — an expired order must never reach the book.
 func (o *OrderBook) MatchOrder(event *oeq.OpenOrderEvent, result *repository.BatchResult) {
-	taker := newOrder(event, o.market.BaseScale)
+	o.matchTaker(newOrder(event, o.market.BaseScale), result)
+}
 
+// matchTaker is MatchOrder for an already-built taker; FireExit uses it with a persisted one.
+func (o *OrderBook) matchTaker(taker *Order, result *repository.BatchResult) {
 	// mayRest is cleared by the paths that must not leave the order in the book even
 	// though it looks restable: completion then releases the reservation and records a
 	// cancellation. A FOK kill needs no such flag — takerRests only admits GTC.
@@ -52,9 +55,9 @@ func (o *OrderBook) MatchOrder(event *oeq.OpenOrderEvent, result *repository.Bat
 }
 
 // takerFilled reports whether the taker got everything it could. Beyond an exact fill this
-// covers a quote-denominated market buy left holding a remainder too small to buy even one
-// base quantum at the price it last traded at: that dust is refunded at settlement, so the
-// order is filled rather than partially filled.
+// covers a quote-denominated market buy left holding a remainder that cannot buy anything at the
+// price it last traded at (see canTrade): that dust is refunded at settlement, so the order is
+// filled rather than partially filled.
 func (o *OrderBook) takerFilled(t *Order) bool {
 	if t.fullyFilled() {
 		return true
@@ -62,7 +65,7 @@ func (o *OrderBook) takerFilled(t *Order) bool {
 	if !t.quoteDenom || t.filledBase == 0 {
 		return false
 	}
-	return affordableBase(t.RemainingQuote, t.lastPrice, o.market.BaseScale) == 0
+	return !t.canTrade(t.lastPrice, o.market.BaseScale)
 }
 
 // crossesBook reports whether the order would trade against the resting book right now.
@@ -189,9 +192,9 @@ func (o *OrderBook) emitTrade(taker, maker *Order, qty, price uint64, result *re
 	sellerFee := feeOf(quoteAmt, sellerFeeBps) // in quote
 
 	result.AddBalanceDelta(buyer.OpenOrder.UserID, o.quoteInstr(), 0, -int64(quoteAmt))
-	result.AddBalanceDelta(buyer.OpenOrder.UserID, o.baseInstr(), int64(qty-buyerFee), 0)
+	o.credit(result, buyer, o.baseInstr(), qty-buyerFee)
 	result.AddBalanceDelta(seller.OpenOrder.UserID, o.baseInstr(), 0, -int64(qty))
-	result.AddBalanceDelta(seller.OpenOrder.UserID, o.quoteInstr(), int64(quoteAmt-sellerFee), 0)
+	o.credit(result, seller, o.quoteInstr(), quoteAmt-sellerFee)
 
 	result.Matches = append(result.Matches, repository.InsertMatchParams{
 		MarketID:          o.market.ID,
@@ -208,6 +211,18 @@ func (o *OrderBook) emitTrade(taker, maker *Order, qty, price uint64, result *re
 	})
 
 	o.recordTrade(price, qty, taker.OpenOrder.Side)
+}
+
+// credit pays a party what it received in a fill. A bracket entry's proceeds are what its exit
+// will trade, so they go straight to blocked: committed together with the fill, there is no
+// window in which they could be spent out from under the exit.
+func (o *OrderBook) credit(result *repository.BatchResult, party *Order, instrumentID int, amount uint64) {
+	if party.hasExit() {
+		party.received += amount
+		result.AddBalanceDelta(party.OpenOrder.UserID, instrumentID, 0, int64(amount))
+		return
+	}
+	result.AddBalanceDelta(party.OpenOrder.UserID, instrumentID, int64(amount), 0)
 }
 
 // feeOf returns amount × bps / 10000, floored. It uses a 128-bit intermediate so a
@@ -236,6 +251,7 @@ func (o *OrderBook) emitMakerFilled(maker *Order, result *repository.BatchResult
 	})
 	o.recordOrderUpdate(maker.OpenOrder.UserID, maker.OpenOrder.OrderID,
 		repository.OrderStatusFilled, maker.OpenOrder.Quantity, 0)
+	o.armExit(maker, result)
 }
 
 func (o *OrderBook) emitMakerPartialFill(maker *Order, result *repository.BatchResult) {
@@ -273,10 +289,17 @@ func (o *OrderBook) settleTakerCompletion(t *Order, rests bool, result *reposito
 // budget was refunded. streamReason overrides the live-stream status when non-empty, leaving the
 // persisted status alone — same convention as closeResting (see statusExpired).
 func (o *OrderBook) emitTakerOutcome(t *Order, rests, filled bool, streamReason string, result *repository.BatchResult) {
-	insert := DeriveInsertParams(t.OpenOrder, o.market)
 	status := takerStatus(t, rests, filled)
-	insert.Status = status
-	result.NewOrders = append(result.NewOrders, insert)
+	if t.persisted {
+		result.StatusUpdates = append(result.StatusUpdates, repository.OrderStatusUpdate{
+			OrderID: t.OpenOrder.OrderID,
+			Status:  status,
+		})
+	} else {
+		insert := DeriveInsertParams(t.OpenOrder, o.market)
+		insert.Status = status
+		result.NewOrders = append(result.NewOrders, insert)
+	}
 
 	// A quote-denominated market buy has no meaningful base remainder; report 0.
 	var remaining uint64
@@ -312,6 +335,7 @@ func (o *OrderBook) emitTakerOutcome(t *Order, rests, filled bool, streamReason 
 			RemainingWantAmount: want,
 		})
 	}
+	o.armExit(t, result)
 }
 
 func (o *OrderBook) takerRests(t *Order) bool {
