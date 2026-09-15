@@ -7,6 +7,7 @@ const orderRow = {
   id: "o1",
   type: "limit",
   time_in_force: "gtc",
+  status: "open",
   have_quantity: 1n,
   want_quantity: 2n,
   created_at: 1700000000,

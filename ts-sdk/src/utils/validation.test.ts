@@ -123,6 +123,46 @@ describe("validateCreateOrderParams", () => {
     ).toThrow(ValidationError);
   });
 
+  // The exit is opposite-side, so a limit buy at 100 takes profit above and stops below;
+  // a sell is mirrored; a market entry is only checked for the two triggers' relative order.
+  describe("bracket triggers", () => {
+    const limitBuy = { ...validCreate, price: 100n, quantity: 5n };
+    const limitSell = { ...limitBuy, side: OrderSide.Sell };
+    const marketBuy = {
+      ...validCreate,
+      type: OrderType.Market,
+      timeInForce: TimeInForce.ImmediateOrCancel,
+      quoteQty: 1000n,
+    };
+
+    it.each([
+      ["buy tp above price", { ...limitBuy, takeProfitPrice: 150n }],
+      ["buy sl below price", { ...limitBuy, stopLossPrice: 50n }],
+      ["buy both", { ...limitBuy, takeProfitPrice: 150n, stopLossPrice: 50n }],
+      ["sell tp below price", { ...limitSell, takeProfitPrice: 50n }],
+      ["sell sl above price", { ...limitSell, stopLossPrice: 150n }],
+      ["sell both", { ...limitSell, takeProfitPrice: 50n, stopLossPrice: 150n }],
+      ["market buy only needs sl below tp", { ...marketBuy, takeProfitPrice: 150n, stopLossPrice: 50n }],
+    ])("accepts %s", (_name, params) => {
+      expect(() => validateCreateOrderParams(params)).not.toThrow();
+    });
+
+    it.each([
+      ["zero tp", { ...limitBuy, takeProfitPrice: 0n }],
+      ["negative sl", { ...limitBuy, stopLossPrice: -1n }],
+      ["buy tp at price", { ...limitBuy, takeProfitPrice: 100n }],
+      ["buy tp below price", { ...limitBuy, takeProfitPrice: 90n }],
+      ["buy sl at price", { ...limitBuy, stopLossPrice: 100n }],
+      ["buy sl above price", { ...limitBuy, stopLossPrice: 110n }],
+      ["sell tp above price", { ...limitSell, takeProfitPrice: 110n }],
+      ["sell sl below price", { ...limitSell, stopLossPrice: 90n }],
+      ["market buy sl above tp", { ...marketBuy, takeProfitPrice: 50n, stopLossPrice: 150n }],
+      ["market buy sl equals tp", { ...marketBuy, takeProfitPrice: 100n, stopLossPrice: 100n }],
+    ])("rejects %s", (_name, params) => {
+      expect(() => validateCreateOrderParams(params)).toThrow(ValidationError);
+    });
+  });
+
   it("accepts a clientOrderId of valid length", () => {
     expect(() =>
       validateCreateOrderParams({ ...validCreate, clientOrderId: "a".repeat(32) }),

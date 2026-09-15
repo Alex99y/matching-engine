@@ -145,6 +145,21 @@ export interface CreateOrderParams {
    * Valid only for limit GTC orders.
    */
   readonly postOnly?: boolean;
+  /**
+   * Makes this a bracket entry. Once the entry fills, an opposite-side market exit is
+   * armed for what it received and fires when the last trade price reaches this level
+   * (at or above for a buy entry, at or below for a sell). Must be a multiple of the
+   * market's `priceQuantum` and, for a limit buy, above `price` (below it for a limit
+   * sell). uint64.
+   */
+  readonly takeProfitPrice?: bigint;
+  /**
+   * Same exit as {@link takeProfitPrice}, fired when the last trade price reaches this
+   * level (at or below for a buy entry, at or above for a sell). For a limit buy it must
+   * be below `price` (above it for a limit sell). Either or both triggers may be set;
+   * whichever hits first fires the single exit. uint64.
+   */
+  readonly stopLossPrice?: bigint;
 }
 
 // ---- Batch order results ----
@@ -152,6 +167,12 @@ export interface CreateOrderParams {
 export interface BatchCreateOrderResult {
   readonly index: number;
   readonly orderId?: string;
+  /**
+   * Present only when the request carried `takeProfitPrice` or `stopLossPrice`: the id
+   * the bracket exit will have. The exit does not exist until the entry fills — watch
+   * this id on {@link streamUser} or poll {@link getOrder}.
+   */
+  readonly exitOrderId?: string;
   readonly error?: string;
 }
 
@@ -295,6 +316,8 @@ export interface FaucetResult {
 // ---- Stream event types ----
 
 export const OrderStatus = {
+  /** A bracket exit waiting for its trigger: funds already blocked, not yet in the book. */
+  Pending: "pending",
   Open: "open",
   Filled: "filled",
   PartiallyFilled: "partially_filled",
@@ -476,12 +499,24 @@ export interface Order {
   readonly clientOrderId?: string;
   readonly type: string;
   readonly timeInForce: string;
+  /**
+   * Persisted lifecycle state: `"pending" | "open" | "filled" | "partially_filled" |
+   * "cancelled"`. A pending bracket exit has no {@link openOrder} block, so this is how
+   * to tell it apart in a `showOpen` listing.
+   */
+  readonly status: string;
   /** "buy" or "sell". Absent only if the order's market has since been deleted. */
   readonly side?: string;
   readonly haveQuantity: bigint;
   readonly wantQuantity: bigint;
   readonly createdAt: number;
   readonly expiresAt?: number;
+  /** On an entry, the trigger it was submitted with; on its exit, the trigger it waits on. uint64. */
+  readonly takeProfitPrice?: bigint;
+  /** On an entry, the trigger it was submitted with; on its exit, the trigger it waits on. uint64. */
+  readonly stopLossPrice?: bigint;
+  /** Present only on a bracket exit: the entry that armed it. */
+  readonly parentOrderId?: string;
   readonly openOrder?: OpenOrder;
   readonly cancelledOrder?: CancelledOrder;
   /** Only populated by {@link getOrder} (single-order fetch), never by {@link getOrders}. */
