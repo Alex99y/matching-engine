@@ -24,6 +24,9 @@ var (
 	// so the matcher can isolate and dead-letter the offending order instead of
 	// requeueing the whole batch forever.
 	ErrPoison = errors.New("poison: deterministic data error")
+	// ErrPendingWithoutParent means a 'pending' orders row has no parent_order_id. Only core
+	// writes pending rows and it always sets the parent, so this is corruption, not a data case.
+	ErrPendingWithoutParent = errors.New("pending order has no parent order")
 )
 
 // wrapPoison adds the ErrPoison sentinel to the error chain when cause is a
@@ -37,6 +40,9 @@ func wrapPoison(wrapped, cause error) error {
 
 // Canonical orders.status values. They mirror the CHECK constraint in the migration.
 const (
+	// OrderStatusPending is a bracket exit waiting for its take-profit / stop-loss trigger:
+	// funds already blocked, no open_orders row, not matchable until core fires it.
+	OrderStatusPending         = "pending"
 	OrderStatusOpen            = "open"
 	OrderStatusFilled          = "filled"
 	OrderStatusPartiallyFilled = "partially_filled"
@@ -367,7 +373,7 @@ func insertOrders(ctx context.Context, tx *sql.Tx, orders []InsertOrderParams) e
 	if len(orders) == 0 {
 		return nil
 	}
-	const cols = 11
+	const cols = 14
 	args := make([]any, 0, len(orders)*cols)
 	for _, o := range orders {
 		haveQty, err := nullU64(o.HaveQuantity, "have_quantity")
@@ -375,6 +381,14 @@ func insertOrders(ctx context.Context, tx *sql.Tx, orders []InsertOrderParams) e
 			return fmt.Errorf("insert orders: %w", err)
 		}
 		wantQty, err := nullU64(o.WantQuantity, "want_quantity")
+		if err != nil {
+			return fmt.Errorf("insert orders: %w", err)
+		}
+		takeProfit, err := nullU64(o.TakeProfitPrice, "take_profit_price")
+		if err != nil {
+			return fmt.Errorf("insert orders: %w", err)
+		}
+		stopLoss, err := nullU64(o.StopLossPrice, "stop_loss_price")
 		if err != nil {
 			return fmt.Errorf("insert orders: %w", err)
 		}
@@ -390,13 +404,17 @@ func insertOrders(ctx context.Context, tx *sql.Tx, orders []InsertOrderParams) e
 			o.Type,
 			o.TimeInForce,
 			nullTime(o.ExpiresAt),
+			takeProfit,
+			stopLoss,
+			nullUUID(o.ParentOrderID),
 		)
 	}
 	// ON CONFLICT guards the (rare) case of a duplicate id slipping past the
 	// idempotency pre-check; the rest of the batch still commits.
 	q := `INSERT INTO orders
 		(id, client_order_id, user_id, have_instrument_id, want_instrument_id,
-		 have_quantity, want_quantity, status, type, time_in_force, expires_at)
+		 have_quantity, want_quantity, status, type, time_in_force, expires_at,
+		 take_profit_price, stop_loss_price, parent_order_id)
 		VALUES ` + valuesPlaceholders(len(orders), cols) + `
 		ON CONFLICT (id) DO NOTHING`
 	if _, err := tx.ExecContext(ctx, q, args...); err != nil {
@@ -605,6 +623,12 @@ type OpenOrderHydration struct {
 	RemainingHaveAmount uint64
 	RemainingWantAmount uint64
 	ExpiresAt           *int64
+	TakeProfitPrice     *uint64
+	StopLossPrice       *uint64
+	// Received is what this order has been credited so far by its fills, net of fees (base for
+	// a buy, quote for a sell). Only computed for orders carrying a trigger price — it sizes the
+	// exit that arms when the entry completes, and those funds are already blocked.
+	Received uint64
 }
 
 // LoadOpenOrders returns every resting order for a market, ordered by open_orders.id
@@ -615,10 +639,18 @@ func (o *OrderRepository) LoadOpenOrders(ctx context.Context, marketID int) (_ [
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
 
+	// An order is only ever the buyer or the seller of its matches, so exactly one of the two
+	// sums is non-zero; both indexes (buy_order_id, sell_order_id) are used rather than an OR.
 	const q = `
 		SELECT oo.order_id, ord.user_id, ord.client_order_id, oo.side, oo.price,
 		       ord.type, ord.time_in_force, oo.remaining_have_amount, oo.remaining_want_amount,
-		       ord.expires_at
+		       ord.expires_at, ord.take_profit_price, ord.stop_loss_price,
+		       CASE WHEN ord.take_profit_price IS NULL AND ord.stop_loss_price IS NULL THEN 0 ELSE
+		           COALESCE((SELECT SUM(m.match_buy_amount - m.match_buy_fees)
+		                     FROM matches m WHERE m.buy_order_id = oo.order_id), 0)
+		         + COALESCE((SELECT SUM(m.match_sell_amount - m.match_sell_fees)
+		                     FROM matches m WHERE m.sell_order_id = oo.order_id), 0)
+		       END::BIGINT
 		FROM open_orders oo
 		JOIN orders ord ON ord.id = oo.order_id
 		WHERE oo.market_id = $1
@@ -635,6 +667,7 @@ func (o *OrderRepository) LoadOpenOrders(ctx context.Context, marketID int) (_ [
 	for rows.Next() {
 		var h OpenOrderHydration
 		var expiresAt sql.NullTime
+		var received sql.NullInt64
 		if err := rows.Scan(
 			&h.OrderID,
 			&h.UserID,
@@ -646,6 +679,9 @@ func (o *OrderRepository) LoadOpenOrders(ctx context.Context, marketID int) (_ [
 			&h.RemainingHaveAmount,
 			&h.RemainingWantAmount,
 			&expiresAt,
+			&h.TakeProfitPrice,
+			&h.StopLossPrice,
+			&received,
 		); err != nil {
 			o.logger.Error("LoadOpenOrders: scan: " + err.Error())
 			return nil, fmt.Errorf("load open orders: scan: %w", err)
@@ -654,6 +690,10 @@ func (o *OrderRepository) LoadOpenOrders(ctx context.Context, marketID int) (_ [
 			v := expiresAt.Time.Unix()
 			h.ExpiresAt = &v
 		}
+		if h.Received, err = safeUint64(received, "received"); err != nil {
+			o.logger.Error("LoadOpenOrders: " + err.Error())
+			return nil, fmt.Errorf("load open orders: %w", err)
+		}
 		out = append(out, h)
 	}
 	if err := rows.Err(); err != nil {
@@ -661,6 +701,108 @@ func (o *OrderRepository) LoadOpenOrders(ctx context.Context, marketID int) (_ [
 		return nil, fmt.Errorf("load open orders: %w", err)
 	}
 	return out, nil
+}
+
+// PendingOrderHydration is one parked bracket exit loaded from the DB to rebuild the trigger
+// index. Its funds are already blocked; Amount is the have quantity the exit will trade
+// (base for a sell, quote budget for a buy).
+type PendingOrderHydration struct {
+	OrderID         uuid.UUID
+	UserID          uuid.UUID
+	ParentOrderID   uuid.UUID
+	Side            string
+	Amount          uint64
+	TakeProfitPrice *uint64
+	StopLossPrice   *uint64
+}
+
+// LoadPendingOrders returns every pending exit for a market. orders has no market_id, so the
+// market's instrument pair identifies its rows and the have instrument identifies the side.
+func (o *OrderRepository) LoadPendingOrders(ctx context.Context, marketID int) (_ []PendingOrderHydration, outErr error) {
+	defer o.metrics.ObserveQuery("load_pending_orders", time.Now(), &outErr)
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, o.timeout)
+	defer cancel()
+
+	const q = `
+		SELECT ord.id, ord.user_id, ord.parent_order_id,
+		       CASE WHEN ord.have_instrument_id = mk.base_instrument_id THEN 'sell' ELSE 'buy' END,
+		       ord.have_quantity, ord.take_profit_price, ord.stop_loss_price
+		FROM orders ord
+		JOIN markets mk ON mk.id = $1
+		WHERE ord.status = 'pending'
+		  AND ((ord.have_instrument_id = mk.base_instrument_id  AND ord.want_instrument_id = mk.quote_instrument_id)
+		    OR (ord.have_instrument_id = mk.quote_instrument_id AND ord.want_instrument_id = mk.base_instrument_id))
+		ORDER BY ord.id ASC
+	`
+	rows, err := o.psql.QueryContext(ctxWithTimeout, q, marketID)
+	if err != nil {
+		o.logger.Error("LoadPendingOrders: " + err.Error())
+		return nil, fmt.Errorf("load pending orders: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PendingOrderHydration
+	for rows.Next() {
+		var h PendingOrderHydration
+		var parent uuid.NullUUID
+		var amount sql.NullInt64
+		if err := rows.Scan(
+			&h.OrderID,
+			&h.UserID,
+			&parent,
+			&h.Side,
+			&amount,
+			&h.TakeProfitPrice,
+			&h.StopLossPrice,
+		); err != nil {
+			o.logger.Error("LoadPendingOrders: scan: " + err.Error())
+			return nil, fmt.Errorf("load pending orders: scan: %w", err)
+		}
+		if !parent.Valid {
+			o.logger.Error("LoadPendingOrders: pending order without parent: " + h.OrderID.String())
+			return nil, fmt.Errorf("load pending orders: %w", ErrPendingWithoutParent)
+		}
+		h.ParentOrderID = parent.UUID
+		if h.Amount, err = safeUint64(amount, "have_quantity"); err != nil {
+			o.logger.Error("LoadPendingOrders: " + err.Error())
+			return nil, fmt.Errorf("load pending orders: %w", err)
+		}
+		out = append(out, h)
+	}
+	if err := rows.Err(); err != nil {
+		o.logger.Error("LoadPendingOrders: " + err.Error())
+		return nil, fmt.Errorf("load pending orders: %w", err)
+	}
+	return out, nil
+}
+
+// LoadLastPrice returns the market's most recent trade price. ok is false, with no error, for a
+// market that has never traded.
+func (o *OrderRepository) LoadLastPrice(ctx context.Context, marketID int) (price uint64, ok bool, outErr error) {
+	defer o.metrics.ObserveQuery("load_last_price", time.Now(), &outErr)
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, o.timeout)
+	defer cancel()
+
+	const q = `
+		SELECT match_price FROM matches
+		WHERE market_id = $1
+		ORDER BY match_time DESC, id DESC
+		LIMIT 1
+	`
+	var raw sql.NullInt64
+	err := o.psql.QueryRowContext(ctxWithTimeout, q, marketID).Scan(&raw)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		o.logger.Error("LoadLastPrice: " + err.Error())
+		return 0, false, fmt.Errorf("load last price: %w", err)
+	}
+	if price, err = safeUint64(raw, "match_price"); err != nil {
+		o.logger.Error("LoadLastPrice: " + err.Error())
+		return 0, false, fmt.Errorf("load last price: %w", err)
+	}
+	return price, true, nil
 }
 
 // --- small SQL-building helpers ---
@@ -739,6 +881,13 @@ func nullTime(t *time.Time) any {
 		return nil
 	}
 	return *t
+}
+
+func nullUUID(id *uuid.UUID) any {
+	if id == nil {
+		return nil
+	}
+	return *id
 }
 
 func derefU64(v *uint64) uint64 {
