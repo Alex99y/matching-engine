@@ -421,8 +421,8 @@
     },
     {
       "type": "stat",
-      "title": "DLQ publish failures (1h)",
-      "description": "Commands dropped because the parking-lot publish itself failed. This is the only path that loses an order outright \u2014 the payload survives only in core's ERROR log. Alert on any increase.",
+      "title": "DLQ persist failures (1h)",
+      "description": "Dead letters the DLQ consumer could not write to the dead_letters table. The message stays on the broker's dead-letter queue and is retried, so this is delay, not loss. Alert if it keeps climbing.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -464,7 +464,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(me_core_dlq_publish_failures_total{market=~\"$market\"}[1h]))"
+          "expr": "sum(increase(me_core_dlq_persist_failures_total{market=~\"$market\"}[1h]))"
         }
       ]
     },
