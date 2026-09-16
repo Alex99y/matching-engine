@@ -60,7 +60,6 @@ type CacheService interface {
 }
 
 type OrderRepository interface {
-	GetOrderByID(ctx context.Context, userID uuid.UUID, id uuid.UUID) (*repository.OrderRow, error)
 	GetOrderByIDWithMatches(ctx context.Context, userID uuid.UUID, id uuid.UUID) (*repository.OrderRow, error)
 	GetOrderByClientOrderID(ctx context.Context, userID uuid.UUID, clientOrderID string) (*repository.OrderRow, error)
 	GetOrdersByUser(ctx context.Context, userID uuid.UUID, showOpenOrders bool, showCancelledOrders bool, baseInstrumentID, quoteInstrumentID *int, startDate, endDate *time.Time, limit int) ([]repository.OrderRow, error)
@@ -211,36 +210,6 @@ func (o *OrderService) PublishOrderToQueue(
 		published.ExitOrderID = &exitID
 	}
 	return published, nil
-}
-
-func (o *OrderService) CancelOrder(ctx context.Context, userID uuid.UUID, orderID uuid.UUID) error {
-	order, err := o.orderRepository.GetOrderByID(ctx, userID, orderID)
-	if err != nil {
-		if errors.Is(err, repository.ErrOrderNotFound) {
-			return ErrOrderNotFound
-		}
-		return fmt.Errorf("cancel order: get order: %w", err)
-	}
-
-	marketRef, _, err := o.resolveMarketRef(order.HaveInstrumentID, order.WantInstrumentID)
-	if err != nil {
-		return fmt.Errorf("cancel order: %w", err)
-	}
-
-	cancelEvent := &order_events_queue.CancelOrderEvent{
-		OrderID:   orderID,
-		MarketRef: marketRef,
-	}
-	event, err := order_events_queue.NewCancelOrderEvent(cancelEvent)
-	if err != nil {
-		return fmt.Errorf("cancel order: create event: %w", err)
-	}
-
-	if err := o.publisher.Publish(ctx, orderID.String(), marketRef, event); err != nil {
-		return fmt.Errorf("cancel order: publish: %w", err)
-	}
-
-	return nil
 }
 
 func (o *OrderService) BatchCancelOrders(ctx context.Context, userID uuid.UUID, orderIDs []uuid.UUID) ([]BatchCancelResult, error) {
