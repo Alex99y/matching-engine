@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import type {
-  AuthenticatedClient,
-  Instrument,
-  Market,
-  Operation,
-  Order,
+import {
+  OrderStatus,
+  type AuthenticatedClient,
+  type Instrument,
+  type Market,
+  type Operation,
+  type Order,
 } from "ts-sdk";
 import { useAuth } from "../contexts/AuthContext.tsx";
 import { useToast } from "../contexts/ToastContext.tsx";
@@ -31,6 +32,8 @@ type Tab = "orders" | "operations";
 // in rather than bloating every row in this list.
 
 function orderStatus(order: Order): { label: string; color: string } {
+  // A bracket exit waiting for its trigger has no leg at all; only its status says so.
+  if (order.status === OrderStatus.Pending) return { label: "Pending exit", color: "var(--accent-hover)" };
   if (order.cancelledOrder) return { label: "Cancelled", color: "var(--red)" };
   if (order.openOrder) {
     const partial = order.openOrder.remainingHave < order.haveQuantity;
@@ -39,6 +42,15 @@ function orderStatus(order: Order): { label: string; color: string } {
       : { label: "Open", color: "var(--text-secondary)" };
   }
   return { label: "Filled", color: "var(--green)" };
+}
+
+// "TP 150 · SL 50" for an order that carries triggers (a bracket entry or its exit), else null.
+function triggerLabel(order: Order, quoteDecimals: number): string | null {
+  const parts = [
+    order.takeProfitPrice !== undefined ? `TP ${fmtUnits(order.takeProfitPrice, quoteDecimals)}` : null,
+    order.stopLossPrice !== undefined ? `SL ${fmtUnits(order.stopLossPrice, quoteDecimals)}` : null,
+  ].filter((t): t is string => t !== null);
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 function OrdersTab({
@@ -165,7 +177,9 @@ function OrdersTab({
                   {side ?? "—"}
                 </span>
                 <span style={{ fontFamily: "var(--font-mono)" }}>
-                  {order.openOrder ? `${fmtUnits(order.openOrder.price, quoteDecimals)} ${quoteSymbol}` : "—"}
+                  {order.openOrder
+                    ? `${fmtUnits(order.openOrder.price, quoteDecimals)} ${quoteSymbol}`
+                    : triggerLabel(order, quoteDecimals) ?? "—"}
                 </span>
                 <span style={{ fontFamily: "var(--font-mono)" }}>
                   {baseAmount !== "—" ? `${baseAmount} ${baseSymbol}` : baseAmount}

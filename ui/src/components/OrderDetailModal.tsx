@@ -96,12 +96,26 @@ export function OrderDetailModal({
               <Field label="Type" value={order.type} />
               <Field label="Time in force" value={order.timeInForce} />
               <Field
+                label="Status"
+                value={order.status === "pending" ? "pending (bracket exit)" : order.status}
+                color={order.status === "pending" ? "var(--accent-hover)" : undefined}
+              />
+              <Field
                 label="Side"
                 value={side ?? "unknown"}
                 color={side === "buy" ? "var(--green)" : side === "sell" ? "var(--red)" : undefined}
               />
               <Field label="Created" value={fmtDateTime(order.createdAt)} />
               {order.expiresAt !== undefined && <Field label="Expires" value={fmtDateTime(order.expiresAt)} />}
+              {order.takeProfitPrice !== undefined && (
+                <Field label="Take profit" value={`${fmtUnits(order.takeProfitPrice, quoteDecimals)} ${quoteSymbol}`} mono />
+              )}
+              {order.stopLossPrice !== undefined && (
+                <Field label="Stop loss" value={`${fmtUnits(order.stopLossPrice, quoteDecimals)} ${quoteSymbol}`} mono />
+              )}
+              {order.parentOrderId && (
+                <Field label="Entry order" value={order.parentOrderId} mono title="The filled order this exit closes" />
+              )}
 
               {baseQty !== undefined && quoteQty !== undefined ? (
                 <>
