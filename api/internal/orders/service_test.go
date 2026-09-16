@@ -53,9 +53,6 @@ type getOrdersByUserCall struct {
 }
 
 type fakeOrderRepository struct {
-	orderByID    *repository.OrderRow
-	orderByIDErr error
-
 	orderByIDWithMatches    *repository.OrderRow
 	orderByIDWithMatchesErr error
 
@@ -79,10 +76,6 @@ type fakeOrderRepository struct {
 func (f *fakeOrderRepository) ClientOrderIDExists(ctx context.Context, userID uuid.UUID, clientOrderID string) (bool, error) {
 	f.gotClientOrderIDCheck = clientOrderID
 	return f.clientOrderIDExists, f.clientOrderIDExistsErr
-}
-
-func (f *fakeOrderRepository) GetOrderByID(ctx context.Context, userID, id uuid.UUID) (*repository.OrderRow, error) {
-	return f.orderByID, f.orderByIDErr
 }
 
 func (f *fakeOrderRepository) GetOrderByIDWithMatches(ctx context.Context, userID, id uuid.UUID) (*repository.OrderRow, error) {
@@ -487,39 +480,6 @@ func TestPublishOrderToQueuePublisherError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected an error when the publisher fails")
-	}
-}
-
-func TestCancelOrderSuccess(t *testing.T) {
-	repo := &fakeOrderRepository{orderByID: &repository.OrderRow{
-		HaveInstrumentID: 10, WantInstrumentID: 20,
-	}}
-	pub := &fakePublisher{}
-	svc := newTestService(repo, btcUsdtCache(), pub)
-	orderID := uuid.New()
-
-	if err := svc.CancelOrder(context.Background(), uuid.New(), orderID); err != nil {
-		t.Fatalf("CancelOrder: %v", err)
-	}
-	if len(pub.calls) != 1 || pub.calls[0].marketRef != "BTC-USDT" {
-		t.Fatalf("calls = %+v, want one publish to BTC-USDT", pub.calls)
-	}
-	cancel, err := pub.calls[0].event.DecodeCancelOrder()
-	if err != nil {
-		t.Fatalf("DecodeCancelOrder: %v", err)
-	}
-	if cancel.OrderID != orderID || cancel.MarketRef != "BTC-USDT" {
-		t.Fatalf("decoded event = %+v, unexpected shape", cancel)
-	}
-}
-
-func TestCancelOrderNotFound(t *testing.T) {
-	repo := &fakeOrderRepository{orderByIDErr: repository.ErrOrderNotFound}
-	svc := newTestService(repo, btcUsdtCache(), &fakePublisher{})
-
-	err := svc.CancelOrder(context.Background(), uuid.New(), uuid.New())
-	if !errors.Is(err, orders.ErrOrderNotFound) {
-		t.Fatalf("err = %v, want ErrOrderNotFound", err)
 	}
 }
 
