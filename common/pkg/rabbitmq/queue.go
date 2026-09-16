@@ -241,18 +241,48 @@ func (m MessageMetadata) GetExpiration() string   { return m.expiration }
 type ConsumeArgs struct {
 	id       string
 	message  []byte
+	headers  map[string]any
 	metadata MessageMetadata
 	ack      func() error
 	nack     func() error
 	reject   func() error
 }
 
-func (a *ConsumeArgs) Id() string                          { return a.id }
-func (a *ConsumeArgs) RawMessage() []byte                  { return a.message }
-func (a *ConsumeArgs) Ack() error                          { return a.ack() }
-func (a *ConsumeArgs) Nack() error                         { return a.nack() }
+func (a *ConsumeArgs) Id() string         { return a.id }
+func (a *ConsumeArgs) RawMessage() []byte { return a.message }
+func (a *ConsumeArgs) Ack() error         { return a.ack() }
+func (a *ConsumeArgs) Nack() error        { return a.nack() }
+
+// Reject drops the message without requeueing it. On a queue declared with an
+// x-dead-letter-exchange this is what moves the message to the dead-letter queue.
 func (a *ConsumeArgs) Reject() error                       { return a.reject() }
 func (a *ConsumeArgs) GetMessageMetadata() MessageMetadata { return a.metadata }
+
+// Headers are the broker-level message headers, e.g. the x-death table a dead-lettered
+// message carries.
+func (a *ConsumeArgs) Headers() map[string]any { return a.headers }
+
+const deathHeader = "x-death"
+
+// DeadLetteredAt is when the broker last dead-lettered this message, from its x-death header
+// (most recent death first). ok is false for a message that was never dead-lettered.
+func (a *ConsumeArgs) DeadLetteredAt() (t time.Time, ok bool) {
+	deaths, ok := a.headers[deathHeader].([]any)
+	if !ok || len(deaths) == 0 {
+		return time.Time{}, false
+	}
+	var first map[string]any
+	switch d := deaths[0].(type) {
+	case amqp091.Table:
+		first = d
+	case map[string]any:
+		first = d
+	default:
+		return time.Time{}, false
+	}
+	t, ok = first["time"].(time.Time)
+	return t, ok
+}
 
 type ConsumeCallback func(*ConsumeArgs)
 
@@ -260,6 +290,7 @@ func (q *Queue) handleDelivery(delivery amqp091.Delivery, callback ConsumeCallba
 	args := &ConsumeArgs{
 		id:      delivery.MessageId,
 		message: delivery.Body,
+		headers: delivery.Headers,
 		metadata: MessageMetadata{
 			messageType:     delivery.Type,
 			messageEncoding: delivery.ContentEncoding,
