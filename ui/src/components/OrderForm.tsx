@@ -40,6 +40,11 @@ export function OrderForm({
   const [total, setTotal] = useState(""); // quote budget: market buy only
   const [tif, setTif] = useState<TifValue>(TimeInForce.GoodTillCancel);
   const [postOnly, setPostOnly] = useState(false);
+  // Bracket: once the order fills, the engine arms an opposite-side market exit for what it
+  // received and fires it at either trigger. Either or both may be set.
+  const [bracket, setBracket] = useState(false);
+  const [takeProfit, setTakeProfit] = useState("");
+  const [stopLoss, setStopLoss] = useState("");
   const [loading, setLoading] = useState(false);
 
   const isBuy = side === "buy";
@@ -60,6 +65,8 @@ export function OrderForm({
   const priceBig = parseUnits(price, quoteDecimals);
   const qtyBig = parseUnits(quantity, baseDecimals);
   const totalBig = parseUnits(total, quoteDecimals);
+  const takeProfitBig = parseUnits(takeProfit, quoteDecimals);
+  const stopLossBig = parseUnits(stopLoss, quoteDecimals);
 
   // Funds the order will reserve. For a limit buy the notional must be normalized by
   // the base scale, exactly like core's quoteAmount() (see ui/CLAUDE.md rule 4) — this
@@ -88,6 +95,46 @@ export function OrderForm({
     }
   }
 
+  // Mirrors the API's bracket rules so the user gets a specific message instead of a
+  // generic rejection: the exit sits on the opposite side, so a buy takes profit above its
+  // price and stops below; a sell is mirrored; a market entry has no price to anchor to.
+  function buildTriggers(
+    limitPrice: bigint | undefined,
+  ): Pick<CreateOrderParams, "takeProfitPrice" | "stopLossPrice"> | string {
+    if (!bracket) return {};
+    if (takeProfit.trim() === "" && stopLoss.trim() === "") {
+      return "Enter a take-profit and/or stop-loss price, or untick the bracket";
+    }
+    if (takeProfit.trim() !== "" && (takeProfitBig === undefined || takeProfitBig === 0n)) {
+      return `Invalid take-profit price — enter a decimal with up to ${quoteDecimals} places`;
+    }
+    if (stopLoss.trim() !== "" && (stopLossBig === undefined || stopLossBig === 0n)) {
+      return `Invalid stop-loss price — enter a decimal with up to ${quoteDecimals} places`;
+    }
+
+    const tp = takeProfitBig;
+    const sl = stopLossBig;
+    const above = isBuy ? tp : sl;
+    const below = isBuy ? sl : tp;
+    const aboveName = isBuy ? "Take profit" : "Stop loss";
+    const belowName = isBuy ? "Stop loss" : "Take profit";
+    if (above !== undefined && below !== undefined && below >= above) {
+      return `${aboveName} must be above ${belowName.toLowerCase()} for a ${side}`;
+    }
+    if (limitPrice !== undefined) {
+      if (above !== undefined && above <= limitPrice) {
+        return `${aboveName} must be above the limit price for a ${side}`;
+      }
+      if (below !== undefined && below >= limitPrice) {
+        return `${belowName} must be below the limit price for a ${side}`;
+      }
+    }
+    return {
+      ...(tp !== undefined ? { takeProfitPrice: tp } : {}),
+      ...(sl !== undefined ? { stopLossPrice: sl } : {}),
+    };
+  }
+
   function buildParams(): CreateOrderParams | string {
     const common = {
       market,
@@ -99,14 +146,18 @@ export function OrderForm({
       if (totalBig === undefined || totalBig === 0n) {
         return `Invalid total — enter a decimal with up to ${quoteDecimals} places`;
       }
-      return { ...common, type: OrderType.Market, quoteQty: totalBig };
+      const triggers = buildTriggers(undefined);
+      if (typeof triggers === "string") return triggers;
+      return { ...common, type: OrderType.Market, quoteQty: totalBig, ...triggers };
     }
 
     if (isMarket) {
       if (qtyBig === undefined || qtyBig === 0n) {
         return `Invalid quantity — enter a decimal with up to ${baseDecimals} places`;
       }
-      return { ...common, type: OrderType.Market, quantity: qtyBig };
+      const triggers = buildTriggers(undefined);
+      if (typeof triggers === "string") return triggers;
+      return { ...common, type: OrderType.Market, quantity: qtyBig, ...triggers };
     }
 
     if (priceBig === undefined || priceBig === 0n) {
@@ -115,12 +166,15 @@ export function OrderForm({
     if (qtyBig === undefined || qtyBig === 0n) {
       return `Invalid quantity — enter a decimal with up to ${baseDecimals} places`;
     }
+    const triggers = buildTriggers(priceBig);
+    if (typeof triggers === "string") return triggers;
     return {
       ...common,
       type: OrderType.Limit,
       price: priceBig,
       quantity: qtyBig,
       ...(effectivePostOnly ? { postOnly: true } : {}),
+      ...triggers,
     };
   }
 
@@ -151,13 +205,18 @@ export function OrderForm({
       if (result?.error) {
         showToast(`Order rejected: ${result.error}`, "error");
       } else {
+        const exit = result?.exitOrderId
+          ? ` · exit: ${result.exitOrderId.slice(0, 8)}…`
+          : "";
         showToast(
-          `Order placed — id: ${result?.orderId?.slice(0, 8) ?? "?"}…`,
+          `Order placed — id: ${result?.orderId?.slice(0, 8) ?? "?"}…${exit}`,
           "success",
         );
         setPrice("");
         setQuantity("");
         setTotal("");
+        setTakeProfit("");
+        setStopLoss("");
         onOrderPlaced?.();
         void refreshBalances();
       }
@@ -283,6 +342,48 @@ export function OrderForm({
         />
         Post-only{!postOnlyEligible && " (limit GTC only)"}
       </label>
+
+      <label
+        style={s.checkRow}
+        title="Once this order fills, a market exit for what it received is armed and fires at either trigger"
+      >
+        <input
+          type="checkbox"
+          checked={bracket}
+          onChange={(e) => setBracket(e.target.checked)}
+          style={s.checkbox}
+        />
+        Take profit / Stop loss
+      </label>
+
+      {bracket && (
+        <div style={s.bracket}>
+          <label style={s.label}>
+            Take profit {quoteSymbol && `(${quoteSymbol})`}
+            <input
+              value={takeProfit}
+              onChange={(e) => setTakeProfit(e.target.value)}
+              placeholder={isBuy ? "above the entry price" : "below the entry price"}
+              autoComplete="off"
+              inputMode="decimal"
+            />
+          </label>
+          <label style={s.label}>
+            Stop loss {quoteSymbol && `(${quoteSymbol})`}
+            <input
+              value={stopLoss}
+              onChange={(e) => setStopLoss(e.target.value)}
+              placeholder={isBuy ? "below the entry price" : "above the entry price"}
+              autoComplete="off"
+              inputMode="decimal"
+            />
+          </label>
+          <span style={s.hint}>
+            Set one or both. The exit {isBuy ? "sells" : "buys back"} what this order
+            receives, at market, when the last trade reaches a trigger.
+          </span>
+        </div>
+      )}
 
       {/* Market display */}
       <div style={s.marketRow}>
@@ -418,6 +519,14 @@ const s = {
     flex: "0 0 auto",
     accentColor: "var(--green)",
     cursor: "pointer",
+  },
+  bracket: {
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 8,
+    padding: "8px 10px",
+    borderLeft: "2px solid var(--accent-dim)",
+    animation: "fade-in 200ms ease",
   },
   marketRow: {
     display: "flex",

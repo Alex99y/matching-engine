@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Order } from "ts-sdk";
+import { OrderStatus, type Order } from "ts-sdk";
 import { useSession } from "../contexts/AuthContext.tsx";
 import { useToast } from "../contexts/ToastContext.tsx";
 import { fmtDateTime, fmtUnits, orderLegDecimals, shortId } from "../utils/format.ts";
@@ -67,7 +67,11 @@ export function OrderList({ market, baseSymbol, quoteSymbol, baseDecimals, quote
     }
   }
 
-  const openOrders = orders.filter((o) => o.openOrder != null);
+  // A pending bracket exit is live and cancellable but has no open_order leg — it is waiting
+  // for its trigger, not resting in the book — so it is listed by status instead.
+  const openOrders = orders.filter(
+    (o) => o.openOrder != null || o.status === OrderStatus.Pending,
+  );
 
   return (
     <div style={s.container}>
@@ -87,7 +91,21 @@ export function OrderList({ market, baseSymbol, quoteSymbol, baseDecimals, quote
       ) : (
         <div style={s.list}>
           {openOrders.map((order) => {
-            const o = order.openOrder!;
+            if (order.openOrder == null) {
+              return (
+                <PendingExitRow
+                  key={order.id}
+                  order={order}
+                  baseSymbol={baseSymbol}
+                  quoteSymbol={quoteSymbol}
+                  baseDecimals={baseDecimals}
+                  quoteDecimals={quoteDecimals}
+                  cancelling={cancelling.has(order.id)}
+                  onCancel={() => void cancelOrder(order.id)}
+                />
+              );
+            }
+            const o = order.openOrder;
             const isBuy = o.side === "buy";
             const { haveDecimals } = orderLegDecimals(o.side, baseDecimals, quoteDecimals);
             return (
@@ -125,6 +143,64 @@ export function OrderList({ market, baseSymbol, quoteSymbol, baseDecimals, quote
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// A parked bracket exit: a market order of `side` for the amount its entry received, held
+// until the last trade reaches a trigger. A sell exit offers base; a buy exit spends a quote
+// budget — the same denomination rule as any market order, so `have` is read by side.
+function PendingExitRow({
+  order,
+  baseSymbol,
+  quoteSymbol,
+  baseDecimals,
+  quoteDecimals,
+  cancelling,
+  onCancel,
+}: {
+  order: Order;
+  baseSymbol: string;
+  quoteSymbol: string;
+  baseDecimals: number;
+  quoteDecimals: number;
+  cancelling: boolean;
+  onCancel: () => void;
+}) {
+  const side = order.side ?? "";
+  const isBuy = side === "buy";
+  const sizeSymbol = isBuy ? quoteSymbol : baseSymbol;
+  const sizeDecimals = isBuy ? quoteDecimals : baseDecimals;
+  const triggers = [
+    order.takeProfitPrice !== undefined ? `TP ${fmtUnits(order.takeProfitPrice, quoteDecimals)}` : null,
+    order.stopLossPrice !== undefined ? `SL ${fmtUnits(order.stopLossPrice, quoteDecimals)}` : null,
+  ].filter((t): t is string => t !== null);
+
+  return (
+    <div style={s.row} title="Bracket exit — fires at market when the last trade reaches a trigger">
+      <div style={s.rowTop}>
+        <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ color: isBuy ? "var(--green)" : "var(--red)", fontWeight: 600 }}>
+            {side ? side.toUpperCase() : "—"}
+          </span>
+          <span style={s.exitTag}>EXIT</span>
+        </span>
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>
+          {triggers.join(" · ")} {quoteSymbol}
+        </span>
+        <button onClick={onCancel} disabled={cancelling} style={s.cancelBtn}>
+          {cancelling ? "…" : "Cancel"}
+        </button>
+      </div>
+      <div style={s.rowSub}>
+        <span style={{ color: "var(--text-muted)" }}>id: {shortId(order.id)}</span>
+        <span style={{ color: "var(--text-muted)" }}>
+          size: {fmtUnits(order.haveQuantity, sizeDecimals)} {sizeSymbol}
+        </span>
+        {order.parentOrderId && (
+          <span style={{ color: "var(--text-muted)" }}>entry: {shortId(order.parentOrderId)}</span>
+        )}
+      </div>
     </div>
   );
 }
@@ -194,5 +270,14 @@ const s = {
     borderRadius: "var(--radius-sm)",
     fontSize: 11,
     fontWeight: 600,
+  },
+  exitTag: {
+    background: "var(--accent-dim)",
+    color: "var(--accent-hover)",
+    padding: "0 5px",
+    borderRadius: "var(--radius-sm)",
+    fontSize: 9,
+    fontWeight: 700,
+    letterSpacing: "0.06em",
   },
 } as const;
