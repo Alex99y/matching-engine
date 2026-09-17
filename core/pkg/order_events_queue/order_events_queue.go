@@ -9,6 +9,11 @@ import (
 	"github.com/google/uuid"
 )
 
+// DeadLetterExchange is where the broker moves a rejected command. Declared here rather than in
+// core/pkg/deadletter because that package builds on this one, and the queue's declaration must
+// name the exchange.
+const DeadLetterExchange = "me.dlx"
+
 type OrdersEventsQueue struct {
 	marketRef string
 	queue     *rabbitmq.Queue
@@ -38,22 +43,24 @@ func (o *OrdersEventsQueue) EmitNewOrderToME(
 // discarded here, so that the processor remains the single owner of dead-letter policy; Raw always
 // carries the original bytes so they can be parked verbatim.
 type OrderDelivery struct {
-	Event *OrderEvent
-	Raw   []byte
-	id    string
-	ack   func() error
-	nack  func() error
+	Event  *OrderEvent
+	Raw    []byte
+	id     string
+	ack    func() error
+	nack   func() error
+	reject func() error
 }
 
-func (d *OrderDelivery) ID() string  { return d.id }
-func (d *OrderDelivery) Ack() error  { return d.ack() }
-func (d *OrderDelivery) Nack() error { return d.nack() }
+func (d *OrderDelivery) ID() string    { return d.id }
+func (d *OrderDelivery) Ack() error    { return d.ack() }
+func (d *OrderDelivery) Nack() error   { return d.nack() }
+func (d *OrderDelivery) Reject() error { return d.reject() }
 
 // NewOrderDelivery builds a delivery from an already-parsed event and its acknowledgement controls.
 // The consumer constructs deliveries directly; this is the exported path used by callers (and tests)
 // that supply their own hooks.
-func NewOrderDelivery(event *OrderEvent, raw []byte, id string, ack, nack func() error) *OrderDelivery {
-	return &OrderDelivery{Event: event, Raw: raw, id: id, ack: ack, nack: nack}
+func NewOrderDelivery(event *OrderEvent, raw []byte, id string, ack, nack, reject func() error) *OrderDelivery {
+	return &OrderDelivery{Event: event, Raw: raw, id: id, ack: ack, nack: nack, reject: reject}
 }
 
 // OrderDeliveryHandler receives each successfully parsed delivery. It must not block
@@ -71,11 +78,12 @@ func (o *OrdersEventsQueue) WatchForOrderEvents(ctx context.Context, handler Ord
 			o.logger.Error(fmt.Sprintf("order_events_queue: malformed message id=%s: %v", args.Id(), err))
 		}
 		handler(&OrderDelivery{
-			Event: event,
-			Raw:   raw,
-			id:    args.Id(),
-			ack:   args.Ack,
-			nack:  args.Nack,
+			Event:  event,
+			Raw:    raw,
+			id:     args.Id(),
+			ack:    args.Ack,
+			nack:   args.Nack,
+			reject: args.Reject,
 		})
 	})
 }
@@ -129,6 +137,7 @@ func NewOrdersQueue(
 			AutoDelete: false,
 			Exclusive:  false,
 			NoWait:     false,
+			Args:       map[string]any{"x-dead-letter-exchange": DeadLetterExchange},
 		},
 		logger,
 	)

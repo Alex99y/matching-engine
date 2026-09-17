@@ -1,32 +1,30 @@
-// Package deadletter is core's parking lot for order commands that cannot be processed.
+// Package deadletter is core's record of order commands that could never be processed.
 //
-// Dead-lettering here is application-driven rather than broker-driven: core publishes the failed
-// message to the me.dlx exchange itself and then acks the original, instead of relying on an
-// x-dead-letter-exchange argument on the command queues. Two reasons, both specific to this engine:
+// Dead-lettering is broker-driven: every command queue is declared with an x-dead-letter-exchange
+// of me.dlx, so when the matcher rejects a message the broker moves it — atomically with the
+// reject — to the market's parking queue me.dlq.<market>. The Consumer in this package drains
+// that queue into the dead_letters table, which is what operators read.
 //
-//   - The broker's x-death header records only {queue, reason:"rejected", count, time}. The reason an
-//     order actually failed — the constraint it violated, the validation rule it broke — is the whole
-//     point of a dead-letter queue for a matching engine, and only core knows it.
-//   - Adding the argument to the existing durable command queues would fail with PRECONDITION_FAILED,
-//     crash-looping both core and api at boot until every queue was drained and recreated.
-//
-// The publisher is deliberately synchronous, unlike marketevents: the caller must know whether the
-// message reached the parking lot before it decides to ack the original.
+// The broker records only that a message was rejected, not why. The why is recomputed instead of
+// remembered: classification is a pure function of the payload and the market's constraints
+// (Classify), so a malformed, unknown-type or invalid command is re-derived exactly, at any time,
+// after any restart. A payload that classifies as processable can be on the parking queue for
+// one reason only — it failed to commit deterministically too many times — so it is poison. The
+// one value that is not a function of the payload is the poison error text (which database
+// constraint fired); PoisonErrors carries it from the matcher to the consumer in-process, best
+// effort, and a restart between the reject and the consume leaves a placeholder on that row.
 package deadletter
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/common/pkg/rabbitmq"
-	"github.com/google/uuid"
+	oeq "github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 )
 
-const ExchangeName = "me.dlx"
+const ExchangeName = oeq.DeadLetterExchange
 
 const queuePrefix = "me.dlq."
 
@@ -45,60 +43,22 @@ const (
 	ReasonPoison Reason = "poison"
 )
 
-// Envelope is what lands in the parking lot. Payload holds the original message so an operator can
-// replay it by hand after fixing the root cause.
-type Envelope struct {
-	OrderID   string          `json:"order_id,omitempty"`
-	MarketRef string          `json:"market_ref"`
-	EventType string          `json:"event_type,omitempty"`
-	Reason    Reason          `json:"reason"`
-	Error     string          `json:"error,omitempty"`
-	Failures  int             `json:"failures,omitempty"`
-	DeadAt    time.Time       `json:"dead_at"`
-	Payload   json.RawMessage `json:"payload,omitempty"`
-}
+// PoisonErrorUnavailable stands in for a poison error text the consumer could not recover: the
+// matcher that rejected the message is not the process consuming it, or it restarted in between.
+const PoisonErrorUnavailable = "see core log at dead_at"
 
-type Publisher struct {
-	exchange  *rabbitmq.Exchange
-	client    *rabbitmq.RabbitMQClient
-	logger    *logger.Logger
-	markets   []string
-	mu        sync.Mutex
-	publishMu sync.Mutex
-}
-
-func NewPublisher(client *rabbitmq.RabbitMQClient, log *logger.Logger) (*Publisher, error) {
-	if log == nil {
-		panic("logger cannot be nil")
-	}
-	if client == nil {
-		panic("rabbitMqClient cannot be nil")
-	}
-	exchange, err := rabbitmq.NewExchange(client, rabbitmq.ExchangeArgs{
-		Name:    ExchangeName,
-		Kind:    rabbitmq.ExchangeKindDirect,
-		Durable: true,
-	}, log)
+// DeclareTopology creates the parking queue for one market, bound to me.dlx under the market
+// ref. The exchange is declared with it. Safe to call repeatedly.
+func DeclareTopology(client *rabbitmq.RabbitMQClient, marketRef string) error {
+	ch, err := client.Channel()
 	if err != nil {
-		return nil, fmt.Errorf("dead letter publisher: %w", err)
+		return fmt.Errorf("dead letter topology %q: %w", marketRef, err)
 	}
-	return &Publisher{exchange: exchange, client: client, logger: log}, nil
-}
-
-// DeclareMarket creates the durable parking-lot queue for one market and
-// binds it to me.dlx under the market ref.
-func (p *Publisher) DeclareMarket(marketRef string) error {
-	if err := p.declare(marketRef); err != nil {
-		return err
+	defer ch.Close()
+	if err := ch.ExchangeDeclare(ExchangeName, string(rabbitmq.ExchangeKindDirect), true, false, false, false, nil); err != nil {
+		return fmt.Errorf("dead letter exchange: %w", err)
 	}
-	p.mu.Lock()
-	p.markets = append(p.markets, marketRef)
-	p.mu.Unlock()
-	return nil
-}
-
-func (p *Publisher) declare(marketRef string) error {
-	err := rabbitmq.DeclareQueue(p.client, rabbitmq.QueueArgs{
+	err = rabbitmq.DeclareQueue(client, rabbitmq.QueueArgs{
 		Name:     QueueName(marketRef),
 		Durable:  true,
 		Bindings: []rabbitmq.Binding{{Exchange: ExchangeName, RoutingKey: marketRef}},
@@ -109,61 +69,51 @@ func (p *Publisher) declare(marketRef string) error {
 	return nil
 }
 
-// Publish parks one envelope. A nil error means the broker accepted it; the caller may then ack the
-// original message.
-func (p *Publisher) Publish(ctx context.Context, env *Envelope) error {
-	if env.DeadAt.IsZero() {
-		env.DeadAt = time.Now().UTC()
-	}
-	if err := normalisePayload(env); err != nil {
-		return err
-	}
-	body, err := json.Marshal(env)
-	if err != nil {
-		return fmt.Errorf("dead letter marshal: %w", err)
-	}
+// poisonErrorTTL bounds how long a recorded error waits for its consumer. The broker delivers a
+// rejected message within milliseconds; anything older belongs to a message that will never
+// arrive here.
+const poisonErrorTTL = time.Minute
 
-	p.publishMu.Lock()
-	defer p.publishMu.Unlock()
-
-	if err := p.exchange.PublishPersistent(ctx, env.MarketRef, uuid.NewString(), body); err == nil {
-		return nil
-	}
-
-	if rErr := p.redeclare(); rErr != nil {
-		return fmt.Errorf("dead letter publish %q: topology re-declare failed: %w", env.MarketRef, rErr)
-	}
-	if err := p.exchange.PublishPersistent(ctx, env.MarketRef, uuid.NewString(), body); err != nil {
-		return fmt.Errorf("dead letter publish %q: %w", env.MarketRef, err)
-	}
-	return nil
+type poisonEntry struct {
+	text string
+	at   time.Time
 }
 
-// normalisePayload makes env.Payload safe to marshal.
-func normalisePayload(env *Envelope) error {
-	if len(env.Payload) == 0 || json.Valid(env.Payload) {
-		return nil
-	}
-	quoted, err := json.Marshal(string(env.Payload))
-	if err != nil {
-		return fmt.Errorf("dead letter marshal payload: %w", err)
-	}
-	env.Payload = quoted
-	return nil
+// PoisonErrors hands a poison error text from the matcher goroutine that rejects a message to the
+// consumer goroutine that records it. Keyed by message id and event type together, because the
+// API uses an order's id as the message id of both its open and its cancel.
+type PoisonErrors struct {
+	mu      sync.Mutex
+	entries map[string]poisonEntry
+	now     func() time.Time
 }
 
-func (p *Publisher) redeclare() error {
+func NewPoisonErrors() *PoisonErrors {
+	return &PoisonErrors{entries: make(map[string]poisonEntry), now: time.Now}
+}
+
+func (p *PoisonErrors) Record(messageID, eventType, text string) {
 	p.mu.Lock()
-	markets := make([]string, len(p.markets))
-	copy(markets, p.markets)
-	p.mu.Unlock()
-
-	for _, ref := range markets {
-		if err := p.declare(ref); err != nil {
-			return err
+	defer p.mu.Unlock()
+	now := p.now()
+	for k, e := range p.entries {
+		if now.Sub(e.at) > poisonErrorTTL {
+			delete(p.entries, k)
 		}
 	}
-	return nil
+	p.entries[poisonKey(messageID, eventType)] = poisonEntry{text: text, at: now}
 }
 
-func (p *Publisher) Close() error { return p.exchange.Close() }
+func (p *PoisonErrors) Take(messageID, eventType string) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	key := poisonKey(messageID, eventType)
+	e, ok := p.entries[key]
+	if !ok {
+		return "", false
+	}
+	delete(p.entries, key)
+	return e.text, true
+}
+
+func poisonKey(messageID, eventType string) string { return messageID + "|" + eventType }

@@ -31,7 +31,7 @@ func newTestApp(t *testing.T, markets map[string]admin.MarketController) *fiber.
 	t.Helper()
 	log := logger.NewLogger(logger.Error)
 	app := fiber.New()
-	svc := admin.NewService(markets, &fakeUsers{byName: map[string]*repository.User{}}, &fakeOrders{}, &fakeCache{})
+	svc := admin.NewService(markets, &fakeUsers{byName: map[string]*repository.User{}}, &fakeOrders{}, &fakeCache{}, &fakeDeadLetters{})
 	admin.RegisterAdminRoutes(app, testToken, admin.NewHandler(svc, log))
 	return app
 }
@@ -154,7 +154,7 @@ func TestStatusListsEveryServedMarketSorted(t *testing.T) {
 func TestNewServerRejectsAnEmptyToken(t *testing.T) {
 	log := logger.NewLogger(logger.Error)
 	svc := admin.NewService(map[string]admin.MarketController{},
-		&fakeUsers{byName: map[string]*repository.User{}}, &fakeOrders{}, &fakeCache{})
+		&fakeUsers{byName: map[string]*repository.User{}}, &fakeOrders{}, &fakeCache{}, &fakeDeadLetters{})
 	handler := admin.NewHandler(svc, log)
 
 	_, err := admin.NewServer(0, "", handler, log)
@@ -300,6 +300,7 @@ func newUserFixture(t *testing.T, frozen bool, rows func(aliceID uuid.UUID) []re
 		&fakeUsers{byName: map[string]*repository.User{"alice": alice}},
 		orders,
 		&fakeCache{},
+		&fakeDeadLetters{},
 	)
 	app := fiber.New()
 	admin.RegisterAdminRoutes(app, testToken, admin.NewHandler(svc, log))
@@ -543,5 +544,101 @@ func TestUnknownUserIs404(t *testing.T) {
 	}
 	if status, _ := postJSON(t, f.app, "/admin/users/nobody/orders/cancel", `{"all":true}`); status != http.StatusNotFound {
 		t.Fatalf("cancel = %d, want 404", status)
+	}
+}
+
+// --- dead letters ------------------------------------------------------------------------------
+
+type deadLettersCall struct {
+	market *string
+	limit  int
+}
+
+type fakeDeadLetters struct {
+	rows []repository.DeadLetterRow
+	err  error
+	got  []deadLettersCall
+}
+
+func (f *fakeDeadLetters) ListDeadLetters(ctx context.Context, marketRef *string, limit int) ([]repository.DeadLetterRow, error) {
+	f.got = append(f.got, deadLettersCall{market: marketRef, limit: limit})
+	return f.rows, f.err
+}
+
+func newDeadLetterApp(t *testing.T, dl *fakeDeadLetters) *fiber.App {
+	t.Helper()
+	log := logger.NewLogger(logger.Error)
+	app := fiber.New()
+	svc := admin.NewService(map[string]admin.MarketController{"ETH-USDT": &fakeMarket{}},
+		&fakeUsers{byName: map[string]*repository.User{}}, &fakeOrders{}, &fakeCache{}, dl)
+	admin.RegisterAdminRoutes(app, testToken, admin.NewHandler(svc, log))
+	return app
+}
+
+// The listing is the operator's only view of a parked command, so every column the consumer
+// records must come through, with the payload verbatim.
+func TestListDeadLettersRendersRows(t *testing.T) {
+	orderID := uuid.New()
+	dl := &fakeDeadLetters{rows: []repository.DeadLetterRow{{
+		ID: 7, MessageID: orderID.String(), MarketRef: "ETH-USDT", OrderID: &orderID, EventType: "open_order",
+		Reason: "invalid", Error: "limit orders require a non-zero price", Payload: json.RawMessage(`{"type":"open_order"}`),
+		DeadAt: time.Unix(1_757_000_000, 0), RecordedAt: time.Unix(1_757_000_001, 0), Status: "parked",
+	}}}
+	app := newDeadLetterApp(t, dl)
+
+	status, body := request(t, app, http.MethodGet, "/admin/dlq", testToken)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200", status, body)
+	}
+	var out admin.DeadLetters
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(out.Items))
+	}
+	item := out.Items[0]
+	if item.ID != 7 || item.Market != "ETH-USDT" || item.OrderID != orderID.String() || item.Reason != "invalid" ||
+		item.DeadAt != 1_757_000_000 || item.RecordedAt != 1_757_000_001 || item.Status != "parked" ||
+		string(item.Payload) != `{"type":"open_order"}` {
+		t.Fatalf("item = %+v, columns did not survive the mapping", item)
+	}
+	// No market filter and the default page size when nothing is asked for.
+	if len(dl.got) != 1 || dl.got[0].market != nil || dl.got[0].limit != 50 {
+		t.Fatalf("repository call = %+v, want all markets with the default limit", dl.got)
+	}
+}
+
+func TestListDeadLettersFiltersAndClampsLimit(t *testing.T) {
+	dl := &fakeDeadLetters{}
+	app := newDeadLetterApp(t, dl)
+
+	if status, body := request(t, app, http.MethodGet, "/admin/dlq?market=ETH-USDT&limit=9999", testToken); status != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200", status, body)
+	}
+	if len(dl.got) != 1 || dl.got[0].market == nil || *dl.got[0].market != "ETH-USDT" || dl.got[0].limit != 500 {
+		t.Fatalf("repository call = %+v, want ETH-USDT clamped to 500", dl.got)
+	}
+	// A market this core does not serve is a 404, like every other market route.
+	if status, _ := request(t, app, http.MethodGet, "/admin/dlq?market=DOGE-USDT", testToken); status != http.StatusNotFound {
+		t.Fatalf("unserved market = %d, want 404", status)
+	}
+	if status, _ := request(t, app, http.MethodGet, "/admin/dlq?limit=zero", testToken); status != http.StatusBadRequest {
+		t.Fatalf("bad limit = %d, want 400", status)
+	}
+	if status, _ := request(t, app, http.MethodGet, "/admin/dlq", ""); status != http.StatusUnauthorized {
+		t.Fatalf("no token = %d, want 401", status)
+	}
+}
+
+func TestListDeadLettersHidesRepositoryErrors(t *testing.T) {
+	app := newDeadLetterApp(t, &fakeDeadLetters{err: fmt.Errorf("pq: connection refused")})
+
+	status, body := request(t, app, http.MethodGet, "/admin/dlq", testToken)
+	if status != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", status)
+	}
+	if strings.Contains(string(body), "pq:") {
+		t.Fatalf("infrastructure detail leaked to the caller: %s", body)
 	}
 }

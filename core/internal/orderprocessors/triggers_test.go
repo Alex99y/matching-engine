@@ -114,7 +114,7 @@ func TestMatcherFiresHydratedExitAsSoonAsThePriceIsReached(t *testing.T) {
 	taker.Price, taker.Quantity, taker.TimeInForce = 150, 1, oeq.ImmediateOrCancel
 	rec := &ackRecorder{}
 	q := &fakeQueue{deliveries: []*oeq.OrderDelivery{rec.delivery(taker)}}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, nil, "")
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, &fakePoison{}, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -142,7 +142,7 @@ func TestMatcherLeavesExitParkedBelowItsTrigger(t *testing.T) {
 	taker.Price, taker.Quantity, taker.TimeInForce = 149, 1, oeq.ImmediateOrCancel
 	rec := &ackRecorder{}
 	q := &fakeQueue{deliveries: []*oeq.OrderDelivery{rec.delivery(taker)}}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, nil, "")
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, &fakePoison{}, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)
@@ -170,7 +170,7 @@ func TestPoisonedTriggerSweepDoesNotSpinTheMatcher(t *testing.T) {
 		lastPrice: 150, traded: true, // due from the first sweep
 		poisonExit: exit.OrderID,
 	}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), &fakeQueue{}, repo, nil, nil, nil, "")
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), &fakeQueue{}, repo, nil, nil, &fakePoison{}, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)

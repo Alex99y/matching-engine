@@ -98,21 +98,15 @@ func main() {
 	wg.Go(func() { eventPublisher.Run(ctx) })
 	epoch := uuid.NewString()
 
-	// Dead-letter parking lot (me.dlx)
-	deadLetterPublisher, err := deadletter.NewPublisher(rabbitmqClient, log)
-	if err != nil {
-		panic(err)
-	}
-	defer func() {
-		if err := deadLetterPublisher.Close(); err != nil {
-			log.Error(fmt.Sprintf("closing dead letter publisher: %v", err))
-		}
-	}()
+	// Poison error texts cross from a market's matcher to its dead-letter consumer in-process
+	// (see core/pkg/deadletter); one map serves every market this core runs.
+	poisonErrors := deadletter.NewPoisonErrors()
 
 	instrumentRepository := repository.NewInstrumentRepository(log, postgresqlClient, coreConfig.DBQueryTimeout)
 	marketRepository := repository.NewMarketRepository(log, postgresqlClient, coreConfig.DBQueryTimeout)
 	orderRepository := repository.NewOrderRepository(log, postgresqlClient, dbMetrics, coreConfig.DBQueryTimeout)
 	userRepository := repository.NewUserRepository(log, postgresqlClient, coreConfig.DBQueryTimeout)
+	deadLetterRepository := repository.NewDeadLetterRepository(log, postgresqlClient, coreConfig.DBQueryTimeout)
 
 	const cacheRefreshSeconds = 5 * 60
 	cacheService := cache.NewCacheService(log, marketRepository, instrumentRepository, cacheRefreshSeconds)
@@ -137,11 +131,29 @@ func main() {
 	servedMarkets := make(map[string]admin.MarketController, len(marketsToProcess))
 	for _, market := range marketsToProcess {
 		marketRef := utils.MergeMarketRef(market.BaseSymbol, market.QuoteSymbol)
-		if err := deadLetterPublisher.DeclareMarket(marketRef); err != nil {
+		constraints := order_events_queue.MarketConstraints{
+			PriceQuantum:  market.PriceQuantum,
+			AmountQuantum: market.AmountQuantum,
+			MinOrderSize:  market.MinOrderSize,
+			MaxOrderSize:  market.MaxOrderSize,
+			BaseScale:     market.BaseScale,
+		}
+		// The consumer declares me.dlx and the market's parking queue; it must exist before the
+		// command queue below names it as its dead-letter exchange.
+		consumer, err := deadletter.NewConsumer(log, rabbitmqClient, marketRef, constraints, poisonErrors,
+			deadLetterRepository, coreMetrics.BindMarket(marketRef))
+		if err != nil {
 			panic(err)
 		}
+		defer func() {
+			if err := consumer.Close(); err != nil {
+				log.Error(fmt.Sprintf("closing dead letter consumer %s: %v", marketRef, err))
+			}
+		}()
+		wg.Go(func() { consumer.Run(ctx) })
+
 		queue := order_events_queue.NewOrdersQueue(log, marketRef, rabbitmqClient)
-		p := orderprocessors.NewOrderProcessor(log, market, queue, orderRepository, coreMetrics, eventPublisher, deadLetterPublisher, epoch)
+		p := orderprocessors.NewOrderProcessor(log, market, queue, orderRepository, coreMetrics, eventPublisher, poisonErrors, epoch)
 		servedMarkets[marketRef] = p
 		wg.Go(func() { p.Start(ctx) })
 	}
@@ -151,7 +163,7 @@ func main() {
 	adminServer, err := admin.NewServer(
 		coreConfig.AdminPort,
 		coreConfig.AdminToken,
-		admin.NewHandler(admin.NewService(servedMarkets, userRepository, orderRepository, cacheService), log),
+		admin.NewHandler(admin.NewService(servedMarkets, userRepository, orderRepository, cacheService, deadLetterRepository), log),
 		log,
 	)
 	if err != nil {

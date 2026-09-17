@@ -2,13 +2,13 @@ package orderprocessors
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
-	"github.com/alex99y/matching-engine/core/pkg/deadletter"
 	oeq "github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
 	"github.com/google/uuid"
@@ -118,9 +118,10 @@ func fundedIDs(incoming []repository.IncomingOrder, fundNone bool) []uuid.UUID {
 }
 
 type ackRecorder struct {
-	mu    sync.Mutex
-	acks  int
-	nacks int
+	mu      sync.Mutex
+	acks    int
+	nacks   int
+	rejects int
 }
 
 func (a *ackRecorder) delivery(open *oeq.OpenOrderEvent) *oeq.OrderDelivery {
@@ -135,41 +136,42 @@ func (a *ackRecorder) delivery(open *oeq.OpenOrderEvent) *oeq.OrderDelivery {
 	return oeq.NewOrderDelivery(env, raw, open.OrderID.String(),
 		func() error { a.mu.Lock(); a.acks++; a.mu.Unlock(); return nil },
 		func() error { a.mu.Lock(); a.nacks++; a.mu.Unlock(); return nil },
+		func() error { a.mu.Lock(); a.rejects++; a.mu.Unlock(); return nil },
 	)
 }
 
-// fakeDeadLetterer records what the processor parks. failWith makes Publish fail, exercising the
-// ack-and-drop path.
-type fakeDeadLetterer struct {
+func (a *ackRecorder) rejected() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.rejects
+}
+
+// fakePoison records the error texts the processor hands to the dead-letter consumer.
+type fakePoison struct {
 	mu       sync.Mutex
-	parked   []deadletter.Envelope
-	failWith error
+	recorded map[string]string // messageID|eventType → error text
 }
 
-func (f *fakeDeadLetterer) Publish(ctx context.Context, env *deadletter.Envelope) error {
+func (f *fakePoison) Record(messageID, eventType, errText string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.failWith != nil {
-		return f.failWith
+	if f.recorded == nil {
+		f.recorded = map[string]string{}
 	}
-	f.parked = append(f.parked, *env)
-	return nil
+	f.recorded[messageID+"|"+eventType] = errText
 }
 
-func (f *fakeDeadLetterer) count() int {
+func (f *fakePoison) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return len(f.parked)
+	return len(f.recorded)
 }
 
-func (f *fakeDeadLetterer) reasons() []deadletter.Reason {
+func (f *fakePoison) errorFor(messageID, eventType string) (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]deadletter.Reason, 0, len(f.parked))
-	for _, e := range f.parked {
-		out = append(out, e.Reason)
-	}
-	return out
+	text, ok := f.recorded[messageID+"|"+eventType]
+	return text, ok
 }
 
 func (a *ackRecorder) counts() (int, int) {
@@ -190,6 +192,89 @@ func limitBuy() *oeq.OpenOrderEvent {
 		OrderID: uuid.New(), UserID: uuid.New(), MarketID: 1,
 		Side: oeq.BuyOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
 		Price: 100, Quantity: 5,
+	}
+}
+
+// deliveryFor builds a delivery around an arbitrary envelope, recording ack/nack/reject. A nil
+// event stands for a message the consumer could not parse at all.
+func deliveryFor(rec *ackRecorder, event *oeq.OrderEvent, raw []byte) *oeq.OrderDelivery {
+	return oeq.NewOrderDelivery(event, raw, "test-id",
+		func() error { rec.mu.Lock(); rec.acks++; rec.mu.Unlock(); return nil },
+		func() error { rec.mu.Lock(); rec.nacks++; rec.mu.Unlock(); return nil },
+		func() error { rec.mu.Lock(); rec.rejects++; rec.mu.Unlock(); return nil },
+	)
+}
+
+func newTestProcessor() *OrderProcessor {
+	return NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(),
+		&fakeQueue{}, &fakeRepo{}, nil, nil, &fakePoison{}, "")
+}
+
+// Every command that can never be processed is rejected without requeue — the broker moves it to
+// the dead-letter queue in that same operation — and neither acked (that would drop it) nor
+// nacked (that would redeliver a message guaranteed to fail again).
+func TestHandleDeliveryRejectsUnprocessableCommands(t *testing.T) {
+	unknownType, err := json.Marshal(oeq.OrderEvent{Type: "wat", Payload: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := limitBuy()
+	invalid.Quantity = 0 // fails ValidateOrderEvent
+	invalidEnv, err := oeq.NewOpenOrderEvent(invalid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidRaw, err := invalidEnv.ToBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name  string
+		event *oeq.OrderEvent
+		raw   []byte
+	}{
+		{name: "envelope did not parse", raw: []byte("not json at all")},
+		{
+			name:  "payload did not decode",
+			event: &oeq.OrderEvent{Type: oeq.EventTypeOpenOrder, Payload: []byte(`{"price":"nope"}`)},
+			raw:   []byte(`{"type":"open_order","payload":{"price":"nope"}}`),
+		},
+		{name: "unknown event type", event: &oeq.OrderEvent{Type: "wat", Payload: []byte(`{}`)}, raw: unknownType},
+		{name: "invalid order", event: invalidEnv, raw: invalidRaw},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &ackRecorder{}
+			p := newTestProcessor()
+
+			p.handleDelivery(deliveryFor(rec, tt.event, tt.raw))
+
+			a, n := rec.counts()
+			if r := rec.rejected(); r != 1 || a != 0 || n != 0 {
+				t.Fatalf("rejects=%d acks=%d nacks=%d want 1/0/0", r, a, n)
+			}
+			if len(p.ordersChannel) != 0 {
+				t.Fatal("an unprocessable command must never reach the matcher")
+			}
+		})
+	}
+}
+
+// A valid command reaches the matcher and is left unacknowledged — ack-after-commit owns it now.
+func TestHandleDeliveryForwardsValidOrder(t *testing.T) {
+	rec := &ackRecorder{}
+	p := newTestProcessor()
+
+	p.handleDelivery(rec.delivery(limitBuy()))
+
+	a, n := rec.counts()
+	if r := rec.rejected(); a != 0 || n != 0 || r != 0 {
+		t.Fatalf("acks=%d nacks=%d rejects=%d want 0/0/0 — the matcher acks after commit", a, n, r)
+	}
+	if len(p.ordersChannel) != 1 {
+		t.Fatalf("matcher received %d events, want 1", len(p.ordersChannel))
 	}
 }
 
@@ -214,7 +299,7 @@ func runUntilWithin(t *testing.T, d time.Duration, cond func() bool) {
 // the queue, where stopping consumption actually happens.
 func TestPauseAndResumeDelegateToTheQueue(t *testing.T) {
 	q := &fakeQueue{}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, &fakeRepo{}, nil, nil, nil, "")
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, &fakeRepo{}, nil, nil, &fakePoison{}, "")
 
 	if p.IsPaused() {
 		t.Fatal("a new processor must start trading, not paused")
@@ -242,7 +327,7 @@ func TestPauseAndResumeDelegateToTheQueue(t *testing.T) {
 // goroutine.
 func TestEmitCancelPublishesToTheQueue(t *testing.T) {
 	q := &fakeQueue{}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, &fakeRepo{}, nil, nil, nil, "")
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, &fakeRepo{}, nil, nil, &fakePoison{}, "")
 
 	orderID := uuid.New()
 	if err := p.EmitCancel(context.Background(), orderID); err != nil {

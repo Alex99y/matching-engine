@@ -1,8 +1,6 @@
 package orderprocessors
 
 import (
-	"context"
-	"errors"
 	"fmt"
 
 	"github.com/alex99y/matching-engine/core/internal/orderbook"
@@ -11,59 +9,37 @@ import (
 	"github.com/google/uuid"
 )
 
-var errNoDeadLetterPublisher = errors.New("no dead-letter publisher configured")
-
-type deadLetterer interface {
-	Publish(ctx context.Context, env *deadletter.Envelope) error
+// poisonRecorder hands the consumer of this market's dead-letter queue the one fact it cannot
+// recompute from the payload: why a well-formed order failed to commit. See deadletter.PoisonErrors.
+type poisonRecorder interface {
+	Record(messageID, eventType, errText string)
 }
 
-// deadLetter parks a command and acks its broker message, so it can never be redelivered.
-func (o *OrderProcessor) deadLetter(ctx context.Context, d *oeq.OrderDelivery, env *deadletter.Envelope) {
-	env.MarketRef = o.marketRef
-	o.metrics.IncDeadLetter(string(env.Reason))
-
-	if err := o.publishDeadLetter(ctx, env); err != nil {
-		o.metrics.IncDLQPublishFailure()
-		o.logger.Error(fmt.Sprintf(
-			"order processor %s: DEAD-LETTER PUBLISH FAILED, dropping command reason=%s type=%q order=%q cause=%q payload=%s: %v",
-			o.marketRef, env.Reason, env.EventType, env.OrderID, env.Error, env.Payload, err))
-	}
-
-	if d == nil {
-		return
-	}
-	if err := d.Ack(); err != nil {
-		o.logger.Error(fmt.Sprintf("order processor %s: ack of dead-lettered message failed id=%s: %s",
+// deadLetter rejects a command without requeue. The command queue's dead-letter exchange moves it
+// to the market's parking queue in the same broker operation, so it is never redelivered here and
+// never lost; the deadletter.Consumer records it from there. A failed reject leaves the message
+// unacked, and the broker redelivers it — the outcome is the same, later.
+func (o *OrderProcessor) deadLetter(d *oeq.OrderDelivery, reason deadletter.Reason) {
+	o.metrics.IncDeadLetter(string(reason))
+	if err := d.Reject(); err != nil {
+		o.logger.Error(fmt.Sprintf("order processor %s: reject of dead-lettered message failed id=%s: %s",
 			o.marketRef, d.ID(), err))
 	}
 }
 
-func (o *OrderProcessor) publishDeadLetter(ctx context.Context, env *deadletter.Envelope) error {
-	if o.dlq == nil {
-		return errNoDeadLetterPublisher
-	}
-	return o.dlq.Publish(ctx, env)
-}
-
 // parkPoison handles an event that has failed to commit maxOrderFailures times.
 // Runs on the matcher goroutine, from isolate.
-func (o *OrderProcessor) parkPoison(ctx context.Context, qe *queuedEvent, key uuid.UUID, failures int, cause error) {
-	env := &deadletter.Envelope{
-		OrderID:  key.String(),
-		Reason:   deadletter.ReasonPoison,
-		Error:    cause.Error(),
-		Failures: failures,
-		Payload:  qe.delivery.Raw,
-	}
-
+func (o *OrderProcessor) parkPoison(qe *queuedEvent, cause error) {
+	var eventType oeq.EventType
 	switch {
 	case qe.cancel != nil:
-		env.EventType = string(oeq.EventTypeCancelOrder)
+		eventType = oeq.EventTypeCancelOrder
 	case qe.open != nil:
-		env.EventType = string(oeq.EventTypeOpenOrder)
+		eventType = oeq.EventTypeOpenOrder
 	}
-
-	o.deadLetter(ctx, qe.delivery, env)
+	// Recorded before the reject so the consumer can never see the message first.
+	o.poison.Record(qe.delivery.ID(), string(eventType), cause.Error())
+	o.deadLetter(qe.delivery, deadletter.ReasonPoison)
 
 	switch {
 	case qe.open != nil:

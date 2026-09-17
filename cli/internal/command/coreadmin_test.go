@@ -568,3 +568,38 @@ func TestPausedWord(t *testing.T) {
 		t.Fatalf("pausedWord(false) = %q", got)
 	}
 }
+
+// The listing defaults to every market and lets the server pick the page size; only what the
+// operator asked for reaches the query string, so the server's defaults stay the single source.
+func TestDeadLettersQueryCarriesOnlyWhatWasAsked(t *testing.T) {
+	tests := []struct {
+		name      string
+		market    string
+		limit     int
+		wantQuery string
+	}{
+		{"defaults", "", 0, ""},
+		{"market only", "ETH-USDT", 0, "market=ETH-USDT"},
+		{"market and limit", "ETH-USDT", 20, "limit=20&market=ETH-USDT"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := newAdminStub(t, `{"items":[{"id":1,"market":"ETH-USDT","reason":"invalid","dead_at":1,"recorded_at":1,"status":"parked","payload":{}}]}`)
+			out, err := stub.client(t).deadLetters(tt.market, tt.limit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := stub.last(t)
+			if got.method != http.MethodGet || got.path != "/admin/dlq" {
+				t.Fatalf("request = %s %s, want GET /admin/dlq", got.method, got.path)
+			}
+			if got.query != tt.wantQuery {
+				t.Fatalf("query = %q, want %q", got.query, tt.wantQuery)
+			}
+			if len(out.Items) != 1 || out.Items[0].Reason != "invalid" || string(out.Items[0].Payload) != "{}" {
+				t.Fatalf("items = %+v, want the one record with its payload", out.Items)
+			}
+		})
+	}
+}

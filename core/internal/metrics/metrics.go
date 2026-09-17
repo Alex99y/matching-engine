@@ -24,7 +24,7 @@ const (
 	metricReserveRejections = "reserve_rejections_total"
 	metricPoisonIsolations  = "poison_isolations_total"
 	metricDeadLetters       = "dead_letters_total"
-	metricDLQPublishFails   = "dlq_publish_failures_total"
+	metricDLQPersistFails   = "dlq_persist_failures_total"
 	metricMarketPaused      = "market_paused"
 	metricBookRebuilds      = "book_rebuilds_total"
 	metricBookOrders        = "book_orders"
@@ -95,7 +95,7 @@ type CoreMetrics struct {
 	reserveRejections *observability.CounterMetric
 	poisonIsolations  *observability.CounterMetric
 	deadLetters       *observability.CounterMetric
-	dlqPublishFails   *observability.CounterMetric
+	dlqPersistFails   *observability.CounterMetric
 	marketPaused      *observability.GaugeMetric
 	bookRebuilds      *observability.CounterMetric
 	bookOrders        *observability.GaugeMetric
@@ -153,8 +153,8 @@ func NewCoreMetrics(pm *observability.PrometheusMetrics) (*CoreMetrics, error) {
 	}); err != nil {
 		return nil, err
 	}
-	if c.dlqPublishFails, err = pm.RegisterCounter(observability.CounterDefinition{
-		Name: metricDLQPublishFails, Help: "Dead-letter publishes that failed, dropping the order entirely.", LabelKeys: marketLabel,
+	if c.dlqPersistFails, err = pm.RegisterCounter(observability.CounterDefinition{
+		Name: metricDLQPersistFails, Help: "Dead letters that could not be written to the database and were requeued for retry.", LabelKeys: marketLabel,
 	}); err != nil {
 		return nil, err
 	}
@@ -208,22 +208,22 @@ func (c *CoreMetrics) IncPublishError() {
 // MarketMetrics is the per-market bundle of concrete, pre-bound handles. A nil *MarketMetrics is
 // valid and disables recording (so a processor built without metrics still runs).
 type MarketMetrics struct {
-	received   prometheus.Counter
-	trades     prometheus.Counter
-	reserveRej prometheus.Counter
-	poison     prometheus.Counter
-	dlqFails   prometheus.Counter
-	paused     prometheus.Gauge
-	rebuilds   prometheus.Counter
-	batchSize  prometheus.Observer
-	batchDur   prometheus.Observer
-	processed  map[string]prometheus.Counter // outcome -> counter
-	deadLetter map[string]prometheus.Counter // reason -> counter
-	batches    map[string]prometheus.Counter // result -> counter
-	bookOrders map[string]prometheus.Gauge   // side -> gauge
-	bookBest   map[string]prometheus.Gauge   // side -> gauge
-	published  map[string]prometheus.Counter // event type -> counter
-	dropped    prometheus.Counter
+	received        prometheus.Counter
+	trades          prometheus.Counter
+	reserveRej      prometheus.Counter
+	poison          prometheus.Counter
+	dlqPersistFails prometheus.Counter
+	paused          prometheus.Gauge
+	rebuilds        prometheus.Counter
+	batchSize       prometheus.Observer
+	batchDur        prometheus.Observer
+	processed       map[string]prometheus.Counter // outcome -> counter
+	deadLetter      map[string]prometheus.Counter // reason -> counter
+	batches         map[string]prometheus.Counter // result -> counter
+	bookOrders      map[string]prometheus.Gauge   // side -> gauge
+	bookBest        map[string]prometheus.Gauge   // side -> gauge
+	published       map[string]prometheus.Counter // event type -> counter
+	dropped         prometheus.Counter
 }
 
 // BindMarket resolves every label set for one market once. Returns nil if c is nil.
@@ -232,15 +232,15 @@ func (c *CoreMetrics) BindMarket(market string) *MarketMetrics {
 		return nil
 	}
 	return &MarketMetrics{
-		received:   c.ordersReceived.Bind(market),
-		trades:     c.trades.Bind(market),
-		reserveRej: c.reserveRejections.Bind(market),
-		poison:     c.poisonIsolations.Bind(market),
-		dlqFails:   c.dlqPublishFails.Bind(market),
-		paused:     c.marketPaused.Bind(market),
-		rebuilds:   c.bookRebuilds.Bind(market),
-		batchSize:  c.batchSize.Bind(market),
-		batchDur:   c.batchDuration.Bind(market),
+		received:        c.ordersReceived.Bind(market),
+		trades:          c.trades.Bind(market),
+		reserveRej:      c.reserveRejections.Bind(market),
+		poison:          c.poisonIsolations.Bind(market),
+		dlqPersistFails: c.dlqPersistFails.Bind(market),
+		paused:          c.marketPaused.Bind(market),
+		rebuilds:        c.bookRebuilds.Bind(market),
+		batchSize:       c.batchSize.Bind(market),
+		batchDur:        c.batchDuration.Bind(market),
 		processed: map[string]prometheus.Counter{
 			OutcomeOpen:            c.ordersProcessed.Bind(market, OutcomeOpen),
 			OutcomeFilled:          c.ordersProcessed.Bind(market, OutcomeFilled),
@@ -328,13 +328,13 @@ func (m *MarketMetrics) IncDeadLetter(reason string) {
 	}
 }
 
-// IncDLQPublishFailure counts an order dropped because it could not be parked. This is the only
-// path in the engine that loses an order command outright — alert on any increase.
-func (m *MarketMetrics) IncDLQPublishFailure() {
+// IncDLQPersistFailure counts a dead letter the consumer could not record; the message stays on
+// the dead-letter queue and is retried, so it is delayed, not lost.
+func (m *MarketMetrics) IncDLQPersistFailure() {
 	if m == nil {
 		return
 	}
-	m.dlqFails.Inc()
+	m.dlqPersistFails.Inc()
 }
 
 // SetPaused publishes the operator halt state so a paused market is visible on the dashboard rather

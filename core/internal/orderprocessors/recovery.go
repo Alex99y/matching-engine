@@ -57,9 +57,8 @@ func (o *OrderProcessor) isolate(shutdownCtx, dbCtx context.Context, batch []*qu
 		if o.failures[key] >= maxOrderFailures {
 			o.logger.Error(fmt.Sprintf("order processor %s-%s: DEAD-LETTERING poison order %s after %d failures: %s",
 				o.market.BaseSymbol, o.market.QuoteSymbol, key, o.failures[key], err))
-			failures := o.failures[key]
 			delete(o.failures, key)
-			o.parkPoison(dbCtx, qe, key, failures, err)
+			o.parkPoison(qe, err)
 			continue
 		}
 		o.logger.Warn(fmt.Sprintf("order processor %s-%s: poison candidate %s (failure %d/%d), requeueing: %s",

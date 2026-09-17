@@ -1,6 +1,6 @@
-// deadletter_test.go covers the broker-independent pieces: queue naming and the envelope wire
-// format. NewPublisher, DeclareMarket and Publish all drive a real AMQP channel and are left to
-// integration testing, matching the convention in common/pkg/rabbitmq.
+// deadletter_test.go covers the broker-independent pieces: queue naming, the classification both
+// the matcher and the consumer rely on, the poison error hand-off, and payload encoding.
+// DeclareTopology, NewConsumer and Run drive a real AMQP channel and are left to the live check.
 package deadletter
 
 import (
@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	oeq "github.com/alex99y/matching-engine/core/pkg/order_events_queue"
+	"github.com/google/uuid"
 )
 
 func TestQueueNameIsDerivedFromMarketRef(t *testing.T) {
@@ -20,91 +23,129 @@ func TestQueueNameIsDerivedFromMarketRef(t *testing.T) {
 	}
 }
 
-// An operator replays a parked command by hand, so the envelope must survive the round trip with
-// the original payload byte-for-byte and the diagnosis intact.
-func TestEnvelopeRoundTrip(t *testing.T) {
-	payload := []byte(`{"type":"open_order","payload":{"price":100}}`)
-	in := Envelope{
-		OrderID:   "0199c0de-0000-7000-8000-000000000001",
-		MarketRef: "ETH-USDT",
-		EventType: "open_order",
-		Reason:    ReasonPoison,
-		Error:     `pq: duplicate key value violates "orders_client_order_id_user_id_uk"`,
-		Failures:  10,
-		DeadAt:    time.Unix(1757000000, 0).UTC(),
-		Payload:   payload,
-	}
-
-	raw, err := json.Marshal(in)
+func openOrderBytes(t *testing.T, open *oeq.OpenOrderEvent) []byte {
+	t.Helper()
+	env, err := oeq.NewOpenOrderEvent(open)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out Envelope
-	if err := json.Unmarshal(raw, &out); err != nil {
+	raw, err := env.ToBytes()
+	if err != nil {
 		t.Fatal(err)
 	}
+	return raw
+}
 
-	if string(out.Payload) != string(payload) {
-		t.Fatalf("payload = %s, want %s", out.Payload, payload)
-	}
-	if out.Reason != in.Reason || out.Error != in.Error || out.Failures != in.Failures {
-		t.Fatalf("diagnosis lost: %+v", out)
-	}
-	if !out.DeadAt.Equal(in.DeadAt) {
-		t.Fatalf("dead_at = %v, want %v", out.DeadAt, in.DeadAt)
-	}
-	if out.OrderID != in.OrderID || out.MarketRef != in.MarketRef || out.EventType != in.EventType {
-		t.Fatalf("identity lost: %+v", out)
+func validOpen() *oeq.OpenOrderEvent {
+	return &oeq.OpenOrderEvent{
+		OrderID: uuid.New(), UserID: uuid.New(), MarketID: 1,
+		Side: oeq.BuyOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+		Price: 100, Quantity: 10,
 	}
 }
 
-// The malformed reason exists precisely for messages that are not valid JSON, so the envelope must
-// survive one. Payload is a json.RawMessage — emitted verbatim — so an unnormalised one would fail
-// the whole marshal and the messages most in need of parking would be the only ones that could not
-// be parked.
-func TestNormalisePayloadKeepsUnparseableMessagesMarshalable(t *testing.T) {
-	tests := []struct {
-		name string
-		in   []byte
-		want string
-	}{
-		{"valid JSON is preserved verbatim", []byte(`{"type":"open_order"}`), `{"type":"open_order"}`},
-		{"garbage becomes a JSON string", []byte("this is not json at all"), `"this is not json at all"`},
-		{"quotes are escaped", []byte(`he said "hi"`), `"he said \"hi\""`},
-		{"empty stays empty", nil, ""},
+// The consumer recomputes a dead letter's reason from its payload, so this table is the contract
+// that the row an operator reads says the same thing the matcher decided.
+func TestClassifyRaw(t *testing.T) {
+	none := oeq.MarketConstraints{}
+
+	invalid := validOpen()
+	invalid.Price = 0
+
+	cancelEnv, err := oeq.NewCancelOrderEvent(&oeq.CancelOrderEvent{OrderID: uuid.New(), MarketRef: "ETH-USDT"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelRaw, err := cancelEnv.ToBytes()
+	if err != nil {
+		t.Fatal(err)
 	}
 
+	tests := []struct {
+		name      string
+		raw       []byte
+		reason    Reason
+		eventType string
+		hasOrder  bool
+	}{
+		{"garbage bytes", []byte("not json"), ReasonMalformed, "", false},
+		{"envelope with unparseable payload", []byte(`{"type":"open_order","payload":"nope"}`), ReasonMalformed, "open_order", false},
+		{"unknown type", []byte(`{"type":"amend_order","payload":{}}`), ReasonUnknownType, "amend_order", false},
+		{"invalid order", openOrderBytes(t, invalid), ReasonInvalid, "open_order", true},
+		{"processable order", openOrderBytes(t, validOpen()), "", "open_order", true},
+		{"processable cancel", cancelRaw, "", "cancel_order", true},
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env := &Envelope{MarketRef: "ETH-USDT", Reason: ReasonMalformed, Payload: tt.in}
-			if err := normalisePayload(env); err != nil {
-				t.Fatal(err)
+			v := ClassifyRaw(tt.raw, none)
+			if v.Reason != tt.reason {
+				t.Fatalf("reason = %q (%s), want %q", v.Reason, v.Error, tt.reason)
 			}
-			if string(env.Payload) != tt.want {
-				t.Fatalf("payload = %s, want %s", env.Payload, tt.want)
+			if v.Dead() != (tt.reason != "") {
+				t.Fatalf("Dead() = %v for reason %q", v.Dead(), v.Reason)
 			}
-			if _, err := json.Marshal(env); err != nil {
-				t.Fatalf("envelope must always marshal: %v", err)
+			if v.EventType != tt.eventType {
+				t.Fatalf("event type = %q, want %q", v.EventType, tt.eventType)
+			}
+			if (v.OrderID != uuid.Nil) != tt.hasOrder {
+				t.Fatalf("order id = %s, want present=%v", v.OrderID, tt.hasOrder)
+			}
+			if v.Dead() && v.Error == "" {
+				t.Fatal("a dead verdict must say why")
 			}
 		})
 	}
 }
 
-// Optional fields must drop out of the wire format rather than appearing as empty noise an operator
-// has to read past.
-func TestEnvelopeOmitsEmptyOptionalFields(t *testing.T) {
-	raw, err := json.Marshal(Envelope{MarketRef: "ETH-BTC", Reason: ReasonPoison})
-	if err != nil {
-		t.Fatal(err)
+// An invalid order still identifies itself, so the matcher can tell its owner it was refused.
+func TestClassifyKeepsTheOrderOnAnInvalidVerdict(t *testing.T) {
+	invalid := validOpen()
+	invalid.Quantity = 0
+	v := ClassifyRaw(openOrderBytes(t, invalid), oeq.MarketConstraints{})
+	if v.Reason != ReasonInvalid || v.Open == nil || v.Open.UserID != invalid.UserID {
+		t.Fatalf("verdict = %+v, want invalid with the decoded order attached", v)
 	}
-	for _, field := range []string{"payload", "error", "failures", "event_type", "order_id"} {
-		if strings.Contains(string(raw), `"`+field+`"`) {
-			t.Fatalf("empty %q should be omitted, got %s", field, raw)
+}
+
+func TestPoisonErrorsHandOffOnceAndExpire(t *testing.T) {
+	now := time.Unix(1_757_000_000, 0)
+	p := NewPoisonErrors()
+	p.now = func() time.Time { return now }
+
+	p.Record("order-1", "open_order", "pq: constraint")
+	p.Record("order-1", "cancel_order", "other") // the same id, a different command
+
+	if got, ok := p.Take("order-1", "open_order"); !ok || got != "pq: constraint" {
+		t.Fatalf("Take = (%q, %v), want the recorded text", got, ok)
+	}
+	if _, ok := p.Take("order-1", "open_order"); ok {
+		t.Fatal("a text must be handed off once")
+	}
+	if got, ok := p.Take("order-1", "cancel_order"); !ok || got != "other" {
+		t.Fatalf("the cancel's text was lost: (%q, %v)", got, ok)
+	}
+
+	p.Record("stale", "open_order", "never consumed")
+	now = now.Add(poisonErrorTTL + time.Second)
+	p.Record("fresh", "open_order", "x")
+	if _, ok := p.Take("stale", "open_order"); ok {
+		t.Fatal("an entry older than the TTL must be evicted on the next record")
+	}
+}
+
+// A malformed command must be kept verbatim even though the column is JSONB.
+func TestJSONPayloadStoresAnyBytes(t *testing.T) {
+	for _, tt := range []struct{ in, want string }{
+		{`{"type":"open_order"}`, `{"type":"open_order"}`},
+		{`not json`, `"not json"`},
+		{``, `null`},
+	} {
+		got, err := jsonPayload([]byte(tt.in))
+		if err != nil {
+			t.Fatalf("jsonPayload(%q): %v", tt.in, err)
 		}
-	}
-	for _, field := range []string{"market_ref", "reason", "dead_at"} {
-		if !strings.Contains(string(raw), `"`+field+`"`) {
-			t.Fatalf("%q must always be present, got %s", field, raw)
+		if string(got) != tt.want || !json.Valid(got) {
+			t.Fatalf("jsonPayload(%q) = %s, want %s", tt.in, got, tt.want)
 		}
 	}
 }

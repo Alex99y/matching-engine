@@ -59,7 +59,7 @@ func (p *recordingPublisher) ofType(t marketdata.EventType) []published {
 func newStreamProcessor(t *testing.T, pub eventPublisher) *OrderProcessor {
 	t.Helper()
 	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(),
-		&fakeQueue{}, &fakeRepo{}, nil, pub, &fakeDeadLetterer{}, "epoch-1")
+		&fakeQueue{}, &fakeRepo{}, nil, pub, &fakePoison{}, "epoch-1")
 	// Start would hydrate this from the DB; these tests drive the stream directly.
 	p.book = orderbook.NewOrderBook(p.logger, p.market)
 	return p

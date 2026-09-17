@@ -6,6 +6,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -20,6 +21,13 @@ import (
 // resting orders than this needs more than one pass — deliberate, so a single admin call cannot
 // publish an unbounded burst onto the command queues.
 const maxUserOrders = 500
+
+// Dead-letter listing bounds: the default is a screenful, the cap keeps a payload-carrying
+// response from growing without limit.
+const (
+	defaultDeadLetters = 50
+	maxDeadLetters     = 500
+)
 
 var (
 	ErrMarketNotServed = errors.New("market not served by this core")
@@ -65,6 +73,10 @@ type marketCache interface {
 	GetMarkets() []repository.Market
 }
 
+type deadLetterRepository interface {
+	ListDeadLetters(ctx context.Context, marketRef *string, limit int) ([]repository.DeadLetterRow, error)
+}
+
 type MarketStatus struct {
 	Market string `json:"market"`
 	Paused bool   `json:"paused"`
@@ -74,17 +86,39 @@ type MarketStatus struct {
 // MARKET_LIST, so a ref that is absent is a genuine 404 rather than a market that merely has no
 // orders — an operator halting the wrong core should be told, not silently ignored.
 type Service struct {
-	markets map[string]MarketController
-	users   userRepository
-	orders  orderRepository
-	cache   marketCache
+	markets     map[string]MarketController
+	users       userRepository
+	orders      orderRepository
+	cache       marketCache
+	deadLetters deadLetterRepository
 }
 
-func NewService(markets map[string]MarketController, users userRepository, orders orderRepository, cache marketCache) *Service {
+func NewService(markets map[string]MarketController, users userRepository, orders orderRepository, cache marketCache, deadLetters deadLetterRepository) *Service {
 	if markets == nil {
 		panic("markets cannot be nil")
 	}
-	return &Service{markets: markets, users: users, orders: orders, cache: cache}
+	return &Service{markets: markets, users: users, orders: orders, cache: cache, deadLetters: deadLetters}
+}
+
+// DeadLetter is one command the matcher could never process, as recorded by the dead-letter
+// consumer. Payload is the original message, kept verbatim so it can be replayed once the cause is
+// fixed.
+type DeadLetter struct {
+	ID         int64           `json:"id"`
+	MessageID  string          `json:"message_id,omitempty"`
+	Market     string          `json:"market"`
+	OrderID    string          `json:"order_id,omitempty"`
+	EventType  string          `json:"event_type,omitempty"`
+	Reason     string          `json:"reason"`
+	Error      string          `json:"error,omitempty"`
+	DeadAt     int64           `json:"dead_at"`
+	RecordedAt int64           `json:"recorded_at"`
+	Status     string          `json:"status"`
+	Payload    json.RawMessage `json:"payload"`
+}
+
+type DeadLetters struct {
+	Items []DeadLetter `json:"items"`
 }
 
 // UserOrder is one of a user's orders as an operator sees it. Reachable reports whether this core
@@ -195,6 +229,51 @@ func (s *Service) CancelUserOrders(ctx context.Context, username string, orderID
 		summary.Results = append(summary.Results, result)
 	}
 	return summary, nil
+}
+
+// ListDeadLetters returns the newest dead letters first. An empty marketRef means every market:
+// the table holds what every core has parked, so that is the natural default; a named market must
+// be one this core serves, the same rule the other routes apply.
+func (s *Service) ListDeadLetters(ctx context.Context, marketRef string, limit int) (*DeadLetters, error) {
+	var filter *string
+	if marketRef != "" {
+		if _, ok := s.markets[marketRef]; !ok {
+			return nil, ErrMarketNotServed
+		}
+		filter = &marketRef
+	}
+	switch {
+	case limit <= 0:
+		limit = defaultDeadLetters
+	case limit > maxDeadLetters:
+		limit = maxDeadLetters
+	}
+
+	rows, err := s.deadLetters.ListDeadLetters(ctx, filter, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list dead letters: %w", err)
+	}
+
+	out := &DeadLetters{Items: make([]DeadLetter, 0, len(rows))}
+	for _, r := range rows {
+		item := DeadLetter{
+			ID:         r.ID,
+			MessageID:  r.MessageID,
+			Market:     r.MarketRef,
+			EventType:  r.EventType,
+			Reason:     r.Reason,
+			Error:      r.Error,
+			DeadAt:     r.DeadAt.Unix(),
+			RecordedAt: r.RecordedAt.Unix(),
+			Status:     r.Status,
+			Payload:    r.Payload,
+		}
+		if r.OrderID != nil {
+			item.OrderID = r.OrderID.String()
+		}
+		out.Items = append(out.Items, item)
+	}
+	return out, nil
 }
 
 // reach answers which market an order sits on and whether this core can act on it right now. A
