@@ -81,4 +81,5 @@ func init() {
 	rootCmd.AddCommand(newInstrumentCmd())
 	rootCmd.AddCommand(newMarketCmd())
 	rootCmd.AddCommand(newUserCmd())
+	rootCmd.AddCommand(newDlqCmd())
 }
