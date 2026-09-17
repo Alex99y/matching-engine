@@ -10,15 +10,16 @@ import (
 	"github.com/alex99y/matching-engine/common/pkg/utils"
 	"github.com/alex99y/matching-engine/core/internal/metrics"
 	"github.com/alex99y/matching-engine/core/internal/orderbook"
+	"github.com/alex99y/matching-engine/core/pkg/deadletter"
 	oeq "github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 	"github.com/alex99y/matching-engine/db/pkg/repository"
 	"github.com/google/uuid"
 )
 
-// This file is the entry point: what an OrderProcessor is and how to build/start/stop one.
-// The consumer boundary is delivery.go, the matcher's select loop is matcher.go, batch
-// execution is batch.go, failure recovery is recovery.go, and event-log publishing is
-// stream.go.
+// This file is the entry point: what an OrderProcessor is, how to build/start/stop one, and the
+// consumer-goroutine boundary (handleDelivery). The matcher's select loop is matcher.go, batch
+// execution is batch.go, failure recovery is recovery.go, dead-lettering is deadletter.go, and
+// event-log publishing is stream.go.
 
 const (
 	// orderChannelBuffer must be >= the RabbitMQ prefetch so the consumer can stage a full
@@ -99,7 +100,7 @@ type OrderProcessor struct {
 	// failures counts consecutive isolation failures per order id; accessed only by the
 	// matcher goroutine. An order is dead-lettered once it reaches maxOrderFailures.
 	failures map[uuid.UUID]int
-	dlq      deadLetterer
+	poison   poisonRecorder
 }
 
 // Start hydrates the book from the DB, launches the matcher goroutine, then blocks on
@@ -123,13 +124,30 @@ func (o *OrderProcessor) Start(ctx context.Context) {
 		o.matcher(ctx, dbCtx)
 	}()
 
-	handle := func(d *oeq.OrderDelivery) { o.handleDelivery(dbCtx, d) }
-	if err := o.queue.WatchForOrderEvents(ctx, handle); err != nil {
+	if err := o.queue.WatchForOrderEvents(ctx, o.handleDelivery); err != nil {
 		o.logger.Error(fmt.Sprintf("order processor %s-%s: consumer error: %s",
 			o.market.BaseSymbol, o.market.QuoteSymbol, err))
 	}
 	close(o.ordersChannel)
 	<-matcherDone
+}
+
+// handleDelivery runs on the consumer goroutine: it rejects the deliveries that can never be
+// processed (see deadletter.go) and forwards the rest to the matcher. It never touches the book,
+// so there is no race with the matcher goroutine.
+func (o *OrderProcessor) handleDelivery(d *oeq.OrderDelivery) {
+	verdict := deadletter.Classify(d.Event, o.constraints)
+	if verdict.Dead() {
+		o.deadLetter(d, verdict.Reason)
+		if verdict.Open != nil {
+			o.notifyDeadLettered(verdict.Open.UserID, verdict.Open.OrderID, orderbook.StatusDeadLettered)
+		}
+		return
+	}
+	if verdict.Open != nil {
+		o.metrics.IncReceived()
+	}
+	o.ordersChannel <- &queuedEvent{delivery: d, open: verdict.Open, cancel: verdict.Cancel}
 }
 
 // Pause halts trading on this market: the consumer stops, and commands accumulate in the broker
@@ -159,7 +177,7 @@ func NewOrderProcessor(
 	repo orderRepository,
 	coreMetrics *metrics.CoreMetrics,
 	publisher eventPublisher,
-	dlq deadLetterer,
+	poison poisonRecorder,
 	epoch string,
 ) *OrderProcessor {
 	if log == nil {
@@ -173,6 +191,9 @@ func NewOrderProcessor(
 	}
 	if repo == nil {
 		panic("order repository cannot be nil")
+	}
+	if poison == nil {
+		panic("poison recorder cannot be nil")
 	}
 
 	marketRef := utils.MergeMarketRef(market.BaseSymbol, market.QuoteSymbol)
@@ -194,6 +215,6 @@ func NewOrderProcessor(
 		},
 		ordersChannel: make(chan *queuedEvent, orderChannelBuffer),
 		failures:      make(map[uuid.UUID]int),
-		dlq:           dlq,
+		poison:        poison,
 	}
 }

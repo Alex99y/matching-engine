@@ -73,7 +73,7 @@ func TestMatcherExpiresRestingOrderOnSweep(t *testing.T) {
 	orderID := uuid.New()
 	past := time.Now().Add(-time.Hour).Unix()
 	repo := &expiryHydrationRepo{orders: []repository.OpenOrderHydration{restingHydration(orderID, &past)}}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), &fakeQueue{}, repo, nil, nil, nil, "")
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), &fakeQueue{}, repo, nil, nil, &fakePoison{}, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)
@@ -139,7 +139,7 @@ func TestPoisonExpiryNeverDeadLettersAHealthyOrder(t *testing.T) {
 	expiring := uuid.New()
 	past := time.Now().Add(-time.Hour).Unix()
 	repo := &poisonExpiryRepo{orders: []repository.OpenOrderHydration{restingHydration(expiring, &past)}}
-	dlq := &fakeDeadLetterer{}
+	dlq := &fakePoison{}
 	rec := &ackRecorder{}
 	q := &fakeQueue{deliveries: []*oeq.OrderDelivery{rec.delivery(limitBuy())}}
 	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, dlq, "")
@@ -151,8 +151,11 @@ func TestPoisonExpiryNeverDeadLettersAHealthyOrder(t *testing.T) {
 	// Long enough for the sweep to have failed far more than maxOrderFailures times.
 	time.Sleep(2 * maxOrderFailures * expirySweepInterval)
 
+	if n := rec.rejected(); n != 0 {
+		t.Fatalf("rejected %d command(s) — a poison expiry must never dead-letter an order", n)
+	}
 	if n := dlq.count(); n != 0 {
-		t.Fatalf("parked %d command(s) — a poison expiry must never dead-letter an order: %v", n, dlq.reasons())
+		t.Fatalf("recorded %d poison error(s) — a poison expiry must never dead-letter an order", n)
 	}
 	// The real order isolates cleanly with the sweep off, so it commits and is acked.
 	if a, _ := rec.counts(); a != 1 {
@@ -176,7 +179,7 @@ func TestIncomingTakerCannotTradeAgainstAnExpiredMaker(t *testing.T) {
 	taker.Price = 100
 	rec := &ackRecorder{}
 	q := &fakeQueue{deliveries: []*oeq.OrderDelivery{rec.delivery(taker)}}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, nil, "")
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, &fakePoison{}, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -198,7 +201,7 @@ func TestIncomingTakerCannotTradeAgainstAnExpiredMaker(t *testing.T) {
 func TestMatcherDoesNotExpireOrderBeforeItsTTL(t *testing.T) {
 	future := time.Now().Add(time.Hour).Unix()
 	repo := &expiryHydrationRepo{orders: []repository.OpenOrderHydration{restingHydration(uuid.New(), &future)}}
-	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), &fakeQueue{}, repo, nil, nil, nil, "")
+	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), &fakeQueue{}, repo, nil, nil, &fakePoison{}, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)
