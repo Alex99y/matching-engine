@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/common/pkg/utils"
@@ -18,6 +19,7 @@ type adminService interface {
 	Status(ctx context.Context) []MarketStatus
 	ListUserOrders(ctx context.Context, username string, includeOpen, includeCancelled bool) (*UserOrders, error)
 	CancelUserOrders(ctx context.Context, username string, orderIDs []uuid.UUID, all bool) (*CancelSummary, error)
+	ListDeadLetters(ctx context.Context, marketRef string, limit int) (*DeadLetters, error)
 }
 
 type cancelUserOrdersRequest struct {
@@ -115,6 +117,29 @@ func (h *Handler) CancelUserOrders(c fiber.Ctx) error {
 	h.logger.Warn(fmt.Sprintf("admin: cancelled orders for user %s — %d queued, %d skipped",
 		username, summary.Queued, summary.Skipped))
 	return c.JSON(summary)
+}
+
+// ListDeadLetters lists every market's dead letters unless ?market= narrows it; ?limit= caps the
+// page (defaulted and clamped by the service).
+func (h *Handler) ListDeadLetters(c fiber.Ctx) error {
+	limit := 0
+	if raw := c.Query("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			return utils.NewErrorResponse(c, fiber.StatusBadRequest, "invalid limit, must be a positive integer")
+		}
+		limit = n
+	}
+
+	out, err := h.service.ListDeadLetters(c.Context(), c.Query("market"), limit)
+	switch {
+	case errors.Is(err, ErrMarketNotServed):
+		return utils.NewErrorResponse(c, fiber.StatusNotFound, "market not served by this core")
+	case err != nil:
+		h.logger.Error(fmt.Sprintf("admin: list dead letters: %v", err))
+		return utils.NewErrorResponse(c, fiber.StatusInternalServerError, "internal server error")
+	}
+	return c.JSON(out)
 }
 
 func (h *Handler) userError(c fiber.Ctx, username, op string, err error) error {

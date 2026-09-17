@@ -47,6 +47,7 @@ func RegisterAdminRoutes(app fiber.Router, token string, handler *Handler) {
 	admin.Post("/markets/:market/resume", handler.Resume)
 	admin.Get("/users/:username/orders", handler.ListUserOrders)
 	admin.Post("/users/:username/orders/cancel", handler.CancelUserOrders)
+	admin.Get("/dlq", handler.ListDeadLetters)
 }
 
 // requireToken compares in constant time so a caller cannot recover the token by timing its guesses.
