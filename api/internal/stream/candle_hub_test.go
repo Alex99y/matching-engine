@@ -99,7 +99,7 @@ func TestSlowSeedDoesNotStallTheHubLoop(t *testing.T) {
 
 	// While that seed is stuck, the hub must still deliver a trade to the already-connected
 	// client. Before the fix this timed out.
-	h.events <- publicEvent(t, marketdata.EventTrade, "e1", 1,
+	h.events <- publicEvent("e1", 1,
 		marketdata.Trade{Price: 100, Quantity: 5, TakerSide: "buy"})
 
 	frame, err := recvWithin(existing.ch)

@@ -115,15 +115,10 @@ func (h *Hub) handleEvent(e event) {
 		return // an event for a market we do not serve; our bindings should prevent this
 	}
 
-	switch env.Type {
-	case marketdata.EventSnapshot:
-		var s marketdata.Snapshot
-		if err := env.Decode(&s); err != nil {
-			h.logger.Error(fmt.Sprintf("market stream: decode snapshot %s: %v", env.Market, err))
-			return
-		}
+	switch p := env.Payload.(type) {
+	case marketdata.Snapshot:
 		wasSynced := cache.synced
-		cache.applySnapshot(s)
+		cache.applySnapshot(p)
 		// Rebuild every grouping's bucketed view from the fresh canonical book (cheap, keeps views
 		// provably equal to canonical). Only re-broadcast on recovery — when already synced, clients
 		// are current via deltas and the snapshot matches what they hold.
@@ -134,38 +129,28 @@ func (h *Hub) handleEvent(e event) {
 			}
 		}
 
-	case marketdata.EventBook:
-		var b marketdata.Book
-		if err := env.Decode(&b); err != nil {
-			h.logger.Error(fmt.Sprintf("market stream: decode book %s: %v", env.Market, err))
-			return
-		}
-		old := cache.qtyAt(b.Side, b.Price)
+	case marketdata.Book:
+		old := cache.qtyAt(p.Side, p.Price)
 		wasSynced, prevEpoch := cache.synced, cache.epoch
-		if !cache.applyDelta(env.Epoch, env.Seq, b) {
+		if !cache.applyDelta(env.Epoch, env.Seq, p) {
 			h.recordResync(env.Market, wasSynced, cache.synced, prevEpoch, env.Epoch)
 			return // gap or unsynced — dropped until the next snapshot re-syncs
 		}
-		delta := int64(b.Quantity) - int64(old)
+		delta := int64(p.Quantity) - int64(old)
 		if delta == 0 {
 			return // no real change; nothing to forward
 		}
 		// Fan the change into each active grouping's bucket and forward that bucket's new aggregate.
 		for _, view := range h.marketGroups[env.Market] {
-			bucket := bucketPrice(b.Side, b.Price, view.group)
-			newQty := view.applyDelta(b.Side, bucket, delta)
-			h.broadcastView(view, bookFrame(marketdata.Book{Side: b.Side, Price: bucket, Quantity: newQty}))
+			bucket := bucketPrice(p.Side, p.Price, view.group)
+			newQty := view.applyDelta(p.Side, bucket, delta)
+			h.broadcastView(view, bookFrame(marketdata.Book{Side: p.Side, Price: bucket, Quantity: newQty}))
 		}
 
-	case marketdata.EventTrade:
-		var t marketdata.Trade
-		if err := env.Decode(&t); err != nil {
-			h.logger.Error(fmt.Sprintf("market stream: decode trade %s: %v", env.Market, err))
-			return
-		}
-		h.broadcastMarket(env.Market, tradeFrame(t))
+	case marketdata.Trade:
+		h.broadcastMarket(env.Market, tradeFrame(p))
 
-	case marketdata.EventHeartbeat:
+	case marketdata.Heartbeat:
 		wasSynced, prevEpoch := cache.synced, cache.epoch
 		cache.checkHeartbeat(env.Epoch, env.Seq)
 		h.recordResync(env.Market, wasSynced, cache.synced, prevEpoch, env.Epoch)
@@ -198,9 +183,9 @@ func (h *Hub) handleOrder(e event) {
 	if len(h.userClients[uid]) == 0 {
 		return // no connection for this user on this instance
 	}
-	var u marketdata.OrderUpdate
-	if err := e.envelope.Decode(&u); err != nil {
-		h.logger.Error(fmt.Sprintf("user stream: decode order for %s: %v", uid, err))
+	u, ok := e.envelope.Payload.(marketdata.OrderUpdate)
+	if !ok {
+		h.logger.Error(fmt.Sprintf("user stream: %s event on a private key for %s", e.envelope.Type, uid))
 		return
 	}
 	h.broadcastUserEnv(uid, orderFrame(u))

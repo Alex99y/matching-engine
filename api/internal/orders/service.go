@@ -195,11 +195,7 @@ func (o *OrderService) PublishOrderToQueue(
 		}
 	}
 
-	event, err := order_events_queue.NewOpenOrderEvent(openEvent)
-	if err != nil {
-		return nil, fmt.Errorf("create open order event: %w", err)
-	}
-
+	event := order_events_queue.NewOpenOrderEvent(openEvent)
 	if err := o.publisher.Publish(ctx, orderID.String(), order.MarketID, event); err != nil {
 		return nil, fmt.Errorf("publish order event: %w", err)
 	}
@@ -241,12 +237,7 @@ func (o *OrderService) BatchCancelOrders(ctx context.Context, userID uuid.UUID, 
 			OrderID:   orderID,
 			MarketRef: marketRef,
 		}
-		event, err := order_events_queue.NewCancelOrderEvent(cancelEvent)
-		if err != nil {
-			results[i] = BatchCancelResult{OrderID: orderID, Err: fmt.Errorf("batch cancel: create event: %w", err)}
-			continue
-		}
-
+		event := order_events_queue.NewCancelOrderEvent(cancelEvent)
 		if err := o.publisher.Publish(ctx, orderID.String(), marketRef, event); err != nil {
 			results[i] = BatchCancelResult{OrderID: orderID, Err: fmt.Errorf("batch cancel: publish: %w", err)}
 			continue

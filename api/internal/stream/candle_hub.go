@@ -81,17 +81,12 @@ func (h *CandleHub) loop(ctx context.Context) {
 func (h *CandleHub) handleEvent(e event) {
 	env := e.envelope
 
-	switch env.Type {
-	case marketdata.EventTrade:
-		var t marketdata.Trade
-		if err := env.Decode(&t); err != nil {
-			h.logger.Error(fmt.Sprintf("candle hub: decode trade %s: %v", env.Market, err))
-			return
-		}
+	switch p := env.Payload.(type) {
+	case marketdata.Trade:
 		tradeSec := env.Ts / 1000
-		h.dispatchTrade(env.Market, tradeSec, t)
+		h.dispatchTrade(env.Market, tradeSec, p)
 
-	case marketdata.EventHeartbeat:
+	case marketdata.Heartbeat:
 		h.checkBuckets(env.Market, time.Now().Unix())
 	}
 }

@@ -243,9 +243,9 @@ func TestPublishOrderToQueueSuccess(t *testing.T) {
 	if len(pub.calls) != 1 || pub.calls[0].marketRef != "BTC-USDT" {
 		t.Fatalf("calls = %+v, want one publish to BTC-USDT", pub.calls)
 	}
-	open, err := pub.calls[0].event.DecodeOpenOrder()
-	if err != nil {
-		t.Fatalf("DecodeOpenOrder: %v", err)
+	open := pub.calls[0].event.Open
+	if open == nil {
+		t.Fatal("published event is not an open order")
 	}
 	if open.OrderID != published.OrderID || open.UserID != userID || open.MarketID != 1 || open.Price != 100 || open.Quantity != 5 {
 		t.Fatalf("decoded event = %+v, unexpected shape", open)
@@ -269,9 +269,9 @@ func TestPublishOrderToQueueBracketAnnouncesExitID(t *testing.T) {
 	if published.ExitOrderID == nil || *published.ExitOrderID != oeq.ExitOrderID(published.OrderID) {
 		t.Fatalf("ExitOrderID = %v, want %s", published.ExitOrderID, oeq.ExitOrderID(published.OrderID))
 	}
-	open, err := pub.calls[0].event.DecodeOpenOrder()
-	if err != nil {
-		t.Fatalf("DecodeOpenOrder: %v", err)
+	open := pub.calls[0].event.Open
+	if open == nil {
+		t.Fatal("published event is not an open order")
 	}
 	if open.TakeProfitPrice == nil || *open.TakeProfitPrice != tp || open.StopLossPrice == nil || *open.StopLossPrice != sl {
 		t.Fatalf("decoded event triggers = (%v, %v), want (150, 50)", open.TakeProfitPrice, open.StopLossPrice)
@@ -311,9 +311,9 @@ func TestPublishOrderToQueuePostOnlyFlagReachesEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PublishOrderToQueue: %v", err)
 	}
-	open, err := pub.calls[0].event.DecodeOpenOrder()
-	if err != nil {
-		t.Fatalf("DecodeOpenOrder: %v", err)
+	open := pub.calls[0].event.Open
+	if open == nil {
+		t.Fatal("published event is not an open order")
 	}
 	if !open.PostOnly {
 		t.Fatalf("decoded event = %+v, want PostOnly true", open)
@@ -376,9 +376,9 @@ func TestPublishOrderToQueueAcceptsUnusedClientOrderID(t *testing.T) {
 	if len(pub.calls) != 1 {
 		t.Fatalf("published %d events, want 1", len(pub.calls))
 	}
-	open, err := pub.calls[0].event.DecodeOpenOrder()
-	if err != nil {
-		t.Fatalf("DecodeOpenOrder: %v", err)
+	open := pub.calls[0].event.Open
+	if open == nil {
+		t.Fatal("published event is not an open order")
 	}
 	if open.ClientOrderID != clientOrderID {
 		t.Fatalf("published client_order_id = %q, want %q", open.ClientOrderID, clientOrderID)
