@@ -21,7 +21,7 @@ func findBook(deltas []marketdata.Book, side string, price uint64) (marketdata.B
 
 func findOrder(orders []StreamOrderUpdate, id uuid.UUID) (marketdata.OrderUpdate, bool) {
 	for _, o := range orders {
-		if o.Update.OrderID == id.String() {
+		if o.Update.OrderID == id {
 			return o.Update, true
 		}
 	}

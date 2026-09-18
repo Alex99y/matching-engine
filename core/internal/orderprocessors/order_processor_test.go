@@ -2,7 +2,6 @@ package orderprocessors
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -125,10 +124,7 @@ type ackRecorder struct {
 }
 
 func (a *ackRecorder) delivery(open *oeq.OpenOrderEvent) *oeq.OrderDelivery {
-	env, err := oeq.NewOpenOrderEvent(open)
-	if err != nil {
-		panic(err)
-	}
+	env := oeq.NewOpenOrderEvent(open)
 	raw, err := env.ToBytes()
 	if err != nil {
 		panic(err)
@@ -195,9 +191,16 @@ func limitBuy() *oeq.OpenOrderEvent {
 	}
 }
 
-// deliveryFor builds a delivery around an arbitrary envelope, recording ack/nack/reject. A nil
+// deliveryFor builds a delivery around an arbitrary command, recording ack/nack/reject. A nil
 // event stands for a message the consumer could not parse at all.
-func deliveryFor(rec *ackRecorder, event *oeq.OrderEvent, raw []byte) *oeq.OrderDelivery {
+func deliveryFor(rec *ackRecorder, event *oeq.OrderEvent) *oeq.OrderDelivery {
+	raw := []byte{0x80}
+	if event != nil {
+		var err error
+		if raw, err = event.ToBytes(); err != nil {
+			panic(err)
+		}
+	}
 	return oeq.NewOrderDelivery(event, raw, "test-id",
 		func() error { rec.mu.Lock(); rec.acks++; rec.mu.Unlock(); return nil },
 		func() error { rec.mu.Lock(); rec.nacks++; rec.mu.Unlock(); return nil },
@@ -214,34 +217,16 @@ func newTestProcessor() *OrderProcessor {
 // the dead-letter queue in that same operation — and neither acked (that would drop it) nor
 // nacked (that would redeliver a message guaranteed to fail again).
 func TestHandleDeliveryRejectsUnprocessableCommands(t *testing.T) {
-	unknownType, err := json.Marshal(oeq.OrderEvent{Type: "wat", Payload: []byte(`{}`)})
-	if err != nil {
-		t.Fatal(err)
-	}
 	invalid := limitBuy()
 	invalid.Quantity = 0 // fails ValidateOrderEvent
-	invalidEnv, err := oeq.NewOpenOrderEvent(invalid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	invalidRaw, err := invalidEnv.ToBytes()
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	tests := []struct {
 		name  string
 		event *oeq.OrderEvent
-		raw   []byte
 	}{
-		{name: "envelope did not parse", raw: []byte("not json at all")},
-		{
-			name:  "payload did not decode",
-			event: &oeq.OrderEvent{Type: oeq.EventTypeOpenOrder, Payload: []byte(`{"price":"nope"}`)},
-			raw:   []byte(`{"type":"open_order","payload":{"price":"nope"}}`),
-		},
-		{name: "unknown event type", event: &oeq.OrderEvent{Type: "wat", Payload: []byte(`{}`)}, raw: unknownType},
-		{name: "invalid order", event: invalidEnv, raw: invalidRaw},
+		{name: "body did not parse", event: nil},
+		{name: "unknown command", event: &oeq.OrderEvent{}},
+		{name: "invalid order", event: oeq.NewOpenOrderEvent(invalid)},
 	}
 
 	for _, tt := range tests {
@@ -249,7 +234,7 @@ func TestHandleDeliveryRejectsUnprocessableCommands(t *testing.T) {
 			rec := &ackRecorder{}
 			p := newTestProcessor()
 
-			p.handleDelivery(deliveryFor(rec, tt.event, tt.raw))
+			p.handleDelivery(deliveryFor(rec, tt.event))
 
 			a, n := rec.counts()
 			if r := rec.rejected(); r != 1 || a != 0 || n != 0 {

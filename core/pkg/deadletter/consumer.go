@@ -105,15 +105,7 @@ func (c *Consumer) Close() error {
 }
 
 func (c *Consumer) handle(ctx context.Context, args *rabbitmq.ConsumeArgs) {
-	params, err := c.record(args)
-	if err != nil {
-		// Only the payload encoding can fail here, and it accepts any bytes; this is a bug, not a
-		// broker or database condition, so the message is kept for a fixed build rather than lost.
-		c.logger.Error(fmt.Sprintf("dead letter consumer %s: message %s: %v", c.marketRef, args.Id(), err))
-		c.requeue(ctx, args)
-		return
-	}
-	if err := c.repo.InsertDeadLetter(ctx, params); err != nil {
+	if err := c.repo.InsertDeadLetter(ctx, c.record(args)); err != nil {
 		if c.metrics != nil {
 			c.metrics.IncDLQPersistFailure()
 		}
@@ -125,13 +117,8 @@ func (c *Consumer) handle(ctx context.Context, args *rabbitmq.ConsumeArgs) {
 	}
 }
 
-func (c *Consumer) record(args *rabbitmq.ConsumeArgs) (repository.InsertDeadLetterParams, error) {
+func (c *Consumer) record(args *rabbitmq.ConsumeArgs) repository.InsertDeadLetterParams {
 	raw := args.RawMessage()
-	payload, err := jsonPayload(raw)
-	if err != nil {
-		return repository.InsertDeadLetterParams{}, err
-	}
-
 	verdict := ClassifyRaw(raw, c.constraints)
 	params := repository.InsertDeadLetterParams{
 		MessageID: args.Id(),
@@ -139,7 +126,7 @@ func (c *Consumer) record(args *rabbitmq.ConsumeArgs) (repository.InsertDeadLett
 		EventType: verdict.EventType,
 		Reason:    string(verdict.Reason),
 		Error:     verdict.Error,
-		Payload:   payload,
+		Payload:   payloadJSON(raw),
 		DeadAt:    deadAt(args),
 	}
 	if verdict.OrderID != uuid.Nil {
@@ -153,7 +140,7 @@ func (c *Consumer) record(args *rabbitmq.ConsumeArgs) (repository.InsertDeadLett
 			params.Error = text
 		}
 	}
-	return params, nil
+	return params
 }
 
 // requeue puts the delivery back and waits out the backoff, so the next attempt is not immediate.

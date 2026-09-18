@@ -101,7 +101,8 @@ func NewService(markets map[string]MarketController, users userRepository, order
 }
 
 // DeadLetter is one command the matcher could never process, as recorded by the dead-letter
-// consumer. Payload is the original message, kept verbatim so it can be replayed once the cause is
+// consumer. Payload is the command rendered as JSON when the body decoded, otherwise
+// {"raw_base64": …} holding the bytes themselves, so either can be replayed once the cause is
 // fixed.
 type DeadLetter struct {
 	ID         int64           `json:"id"`

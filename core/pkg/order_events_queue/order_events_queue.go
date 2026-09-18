@@ -39,9 +39,9 @@ func (o *OrdersEventsQueue) EmitNewOrderToME(
 // ack-after-commit the matcher acknowledges a message only once the batch containing it is durably
 // committed, so ack/nack are deferred to the matcher rather than performed here by the consumer.
 //
-// Event is nil when the envelope did not parse. Such a delivery is still forwarded rather than
+// Event is nil when the body did not parse. Such a delivery is still forwarded rather than
 // discarded here, so that the processor remains the single owner of dead-letter policy; Raw always
-// carries the original bytes so they can be parked verbatim.
+// carries the original bytes.
 type OrderDelivery struct {
 	Event  *OrderEvent
 	Raw    []byte
@@ -91,10 +91,7 @@ func (o *OrdersEventsQueue) WatchForOrderEvents(ctx context.Context, handler Ord
 // EmitCancelOrder publishes a cancel onto this market's own command queue.
 // Used by the admin API to cancel a user's orders.
 func (o *OrdersEventsQueue) EmitCancelOrder(ctx context.Context, orderID uuid.UUID) error {
-	event, err := NewCancelOrderEvent(&CancelOrderEvent{OrderID: orderID, MarketRef: o.marketRef})
-	if err != nil {
-		return fmt.Errorf("emit cancel: %w", err)
-	}
+	event := NewCancelOrderEvent(&CancelOrderEvent{OrderID: orderID, MarketRef: o.marketRef})
 	raw, err := event.ToBytes()
 	if err != nil {
 		return fmt.Errorf("emit cancel: %w", err)

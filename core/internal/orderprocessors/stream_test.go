@@ -1,7 +1,6 @@
 package orderprocessors
 
 import (
-	"encoding/json"
 	"sync"
 	"testing"
 
@@ -32,8 +31,8 @@ func (p *recordingPublisher) Enqueue(routingKey, messageId string, body []byte) 
 	if p.full {
 		return false
 	}
-	var env marketdata.Envelope
-	if err := json.Unmarshal(body, &env); err != nil {
+	env, err := marketdata.ParseEnvelope(body)
+	if err != nil {
 		panic("publisher received a body that is not an envelope: " + err.Error())
 	}
 	p.got = append(p.got, published{routingKey: routingKey, envelope: env})
@@ -248,9 +247,9 @@ func TestSnapshotCarriesTheBookAtTheCurrentSeq(t *testing.T) {
 		t.Fatalf("published %d snapshots, want 1", len(snapshots))
 	}
 
-	var snap marketdata.Snapshot
-	if err := json.Unmarshal(snapshots[0].envelope.Payload, &snap); err != nil {
-		t.Fatal(err)
+	snap, ok := snapshots[0].envelope.Payload.(marketdata.Snapshot)
+	if !ok {
+		t.Fatalf("snapshot event carries a %T", snapshots[0].envelope.Payload)
 	}
 	if snap.Epoch != "epoch-1" || snap.Market != p.marketRef {
 		t.Fatalf("snapshot identity = %q/%q", snap.Epoch, snap.Market)

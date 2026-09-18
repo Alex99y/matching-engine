@@ -73,10 +73,7 @@ func (b *poisonBroker) WatchForOrderEvents(ctx context.Context, handler oeq.Orde
 			return nil
 		case ev := <-b.pending:
 			id := ev.OrderID.String()
-			env, err := oeq.NewOpenOrderEvent(ev)
-			if err != nil {
-				return err
-			}
+			env := oeq.NewOpenOrderEvent(ev)
 			raw, err := env.ToBytes()
 			if err != nil {
 				return err
