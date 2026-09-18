@@ -263,6 +263,17 @@ func TestHandleDeliveryForwardsValidOrder(t *testing.T) {
 	}
 }
 
+// fastTick replaces the matcher's second-scale pacing (sweep ticker, poison backoff) in the tests
+// that must outwait it: long enough that the goroutine always gets scheduled, short enough that
+// twenty of them cost nothing.
+const fastTick = 5 * time.Millisecond
+
+// afterTicks is how long to sleep for the sweep ticker to have fired n times, landing between
+// ticks rather than on one.
+func afterTicks(p *OrderProcessor, n int) time.Duration {
+	return time.Duration(n)*p.sweepInterval + p.sweepInterval/2
+}
+
 func runUntil(t *testing.T, cond func() bool) {
 	t.Helper()
 	runUntilWithin(t, 5*time.Second, cond)

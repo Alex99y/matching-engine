@@ -74,6 +74,7 @@ func TestMatcherExpiresRestingOrderOnSweep(t *testing.T) {
 	past := time.Now().Add(-time.Hour).Unix()
 	repo := &expiryHydrationRepo{orders: []repository.OpenOrderHydration{restingHydration(orderID, &past)}}
 	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), &fakeQueue{}, repo, nil, nil, &fakePoison{}, "")
+	p.sweepInterval = fastTick
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)
@@ -143,13 +144,14 @@ func TestPoisonExpiryNeverDeadLettersAHealthyOrder(t *testing.T) {
 	rec := &ackRecorder{}
 	q := &fakeQueue{deliveries: []*oeq.OrderDelivery{rec.delivery(limitBuy())}}
 	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, dlq, "")
+	p.sweepInterval = fastTick
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go p.Start(ctx)
 
 	// Long enough for the sweep to have failed far more than maxOrderFailures times.
-	time.Sleep(2 * maxOrderFailures * expirySweepInterval)
+	time.Sleep(2 * maxOrderFailures * p.sweepInterval)
 
 	if n := rec.rejected(); n != 0 {
 		t.Fatalf("rejected %d command(s) — a poison expiry must never dead-letter an order", n)
@@ -202,11 +204,12 @@ func TestMatcherDoesNotExpireOrderBeforeItsTTL(t *testing.T) {
 	future := time.Now().Add(time.Hour).Unix()
 	repo := &expiryHydrationRepo{orders: []repository.OpenOrderHydration{restingHydration(uuid.New(), &future)}}
 	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), &fakeQueue{}, repo, nil, nil, &fakePoison{}, "")
+	p.sweepInterval = fastTick
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)
 
-	time.Sleep(expirySweepInterval + 300*time.Millisecond) // let at least one sweep tick fire
+	time.Sleep(afterTicks(p, 3)) // let sweep ticks fire
 	cancel()
 
 	if batches, _ := repo.snapshot(); batches != 0 {

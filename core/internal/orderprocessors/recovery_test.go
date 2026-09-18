@@ -135,6 +135,7 @@ func TestMatcherPoisonIsolation(t *testing.T) {
 	repo := &poisonRepo{poison: poison.OrderID}
 	recorder := &fakePoison{}
 	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), b, repo, nil, nil, recorder, "")
+	p.poisonDelay = fastTick
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)

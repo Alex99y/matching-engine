@@ -101,6 +101,10 @@ type OrderProcessor struct {
 	// matcher goroutine. An order is dead-lettered once it reaches maxOrderFailures.
 	failures map[uuid.UUID]int
 	poison   poisonRecorder
+	// sweepInterval and poisonDelay stand in for expirySweepInterval and poisonBackoff when
+	// non-zero. Nothing in production sets them; tests do, so they need not outwait real seconds.
+	sweepInterval time.Duration
+	poisonDelay   time.Duration
 }
 
 // Start hydrates the book from the DB, launches the matcher goroutine, then blocks on

@@ -1,6 +1,7 @@
 package orderprocessors
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -71,7 +72,7 @@ func (o *OrderProcessor) isolate(shutdownCtx, dbCtx context.Context, batch []*qu
 
 	if requeued {
 		// Pace re-attempts of requeued poison candidates.
-		return o.backoff(shutdownCtx, poisonBackoff)
+		return o.backoff(shutdownCtx, cmp.Or(o.poisonDelay, poisonBackoff))
 	}
 	return true
 }
