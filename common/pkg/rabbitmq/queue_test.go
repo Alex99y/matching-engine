@@ -17,7 +17,7 @@ import (
 	amqp091 "github.com/rabbitmq/amqp091-go"
 )
 
-func TestNewJSONPublishing(t *testing.T) {
+func TestNewPublishing(t *testing.T) {
 	cases := []struct {
 		name         string
 		persistent   bool
@@ -26,17 +26,18 @@ func TestNewJSONPublishing(t *testing.T) {
 		{"transient", false, amqp091.Transient},
 		{"persistent", true, amqp091.Persistent},
 	}
+	body := []byte{0x08, 0x01}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			pub := newJSONPublishing("msg-1", []byte(`{"a":1}`), c.persistent)
-			if pub.ContentType != "application/json" {
-				t.Errorf("ContentType = %q, want application/json", pub.ContentType)
+			pub := newPublishing("msg-1", body, c.persistent)
+			if pub.ContentType != ContentTypeProtobuf {
+				t.Errorf("ContentType = %q, want %q", pub.ContentType, ContentTypeProtobuf)
 			}
 			if pub.MessageId != "msg-1" {
 				t.Errorf("MessageId = %q, want msg-1", pub.MessageId)
 			}
-			if string(pub.Body) != `{"a":1}` {
-				t.Errorf("Body = %q, want {\"a\":1}", pub.Body)
+			if string(pub.Body) != string(body) {
+				t.Errorf("Body = %v, want %v", pub.Body, body)
 			}
 			if pub.DeliveryMode != c.wantDelivery {
 				t.Errorf("DeliveryMode = %v, want %v", pub.DeliveryMode, c.wantDelivery)

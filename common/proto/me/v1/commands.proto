@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package me.v1;
+
+import "me/v1/types.proto";
+
+// The command queue api → core (one queue per market). UUIDs are their 16 raw bytes.
+
+message OpenOrder {
+  bytes order_id = 1;
+  string client_order_id = 2;
+  int32 market_id = 3;
+  bytes user_id = 4;
+  OrderSide side = 5;
+  OrderType type = 6;
+  TimeInForce time_in_force = 7;
+  uint64 price = 8;
+  uint64 quantity = 9;
+  optional uint64 quote_qty = 10;
+  optional int64 expires_at = 11;
+  bool post_only = 12;
+  optional uint64 take_profit_price = 13;
+  optional uint64 stop_loss_price = 14;
+  optional bytes parent_order_id = 15;
+}
+
+message CancelOrder {
+  bytes order_id = 1;
+  string market_ref = 2;
+}
+
+message OrderCommand {
+  uint32 version = 1;
+  oneof command {
+    OpenOrder open = 10;
+    CancelOrder cancel = 11;
+  }
+}

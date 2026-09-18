@@ -116,7 +116,7 @@ func (e *Exchange) publish(ctx context.Context, routingKey, messageId string, bo
 		routingKey,
 		false, // mandatory
 		false, // immediate
-		newJSONPublishing(messageId, body, persistent),
+		newPublishing(messageId, body, persistent),
 	)
 }
 

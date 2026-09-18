@@ -1,13 +1,20 @@
 // Package marketdata defines the wire contract for the live event-log stream (see
 // docs/event-log.md): the event envelope, event types, routing-key helpers, and payload DTOs
-// shared by core (publisher) and api (subscriber). It is transport-agnostic — serialization only,
-// no RabbitMQ or I/O. Amounts stay uint64 on this internal core→api hop; JS-safe (string) encoding
-// for client-facing payloads is the api edge's concern.
+// shared by core (publisher) and api (subscriber). The wire schema is me.v1.Event
+// (common/proto/me/v1/events.proto); this package converts to and from it, nothing else touches
+// the generated types.
 package marketdata
 
 import (
-	"encoding/json"
+	"errors"
 	"strings"
+
+	"github.com/google/uuid"
+)
+
+var (
+	ErrParsingEnvelope    = errors.New("parse envelope: invalid body")
+	ErrUnsupportedVersion = errors.New("unsupported schema version")
 )
 
 // ExchangeName is the topic exchange all market-data events flow through. Its kind is a transport
@@ -26,70 +33,75 @@ const (
 	EventOrder     EventType = "order"     // private: a user's order lifecycle update
 )
 
+// Payload is one of the DTOs below. The set is closed so an Envelope can only ever carry a member
+// of the wire's oneof; consumers switch on the concrete type.
+type Payload interface {
+	eventType() EventType
+}
+
 // Envelope wraps every event. (Epoch, Seq) sequence the per-market stream: a consumer applies a
 // delta only if Seq == lastApplied+1, and re-synchronises from a snapshot on a Seq gap (missed
-// events) or a changed Epoch (core restarted). Payload is the type-specific DTO below.
+// events) or a changed Epoch (core restarted). Type always matches Payload's concrete type.
 type Envelope struct {
-	Epoch   string          `json:"epoch"`
-	Seq     uint64          `json:"seq"`
-	Type    EventType       `json:"type"`
-	Market  string          `json:"market,omitempty"`
-	Ts      int64           `json:"ts"` // unix milliseconds
-	Payload json.RawMessage `json:"payload"`
+	Epoch   string
+	Seq     uint64
+	Type    EventType
+	Market  string // empty for private events
+	Ts      int64  // unix milliseconds
+	Payload Payload
 }
 
 // --- payloads ---
 
 // Trade is a public fill on the tape — no identities.
 type Trade struct {
-	Price     uint64 `json:"price"`
-	Quantity  uint64 `json:"quantity"`
-	TakerSide string `json:"taker_side"` // "buy" | "sell"
+	Price     uint64
+	Quantity  uint64
+	TakerSide string // "buy" | "sell"
 }
 
 // Book is an aggregated L2 level change. Quantity == 0 means the level was removed. The book is
 // published at native price-level resolution (multiples of the market's price_quantum); coarser
 // granularities are bucketed at the api edge, not here.
 type Book struct {
-	Side     string `json:"side"` // "buy" | "sell"
-	Price    uint64 `json:"price"`
-	Quantity uint64 `json:"quantity"`
+	Side     string // "buy" | "sell"
+	Price    uint64
+	Quantity uint64
 }
 
 // OrderUpdate is a private, per-user order lifecycle event (routed by user id, never broadcast).
 type OrderUpdate struct {
-	OrderID   string `json:"order_id"`
-	Status    string `json:"status"` // pending | open | filled | partially_filled | cancelled | rejected | expired
-	Filled    uint64 `json:"filled"`
-	Remaining uint64 `json:"remaining"`
+	OrderID   uuid.UUID
+	Status    string // pending | open | filled | partially_filled | cancelled | rejected | expired
+	Filled    uint64
+	Remaining uint64
 }
 
 // Heartbeat has no fields beyond the envelope's (Epoch, Seq); it keeps connections warm and lets
 // an idle consumer detect a sequence gap without waiting for the next trade.
 type Heartbeat struct{}
 
-// --- snapshot (RPC reply; full book at a sequence point) ---
-
 type BookLevel struct {
-	Price    uint64 `json:"price"`
-	Quantity uint64 `json:"quantity"`
+	Price    uint64
+	Quantity uint64
 }
 
 // Snapshot is the authoritative book state at (Epoch, Seq), served by core from its in-memory book.
 // A consumer applies live deltas with Seq > the snapshot's Seq after loading it. Bids are ordered
 // high→low, asks low→high.
 type Snapshot struct {
-	Epoch  string      `json:"epoch"`
-	Seq    uint64      `json:"seq"`
-	Market string      `json:"market"`
-	Bids   []BookLevel `json:"bids"`
-	Asks   []BookLevel `json:"asks"`
+	Epoch  string
+	Seq    uint64
+	Market string
+	Bids   []BookLevel
+	Asks   []BookLevel
 }
 
-// SnapshotRequest is the RPC request a consumer sends to ask core for a market's current snapshot.
-type SnapshotRequest struct {
-	Market string `json:"market"`
-}
+func (Trade) eventType() EventType       { return EventTrade }
+func (Book) eventType() EventType        { return EventBook }
+func (OrderUpdate) eventType() EventType { return EventOrder }
+func (Heartbeat) eventType() EventType   { return EventHeartbeat }
+func (Snapshot) eventType() EventType    { return EventSnapshot }
 
 // --- routing keys ---
 //
@@ -116,24 +128,6 @@ func UserIDFromKey(key string) (string, bool) {
 	return parts[1], true
 }
 
-// --- envelope helpers ---
-
-// NewEnvelope marshals a payload DTO into a sequenced envelope.
-func NewEnvelope(epoch string, seq uint64, t EventType, market string, tsMillis int64, payload any) (Envelope, error) {
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return Envelope{}, err
-	}
-	return Envelope{Epoch: epoch, Seq: seq, Type: t, Market: market, Ts: tsMillis, Payload: raw}, nil
+func NewEnvelope(epoch string, seq uint64, market string, tsMillis int64, payload Payload) Envelope {
+	return Envelope{Epoch: epoch, Seq: seq, Type: payload.eventType(), Market: market, Ts: tsMillis, Payload: payload}
 }
-
-func (e Envelope) ToBytes() ([]byte, error) { return json.Marshal(e) }
-
-func ParseEnvelope(b []byte) (Envelope, error) {
-	var e Envelope
-	err := json.Unmarshal(b, &e)
-	return e, err
-}
-
-// Decode unmarshals the envelope's payload into out (e.g. a *Trade matching e.Type).
-func (e Envelope) Decode(out any) error { return json.Unmarshal(e.Payload, out) }
