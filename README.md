@@ -14,7 +14,7 @@ The engine supports limit and market orders, various time-in-force options, and 
 - `core` - core logic of the matching engine, including order processing and matching algorithms
 - `api` - API endpoints for interacting with the matching engine
 - `db` - database models, migrations and repositories
-- `common` - shared utilities and types used across Go services
+- `common` - shared utilities and types used across Go services, and the protobuf wire schema (`common/proto`)
 - `bots` - Node.js bots for testing and simulating order flow against the engine
 - `ts-sdk` - TypeScript SDK for the API, used by trading bots to interact with the engine
 - `ui` - React web frontend for visualizing the matching engine's order book and candle charts live
@@ -27,12 +27,30 @@ The engine supports limit and market orders, various time-in-force options, and 
 - Go (>= 1.25.7)
 - Postgresql (>= 18.4)
 - Rabbitmq (>= 4.2.4)
+- protoc (>= 30) — only to change the wire schema; the generated Go code is committed
 
 ## Build
 
 ```sh
 make build
 ```
+
+## Wire schema
+
+Messages between `api` and `core` travel over RabbitMQ as Protocol Buffers. The schema lives in
+`common/proto` and the generated Go code (`common/pkg/pb`) is committed, so a plain build needs no
+protobuf tooling. After editing a `.proto`:
+
+```sh
+make proto
+```
+
+This installs `protoc-gen-go` at the version pinned in the `Makefile` (it must match the
+`google.golang.org/protobuf` the modules depend on) and regenerates `common/pkg/pb`. No `.proto`
+names a Go import path: each file's package follows from its directory
+(`common/proto/me/v1` → `common/pkg/pb/me/v1`, package `mev1`), so a new schema version is just a
+new directory. Commit the regenerated files, and re-run `go work vendor` before building the Docker
+images. Design notes in [core/ARCHITECTURE.md](core/ARCHITECTURE.md) § Wire format.
 
 ## Docker
 
