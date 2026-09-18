@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	mev1 "github.com/alex99y/matching-engine/common/pkg/pb/me/v1"
 	oeq "github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestQueueNameIsDerivedFromMarketRef(t *testing.T) {
@@ -25,11 +27,16 @@ func TestQueueNameIsDerivedFromMarketRef(t *testing.T) {
 
 func openOrderBytes(t *testing.T, open *oeq.OpenOrderEvent) []byte {
 	t.Helper()
-	env, err := oeq.NewOpenOrderEvent(open)
+	raw, err := oeq.NewOpenOrderEvent(open).ToBytes()
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := env.ToBytes()
+	return raw
+}
+
+func commandBytes(t *testing.T, command *mev1.OrderCommand) []byte {
+	t.Helper()
+	raw, err := proto.Marshal(command)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,14 +59,14 @@ func TestClassifyRaw(t *testing.T) {
 	invalid := validOpen()
 	invalid.Price = 0
 
-	cancelEnv, err := oeq.NewCancelOrderEvent(&oeq.CancelOrderEvent{OrderID: uuid.New(), MarketRef: "ETH-USDT"})
+	cancelRaw, err := oeq.NewCancelOrderEvent(&oeq.CancelOrderEvent{OrderID: uuid.New(), MarketRef: "ETH-USDT"}).ToBytes()
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancelRaw, err := cancelEnv.ToBytes()
-	if err != nil {
-		t.Fatal(err)
-	}
+	badOrderID := commandBytes(t, &mev1.OrderCommand{
+		Version: mev1.Version,
+		Command: &mev1.OrderCommand_Open{Open: &mev1.OpenOrder{OrderId: []byte{1, 2, 3}}},
+	})
 
 	tests := []struct {
 		name      string
@@ -68,9 +75,10 @@ func TestClassifyRaw(t *testing.T) {
 		eventType string
 		hasOrder  bool
 	}{
-		{"garbage bytes", []byte("not json"), ReasonMalformed, "", false},
-		{"envelope with unparseable payload", []byte(`{"type":"open_order","payload":"nope"}`), ReasonMalformed, "open_order", false},
-		{"unknown type", []byte(`{"type":"amend_order","payload":{}}`), ReasonUnknownType, "amend_order", false},
+		{"garbage bytes", []byte{0x80}, ReasonMalformed, "", false},
+		{"another schema version", commandBytes(t, &mev1.OrderCommand{Version: 2}), ReasonMalformed, "", false},
+		{"order id that is not a uuid", badOrderID, ReasonMalformed, "", false},
+		{"unknown command", commandBytes(t, &mev1.OrderCommand{Version: mev1.Version}), ReasonUnknownType, "", false},
 		{"invalid order", openOrderBytes(t, invalid), ReasonInvalid, "open_order", true},
 		{"processable order", openOrderBytes(t, validOpen()), "", "open_order", true},
 		{"processable cancel", cancelRaw, "", "cancel_order", true},
@@ -133,19 +141,39 @@ func TestPoisonErrorsHandOffOnceAndExpire(t *testing.T) {
 	}
 }
 
-// A malformed command must be kept verbatim even though the column is JSONB.
-func TestJSONPayloadStoresAnyBytes(t *testing.T) {
-	for _, tt := range []struct{ in, want string }{
-		{`{"type":"open_order"}`, `{"type":"open_order"}`},
-		{`not json`, `"not json"`},
-		{``, `null`},
+// The JSONB column holds the command rendered as JSON when it decodes, and the bytes themselves
+// (base64) when it does not, so a malformed body is still kept whole.
+func TestPayloadJSON(t *testing.T) {
+	open := validOpen()
+	rendered := payloadJSON(openOrderBytes(t, open))
+	var decoded struct {
+		Version uint32 `json:"version"`
+		Open    struct {
+			Quantity uint64 `json:"quantity,string"`
+		} `json:"open"`
+		Raw *string `json:"raw_base64"`
+	}
+	if err := json.Unmarshal(rendered, &decoded); err != nil {
+		t.Fatalf("rendering is not JSON: %v\n%s", err, rendered)
+	}
+	if decoded.Version != mev1.Version || decoded.Open.Quantity != open.Quantity || decoded.Raw != nil {
+		t.Fatalf("decodable body rendered as %s", rendered)
+	}
+
+	for name, raw := range map[string][]byte{
+		"garbage":         {0x80},
+		"another version": commandBytes(t, &mev1.OrderCommand{Version: 2}),
+		"empty":           nil,
 	} {
-		got, err := jsonPayload([]byte(tt.in))
-		if err != nil {
-			t.Fatalf("jsonPayload(%q): %v", tt.in, err)
-		}
-		if string(got) != tt.want || !json.Valid(got) {
-			t.Fatalf("jsonPayload(%q) = %s, want %s", tt.in, got, tt.want)
-		}
+		t.Run(name, func(t *testing.T) {
+			got := payloadJSON(raw)
+			var fallback map[string][]byte
+			if err := json.Unmarshal(got, &fallback); err != nil {
+				t.Fatalf("payloadJSON = %s: %v", got, err)
+			}
+			if back, ok := fallback["raw_base64"]; !ok || len(fallback) != 1 || string(back) != string(raw) {
+				t.Fatalf("payloadJSON = %s, want only raw_base64 of %v", got, raw)
+			}
+		})
 	}
 }

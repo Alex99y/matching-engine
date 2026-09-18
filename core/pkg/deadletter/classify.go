@@ -2,7 +2,6 @@ package deadletter
 
 import (
 	"encoding/json"
-	"fmt"
 
 	oeq "github.com/alex99y/matching-engine/core/pkg/order_events_queue"
 	"github.com/google/uuid"
@@ -24,39 +23,25 @@ func (v Verdict) Dead() bool { return v.Reason != "" }
 
 // Classify is the one decision, shared by the matcher (on delivery) and the dead-letter consumer
 // (on the parked copy), so the two can never disagree about why a command was refused. event is
-// the parsed envelope, nil when the raw message did not parse.
+// the decoded body, nil when the raw message did not parse.
 func Classify(event *oeq.OrderEvent, constraints oeq.MarketConstraints) Verdict {
 	if event == nil {
-		return Verdict{Reason: ReasonMalformed, Error: "envelope did not parse"}
+		return Verdict{Reason: ReasonMalformed, Error: "body did not parse"}
 	}
 	v := Verdict{EventType: string(event.Type)}
 
-	switch event.Type {
-	case oeq.EventTypeOpenOrder:
-		open, err := event.DecodeOpenOrder()
-		if err != nil {
-			v.Reason, v.Error = ReasonMalformed, err.Error()
-			return v
-		}
-		v.Open, v.OrderID = open, open.OrderID
-		if err := oeq.ValidateOrderEvent(open, constraints); err != nil {
+	switch {
+	case event.Open != nil:
+		v.Open, v.OrderID = event.Open, event.Open.OrderID
+		if err := oeq.ValidateOrderEvent(event.Open, constraints); err != nil {
 			v.Reason, v.Error = ReasonInvalid, err.Error()
 		}
-		return v
-
-	case oeq.EventTypeCancelOrder:
-		cancel, err := event.DecodeCancelOrder()
-		if err != nil {
-			v.Reason, v.Error = ReasonMalformed, err.Error()
-			return v
-		}
-		v.Cancel, v.OrderID = cancel, cancel.OrderID
-		return v
-
+	case event.Cancel != nil:
+		v.Cancel, v.OrderID = event.Cancel, event.Cancel.OrderID
 	default:
-		v.Reason, v.Error = ReasonUnknownType, fmt.Sprintf("unknown event type %q", event.Type)
-		return v
+		v.Reason, v.Error = ReasonUnknownType, "no command this version knows"
 	}
+	return v
 }
 
 func ClassifyRaw(raw []byte, constraints oeq.MarketConstraints) Verdict {
@@ -67,18 +52,17 @@ func ClassifyRaw(raw []byte, constraints oeq.MarketConstraints) Verdict {
 	return Classify(event, constraints)
 }
 
-// jsonPayload makes any message body storable in a JSONB column: bytes that are not valid JSON
-// become a JSON string, so a malformed command is kept verbatim rather than refused twice.
-func jsonPayload(raw []byte) (json.RawMessage, error) {
-	if len(raw) == 0 {
-		return json.RawMessage("null"), nil
+type undecodedPayload struct {
+	Raw []byte `json:"raw_base64"`
+}
+
+// payloadJSON is what dead_letters.payload holds: the command rendered as JSON when the body
+// decodes, otherwise the bytes themselves, base64-encoded so nothing is lost for a later replay.
+func payloadJSON(raw []byte) json.RawMessage {
+	if rendered, err := oeq.CommandJSON(raw); err == nil {
+		return rendered
 	}
-	if json.Valid(raw) {
-		return json.RawMessage(raw), nil
-	}
-	quoted, err := json.Marshal(string(raw))
-	if err != nil {
-		return nil, fmt.Errorf("dead letter payload: %w", err)
-	}
-	return quoted, nil
+	// A struct with one []byte field cannot fail to marshal.
+	fallback, _ := json.Marshal(undecodedPayload{Raw: raw})
+	return fallback
 }

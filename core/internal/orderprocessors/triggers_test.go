@@ -143,12 +143,13 @@ func TestMatcherLeavesExitParkedBelowItsTrigger(t *testing.T) {
 	rec := &ackRecorder{}
 	q := &fakeQueue{deliveries: []*oeq.OrderDelivery{rec.delivery(taker)}}
 	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), q, repo, nil, nil, &fakePoison{}, "")
+	p.sweepInterval = fastTick
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)
 
 	runUntil(t, func() bool { a, _ := rec.counts(); return a == 1 })
-	time.Sleep(expirySweepInterval + 300*time.Millisecond)
+	time.Sleep(afterTicks(p, 3))
 	cancel()
 
 	if _, ok := repo.statusOf(exit.OrderID); ok {
@@ -171,12 +172,13 @@ func TestPoisonedTriggerSweepDoesNotSpinTheMatcher(t *testing.T) {
 		poisonExit: exit.OrderID,
 	}
 	p := NewOrderProcessor(logger.NewLogger(logger.Error), testMarket(), &fakeQueue{}, repo, nil, nil, &fakePoison{}, "")
+	p.sweepInterval = fastTick
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go p.Start(ctx)
 
 	const ticks = 3
-	time.Sleep(ticks*expirySweepInterval + expirySweepInterval/2)
+	time.Sleep(afterTicks(p, ticks))
 	cancel()
 
 	// Each tick may try the sweep and one drain attempt; anything well beyond that is a spin.

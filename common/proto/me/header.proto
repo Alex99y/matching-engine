@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package me;
+
+// Header is the one message every schema version shares: field 1 of every envelope, in every
+// version, is its schema version. A consumer decodes Header alone from any body to pick the
+// matching decoder before it decodes anything else. Never add fields here.
+message Header {
+  uint32 version = 1;
+}

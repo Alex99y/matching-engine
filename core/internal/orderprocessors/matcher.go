@@ -1,6 +1,7 @@
 package orderprocessors
 
 import (
+	"cmp"
 	"context"
 	"time"
 )
@@ -21,7 +22,7 @@ import (
 func (o *OrderProcessor) matcher(shutdownCtx, dbCtx context.Context) {
 	snapshotTicker := time.NewTicker(snapshotInterval)
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
-	sweepTicker := time.NewTicker(expirySweepInterval)
+	sweepTicker := time.NewTicker(cmp.Or(o.sweepInterval, expirySweepInterval))
 	defer snapshotTicker.Stop()
 	defer heartbeatTicker.Stop()
 	defer sweepTicker.Stop()

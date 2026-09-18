@@ -13,6 +13,10 @@ import (
 
 var ErrQueueClosed = errors.New("queue is closed")
 
+// ContentTypeProtobuf is stamped on every body published here; the schema version itself travels
+// inside the body (common/proto/me/header.proto).
+const ContentTypeProtobuf = "application/protobuf"
+
 type Queue struct {
 	client      *RabbitMQClient
 	channel     *amqp091.Channel
@@ -192,7 +196,7 @@ func (q *Queue) Publish(
 	message []byte,
 	persistent bool,
 ) error {
-	publishing := newJSONPublishing(messageId, message, persistent)
+	publishing := newPublishing(messageId, message, persistent)
 
 	ch, name := q.snapshot()
 	err := ch.PublishWithContext(ctx, "", name, false, false, publishing)
@@ -213,13 +217,13 @@ func isChannelClosed(err error) bool {
 	return errors.Is(err, amqp091.ErrClosed)
 }
 
-func newJSONPublishing(messageId string, message []byte, persistent bool) amqp091.Publishing {
+func newPublishing(messageId string, message []byte, persistent bool) amqp091.Publishing {
 	deliveryMode := amqp091.Transient
 	if persistent {
 		deliveryMode = amqp091.Persistent
 	}
 	return amqp091.Publishing{
-		ContentType:  "application/json",
+		ContentType:  ContentTypeProtobuf,
 		DeliveryMode: deliveryMode,
 		MessageId:    messageId,
 		Body:         message,

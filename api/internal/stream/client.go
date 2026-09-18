@@ -105,7 +105,7 @@ func heartbeatFrame() []byte {
 }
 
 func orderFrame(u marketdata.OrderUpdate) []byte {
-	return marshalFrame(orderMsg{Type: "order", OrderID: u.OrderID, Status: u.Status, Filled: u64(u.Filled), Remaining: u64(u.Remaining)})
+	return marshalFrame(orderMsg{Type: "order", OrderID: u.OrderID.String(), Status: u.Status, Filled: u64(u.Filled), Remaining: u64(u.Remaining)})
 }
 
 func levelsJSON(levels []bookLevel) []levelJSON {

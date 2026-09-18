@@ -99,7 +99,7 @@ func assertConserved(t *testing.T, r *repository.BatchResult) {
 func findOrderUpdate(snap StreamSnapshot, id uuid.UUID) *marketdata.OrderUpdate {
 	var found *marketdata.OrderUpdate
 	for i := range snap.Orders {
-		if snap.Orders[i].Update.OrderID == id.String() {
+		if snap.Orders[i].Update.OrderID == id {
 			u := snap.Orders[i].Update
 			found = &u
 		}

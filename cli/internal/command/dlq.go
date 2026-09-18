@@ -74,7 +74,8 @@ func newDlqListCmd() *cobra.Command {
 		Annotations: map[string]string{annotationSkipDB: "true"},
 		Long: "Lists the commands core rejected — malformed, invalid against the market's rules,\n" +
 			"of an unknown type, or poison (failed to commit deterministically) — as recorded in\n" +
-			"the dead_letters table. Every market by default; --json includes the original payload.",
+			"the dead_letters table. Every market by default; --json includes the payload: the\n" +
+			"command as JSON, or raw_base64 when the body did not decode.",
 		Example: "  cli dlq list\n  cli dlq list --market ETH-USDT --limit 20\n  cli dlq list --json",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := newCoreAdminClient(coreURL, token)
@@ -109,7 +110,7 @@ func newDlqListCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&marketRef, "market", "", "only this market (format: BASE-QUOTE); default every market")
 	cmd.Flags().IntVar(&limit, "limit", 0, "maximum rows (server default 50, cap 500)")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "print the full records, including the original payload, as JSON")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print the full records, including the payload, as JSON")
 	addCoreAdminFlags(cmd, &coreURL, &token)
 	return cmd
 }

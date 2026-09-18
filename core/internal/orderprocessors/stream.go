@@ -27,13 +27,13 @@ func (o *OrderProcessor) publishStream() {
 
 	for _, delta := range s.Book {
 		seq := o.seq.Add(1)
-		o.publish(marketdata.EventBook, seq, marketdata.PublicKey(o.marketRef, marketdata.EventBook), now, delta)
+		o.publish(seq, marketdata.PublicKey(o.marketRef, marketdata.EventBook), now, delta)
 	}
 	for _, trade := range s.Trades {
-		o.publish(marketdata.EventTrade, o.seq.Load(), marketdata.PublicKey(o.marketRef, marketdata.EventTrade), now, trade)
+		o.publish(o.seq.Load(), marketdata.PublicKey(o.marketRef, marketdata.EventTrade), now, trade)
 	}
 	for _, ou := range s.Orders {
-		o.publish(marketdata.EventOrder, o.seq.Load(), marketdata.PrivateKey(ou.UserID.String(), marketdata.EventOrder), now, ou.Update)
+		o.publish(o.seq.Load(), marketdata.PrivateKey(ou.UserID.String(), marketdata.EventOrder), now, ou.Update)
 	}
 }
 
@@ -45,9 +45,9 @@ func (o *OrderProcessor) publishOrderUpdate(userID, orderID uuid.UUID, status st
 	if o.publisher == nil {
 		return
 	}
-	o.publish(marketdata.EventOrder, o.seq.Load(), marketdata.PrivateKey(userID.String(), marketdata.EventOrder),
+	o.publish(o.seq.Load(), marketdata.PrivateKey(userID.String(), marketdata.EventOrder),
 		time.Now().UnixMilli(), marketdata.OrderUpdate{
-			OrderID:   orderID.String(),
+			OrderID:   orderID,
 			Status:    status,
 			Filled:    filled,
 			Remaining: remaining,
@@ -69,7 +69,7 @@ func (o *OrderProcessor) emitSnapshot() {
 		Bids:   bids,
 		Asks:   asks,
 	}
-	o.publish(marketdata.EventSnapshot, o.seq.Load(), marketdata.PublicKey(o.marketRef, marketdata.EventSnapshot), time.Now().UnixMilli(), snap)
+	o.publish(o.seq.Load(), marketdata.PublicKey(o.marketRef, marketdata.EventSnapshot), time.Now().UnixMilli(), snap)
 }
 
 // emitHeartbeat announces liveness and the current seq so an idle consumer can detect a gap without
@@ -78,25 +78,21 @@ func (o *OrderProcessor) emitHeartbeat() {
 	if o.publisher == nil {
 		return
 	}
-	o.publish(marketdata.EventHeartbeat, o.seq.Load(), marketdata.PublicKey(o.marketRef, marketdata.EventHeartbeat), time.Now().UnixMilli(), marketdata.Heartbeat{})
+	o.publish(o.seq.Load(), marketdata.PublicKey(o.marketRef, marketdata.EventHeartbeat), time.Now().UnixMilli(), marketdata.Heartbeat{})
 }
 
 // publish serializes one envelope and hands it to the async publisher. A serialization failure is
 // logged and dropped (it must never wedge the matcher); a full publisher buffer drops silently and
 // the consumer re-syncs from the next snapshot.
-func (o *OrderProcessor) publish(t marketdata.EventType, seq uint64, routingKey string, tsMillis int64, payload any) {
-	env, err := marketdata.NewEnvelope(o.epoch, seq, t, o.marketRef, tsMillis, payload)
-	if err != nil {
-		o.logger.Error(fmt.Sprintf("order processor %s: build %s envelope: %s", o.marketRef, t, err))
-		return
-	}
+func (o *OrderProcessor) publish(seq uint64, routingKey string, tsMillis int64, payload marketdata.Payload) {
+	env := marketdata.NewEnvelope(o.epoch, seq, o.marketRef, tsMillis, payload)
 	body, err := env.ToBytes()
 	if err != nil {
-		o.logger.Error(fmt.Sprintf("order processor %s: serialize %s envelope: %s", o.marketRef, t, err))
+		o.logger.Error(fmt.Sprintf("order processor %s: serialize %s envelope: %s", o.marketRef, env.Type, err))
 		return
 	}
 	if o.publisher.Enqueue(routingKey, uuid.NewString(), body) {
-		o.metrics.IncStreamPublished(string(t))
+		o.metrics.IncStreamPublished(string(env.Type))
 	} else {
 		o.metrics.IncStreamDropped()
 	}

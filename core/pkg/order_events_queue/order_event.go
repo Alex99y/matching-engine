@@ -5,12 +5,17 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/alex99y/matching-engine/common/pkg/pb/me"
+	mev1 "github.com/alex99y/matching-engine/common/pkg/pb/me/v1"
 	"github.com/google/uuid"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 var (
-	ErrParsingOrderEvent = errors.New("parse order event: invalid payload")
-	ErrInvalidOrderEvent = errors.New("invalid order event")
+	ErrParsingOrderEvent  = errors.New("parse order event: invalid payload")
+	ErrInvalidOrderEvent  = errors.New("invalid order event")
+	ErrUnsupportedVersion = errors.New("unsupported schema version")
 )
 
 type EventType string
@@ -39,30 +44,32 @@ const (
 	FillOrKill        TimeInForce = "fok"
 )
 
-// OrderEvent is the envelope for all events published to the order queues.
-// The ME checks Type before decoding Payload into the concrete event struct.
+// OrderEvent is a decoded command from the order queue (wire schema: me.v1.OrderCommand). Exactly
+// one of Open and Cancel is set, matching Type; both are nil and Type is empty when the body
+// carried a command this version does not know.
 type OrderEvent struct {
-	Type    EventType       `json:"type"`
-	Payload json.RawMessage `json:"payload"`
+	Type   EventType
+	Open   *OpenOrderEvent
+	Cancel *CancelOrderEvent
 }
 
 // OpenOrderEvent carries all fields needed to place a new order in the book.
 type OpenOrderEvent struct {
-	OrderID         uuid.UUID   `json:"order_id"`
-	ClientOrderID   string      `json:"client_order_id"`
-	MarketID        int         `json:"market_id"`
-	UserID          uuid.UUID   `json:"user_id"`
-	Side            OrderSide   `json:"side"`
-	Type            OrderType   `json:"type"`
-	TimeInForce     TimeInForce `json:"time_in_force"`
-	Price           uint64      `json:"price"`
-	Quantity        uint64      `json:"quantity"`
-	QuoteQty        *uint64     `json:"quote_qty,omitempty"`
-	ExpiresAt       *int64      `json:"expires_at,omitempty"`
-	PostOnly        bool        `json:"post_only,omitempty"`
-	TakeProfitPrice *uint64     `json:"take_profit_price,omitempty"`
-	StopLossPrice   *uint64     `json:"stop_loss_price,omitempty"`
-	ParentOrderID   *uuid.UUID  `json:"parent_order_id,omitempty"`
+	OrderID         uuid.UUID
+	ClientOrderID   string
+	MarketID        int
+	UserID          uuid.UUID
+	Side            OrderSide
+	Type            OrderType
+	TimeInForce     TimeInForce
+	Price           uint64
+	Quantity        uint64
+	QuoteQty        *uint64
+	ExpiresAt       *int64
+	PostOnly        bool
+	TakeProfitPrice *uint64
+	StopLossPrice   *uint64
+	ParentOrderID   *uuid.UUID
 }
 
 func (o *OpenOrderEvent) HasTriggers() bool {
@@ -78,51 +85,61 @@ func ExitOrderID(entryID uuid.UUID) uuid.UUID {
 // CancelOrderEvent requests cancellation of an existing open order.
 // MarketRef is used by the publisher to route the event to the correct queue.
 type CancelOrderEvent struct {
-	OrderID   uuid.UUID `json:"order_id"`
-	MarketRef string    `json:"market_ref"`
+	OrderID   uuid.UUID
+	MarketRef string
 }
 
-func NewOpenOrderEvent(open *OpenOrderEvent) (*OrderEvent, error) {
-	payload, err := json.Marshal(open)
-	if err != nil {
-		return nil, fmt.Errorf("marshal open order event: %w", err)
-	}
-	return &OrderEvent{Type: EventTypeOpenOrder, Payload: payload}, nil
+func NewOpenOrderEvent(open *OpenOrderEvent) *OrderEvent {
+	return &OrderEvent{Type: EventTypeOpenOrder, Open: open}
 }
 
-func NewCancelOrderEvent(cancel *CancelOrderEvent) (*OrderEvent, error) {
-	payload, err := json.Marshal(cancel)
-	if err != nil {
-		return nil, fmt.Errorf("marshal cancel order event: %w", err)
-	}
-	return &OrderEvent{Type: EventTypeCancelOrder, Payload: payload}, nil
+func NewCancelOrderEvent(cancel *CancelOrderEvent) *OrderEvent {
+	return &OrderEvent{Type: EventTypeCancelOrder, Cancel: cancel}
 }
 
-func (o *OrderEvent) DecodeOpenOrder() (*OpenOrderEvent, error) {
-	var event OpenOrderEvent
-	if err := json.Unmarshal(o.Payload, &event); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrParsingOrderEvent, err)
-	}
-	return &event, nil
-}
-
-func (o *OrderEvent) DecodeCancelOrder() (*CancelOrderEvent, error) {
-	var event CancelOrderEvent
-	if err := json.Unmarshal(o.Payload, &event); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrParsingOrderEvent, err)
-	}
-	return &event, nil
-}
-
-// Replace with protobuf or easyjson
 func (o *OrderEvent) ToBytes() ([]byte, error) {
-	return json.Marshal(o)
+	raw, err := proto.Marshal(o.toPB())
+	if err != nil {
+		return nil, fmt.Errorf("marshal order event: %w", err)
+	}
+	return raw, nil
 }
 
+// ParseOrderEvent returns ErrParsingOrderEvent for anything that is not a me.v1 command this
+// build can decode, including a body of another schema version (wrapping ErrUnsupportedVersion).
 func ParseOrderEvent(raw []byte) (*OrderEvent, error) {
-	event := &OrderEvent{}
-	if err := json.Unmarshal(raw, event); err != nil {
+	command, err := parseCommand(raw)
+	if err != nil {
+		return nil, err
+	}
+	return fromPB(command)
+}
+
+// CommandJSON renders a body as an operator reads it (dead_letters.payload). It fails for the
+// same bodies ParseOrderEvent does.
+func CommandJSON(raw []byte) (json.RawMessage, error) {
+	command, err := parseCommand(raw)
+	if err != nil {
+		return nil, err
+	}
+	rendered, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(command)
+	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrParsingOrderEvent, err)
 	}
-	return event, nil
+	return rendered, nil
+}
+
+func parseCommand(raw []byte) (*mev1.OrderCommand, error) {
+	version, err := me.Version(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrParsingOrderEvent, err)
+	}
+	if version != mev1.Version {
+		return nil, fmt.Errorf("%w: %w %d", ErrParsingOrderEvent, ErrUnsupportedVersion, version)
+	}
+	var command mev1.OrderCommand
+	if err := proto.Unmarshal(raw, &command); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrParsingOrderEvent, err)
+	}
+	return &command, nil
 }

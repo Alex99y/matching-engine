@@ -246,9 +246,9 @@ func TestCreateOrderHandlerForwardsPostOnly(t *testing.T) {
 	if len(pub.calls) != 1 {
 		t.Fatalf("published %d events, want 1", len(pub.calls))
 	}
-	open, err := pub.calls[0].event.DecodeOpenOrder()
-	if err != nil {
-		t.Fatalf("DecodeOpenOrder: %v", err)
+	open := pub.calls[0].event.Open
+	if open == nil {
+		t.Fatal("published event is not an open order")
 	}
 	if !open.PostOnly {
 		t.Fatalf("published event PostOnly = false, want true")
@@ -283,9 +283,9 @@ func TestCreateOrderHandlerBracketForwardsTriggersAndReturnsExitID(t *testing.T)
 	if *got.Results[0].ExitOrderID != oeq.ExitOrderID(*got.Results[0].OrderID) {
 		t.Fatalf("exit_order_id = %s, want %s", got.Results[0].ExitOrderID, oeq.ExitOrderID(*got.Results[0].OrderID))
 	}
-	open, err := pub.calls[0].event.DecodeOpenOrder()
-	if err != nil {
-		t.Fatalf("DecodeOpenOrder: %v", err)
+	open := pub.calls[0].event.Open
+	if open == nil {
+		t.Fatal("published event is not an open order")
 	}
 	if open.TakeProfitPrice == nil || *open.TakeProfitPrice != 150 || open.StopLossPrice == nil || *open.StopLossPrice != 50 {
 		t.Fatalf("published triggers = (%v, %v), want (150, 50)", open.TakeProfitPrice, open.StopLossPrice)

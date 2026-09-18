@@ -55,7 +55,7 @@ func TestGroupViewAggregates(t *testing.T) {
 // boundary and the bucket's new aggregate, not the raw price.
 func TestHubBucketsDeltaForGroupedClient(t *testing.T) {
 	h := newTestHub(&fakeSource{}, testMarket)
-	h.handleEvent(publicEvent(t, marketdata.EventSnapshot, "e1", 1, marketdata.Snapshot{
+	h.handleEvent(publicEvent("e1", 1, marketdata.Snapshot{
 		Epoch: "e1", Seq: 1, Market: testMarket,
 		Bids: []marketdata.BookLevel{{Price: 102, Quantity: 1}},
 	}))
@@ -65,7 +65,7 @@ func TestHubBucketsDeltaForGroupedClient(t *testing.T) {
 	recv(t, c.ch) // drop initial bucketed snapshot
 
 	// New native level at 103 → bucket 100; it now holds 102(1) + 103(4) = 5.
-	h.handleEvent(publicEvent(t, marketdata.EventBook, "e1", 2, marketdata.Book{Side: "buy", Price: 103, Quantity: 4}))
+	h.handleEvent(publicEvent("e1", 2, marketdata.Book{Side: "buy", Price: 103, Quantity: 4}))
 
 	var msg bookMsg
 	frame := recv(t, c.ch)

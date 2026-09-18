@@ -79,21 +79,13 @@ func newUserClient(uid uuid.UUID) *userclient {
 	return &userclient{userID: uid, ch: make(chan []byte, clientSendBuffer)}
 }
 
-func publicEvent(t *testing.T, typ marketdata.EventType, epoch string, seq uint64, payload any) event {
-	t.Helper()
-	env, err := marketdata.NewEnvelope(epoch, seq, typ, testMarket, 0, payload)
-	if err != nil {
-		t.Fatalf("NewEnvelope: %v", err)
-	}
-	return event{routingKey: marketdata.PublicKey(testMarket, typ), envelope: env}
+func publicEvent(epoch string, seq uint64, payload marketdata.Payload) event {
+	env := marketdata.NewEnvelope(epoch, seq, testMarket, 0, payload)
+	return event{routingKey: marketdata.PublicKey(testMarket, env.Type), envelope: env}
 }
 
-func orderEvent(t *testing.T, uid uuid.UUID, u marketdata.OrderUpdate) event {
-	t.Helper()
-	env, err := marketdata.NewEnvelope("e1", 0, marketdata.EventOrder, testMarket, 0, u)
-	if err != nil {
-		t.Fatalf("NewEnvelope: %v", err)
-	}
+func orderEvent(uid uuid.UUID, u marketdata.OrderUpdate) event {
+	env := marketdata.NewEnvelope("e1", 0, testMarket, 0, u)
 	return event{routingKey: marketdata.PrivateKey(uid.String(), marketdata.EventOrder), envelope: env}
 }
 
@@ -133,7 +125,7 @@ func assertEmpty(t *testing.T, ch chan []byte) {
 // A connecting market client's first frame is a snapshot of the current cached book.
 func TestHubMarketRegisterSendsSnapshot(t *testing.T) {
 	h := newTestHub(&fakeSource{}, testMarket)
-	h.handleEvent(publicEvent(t, marketdata.EventSnapshot, "e1", 5, marketdata.Snapshot{
+	h.handleEvent(publicEvent("e1", 5, marketdata.Snapshot{
 		Epoch: "e1", Seq: 5, Market: testMarket,
 		Bids: []marketdata.BookLevel{{Price: 100, Quantity: 2}},
 	}))
@@ -149,20 +141,20 @@ func TestHubMarketRegisterSendsSnapshot(t *testing.T) {
 // In-order book deltas and trades are forwarded; a gapped delta is dropped by the cache.
 func TestHubMarketForwardsAndGaps(t *testing.T) {
 	h := newTestHub(&fakeSource{}, testMarket)
-	h.handleEvent(publicEvent(t, marketdata.EventSnapshot, "e1", 5, marketdata.Snapshot{Epoch: "e1", Seq: 5, Market: testMarket}))
+	h.handleEvent(publicEvent("e1", 5, marketdata.Snapshot{Epoch: "e1", Seq: 5, Market: testMarket}))
 	c := newMarketClient(testMarket, 1)
 	h.handleRegister(c)
 	recv(t, c.ch) // drop initial snapshot
 
-	h.handleEvent(publicEvent(t, marketdata.EventBook, "e1", 6, marketdata.Book{Side: "buy", Price: 100, Quantity: 3}))
+	h.handleEvent(publicEvent("e1", 6, marketdata.Book{Side: "buy", Price: 100, Quantity: 3}))
 	if got := frameType(t, recv(t, c.ch)); got != "book" {
 		t.Fatalf("frame = %q, want book", got)
 	}
-	h.handleEvent(publicEvent(t, marketdata.EventTrade, "e1", 6, marketdata.Trade{Price: 100, Quantity: 1, TakerSide: "buy"}))
+	h.handleEvent(publicEvent("e1", 6, marketdata.Trade{Price: 100, Quantity: 1, TakerSide: "buy"}))
 	if got := frameType(t, recv(t, c.ch)); got != "trade" {
 		t.Fatalf("frame = %q, want trade", got)
 	}
-	h.handleEvent(publicEvent(t, marketdata.EventBook, "e1", 8, marketdata.Book{Side: "buy", Price: 100, Quantity: 9})) // skips 7
+	h.handleEvent(publicEvent("e1", 8, marketdata.Book{Side: "buy", Price: 100, Quantity: 9})) // skips 7
 	assertEmpty(t, c.ch)
 }
 
@@ -211,7 +203,7 @@ func TestHubOrderIsolation(t *testing.T) {
 	h.handleRegister(ac)
 	h.handleRegister(bc)
 
-	h.handleEvent(orderEvent(t, alice, marketdata.OrderUpdate{OrderID: "o1", Status: "filled", Filled: 5}))
+	h.handleEvent(orderEvent(alice, marketdata.OrderUpdate{OrderID: uuid.New(), Status: "filled", Filled: 5}))
 
 	if got := frameType(t, recv(t, ac.ch)); got != "order" {
 		t.Fatalf("alice frame = %q, want order", got)
@@ -222,7 +214,7 @@ func TestHubOrderIsolation(t *testing.T) {
 // An order event for a user with no connection on this instance is a no-op (and does not panic).
 func TestHubOrderNoConnection(t *testing.T) {
 	h := newTestHub(&fakeSource{}, testMarket)
-	h.handleEvent(orderEvent(t, uuid.New(), marketdata.OrderUpdate{OrderID: "o1", Status: "open"}))
+	h.handleEvent(orderEvent(uuid.New(), marketdata.OrderUpdate{OrderID: uuid.New(), Status: "open"}))
 }
 
 // A user can reconnect after disconnecting: the binding is unbound on the last disconnect and the
@@ -286,7 +278,7 @@ func TestHubUserMultipleConnections(t *testing.T) {
 // handleDepthRequest resolves the current cache into sorted, bucketed levels for a served market.
 func TestHubHandleDepthRequestReturnsBucketedLevels(t *testing.T) {
 	h := newTestHub(&fakeSource{}, testMarket)
-	h.handleEvent(publicEvent(t, marketdata.EventSnapshot, "e1", 1, marketdata.Snapshot{
+	h.handleEvent(publicEvent("e1", 1, marketdata.Snapshot{
 		Epoch: "e1", Seq: 1, Market: testMarket,
 		Bids: []marketdata.BookLevel{{Price: 103, Quantity: 4}, {Price: 98, Quantity: 10}},
 		Asks: []marketdata.BookLevel{{Price: 106, Quantity: 2}},
@@ -324,7 +316,7 @@ func TestHubHandleDepthRequestUnknownMarket(t *testing.T) {
 // channel plumbing (not just the pure handleDepthRequest logic) works end to end.
 func TestHubDepthRoundTrip(t *testing.T) {
 	h := newTestHub(&fakeSource{}, testMarket)
-	h.handleEvent(publicEvent(t, marketdata.EventSnapshot, "e1", 1, marketdata.Snapshot{
+	h.handleEvent(publicEvent("e1", 1, marketdata.Snapshot{
 		Epoch: "e1", Seq: 1, Market: testMarket,
 		Bids: []marketdata.BookLevel{{Price: 100, Quantity: 2}},
 		Asks: []marketdata.BookLevel{{Price: 101, Quantity: 4}},

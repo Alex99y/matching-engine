@@ -57,14 +57,11 @@ func TestPublishMarketQueueNotFound(t *testing.T) {
 		logger.NewLogger(logger.Error), &rabbitmq.RabbitMQClient{}, nil, nil,
 	)
 
-	event, err := order_events_queue.NewCancelOrderEvent(&order_events_queue.CancelOrderEvent{
+	event := order_events_queue.NewCancelOrderEvent(&order_events_queue.CancelOrderEvent{
 		MarketRef: "ETH-USDT",
 	})
-	if err != nil {
-		t.Fatalf("NewCancelOrderEvent: %v", err)
-	}
 
-	err = pub.Publish(context.Background(), "msg-1", "ETH-USDT", event)
+	err := pub.Publish(context.Background(), "msg-1", "ETH-USDT", event)
 	if !errors.Is(err, orderqueue.ErrMarketQueueNotFound) {
 		t.Fatalf("err = %v, want wrapping ErrMarketQueueNotFound", err)
 	}
@@ -76,12 +73,9 @@ func TestPublishMarketQueueNotFoundRecordsErrorMetric(t *testing.T) {
 		logger.NewLogger(logger.Error), &rabbitmq.RabbitMQClient{}, nil, am,
 	)
 
-	event, err := order_events_queue.NewCancelOrderEvent(&order_events_queue.CancelOrderEvent{
+	event := order_events_queue.NewCancelOrderEvent(&order_events_queue.CancelOrderEvent{
 		MarketRef: "ETH-USDT",
 	})
-	if err != nil {
-		t.Fatalf("NewCancelOrderEvent: %v", err)
-	}
 	if err := pub.Publish(context.Background(), "msg-1", "ETH-USDT", event); err == nil {
 		t.Fatal("expected an error")
 	}

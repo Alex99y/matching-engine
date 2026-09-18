@@ -59,6 +59,29 @@ Client → POST /orders
 
 The API does not wait for the match result. The client tracks the final state via WebSocket (fed by Queue 2) or by polling `GET /orders/{id}`.
 
+### Wire format
+
+Every body on both queues is Protocol Buffers, `content-type: application/protobuf`. The schema
+lives in `common/proto/me/v1/` (`OrderCommand` for this queue, `Event` for Queue 2), generated
+into `common/pkg/pb/me/v1` (package `mev1`) by `make proto` (protoc + protoc-gen-go pinned to the
+vendored runtime; the generated files are committed). No `.proto` names a Go import path: the
+Makefile derives each file's package from its directory (`proto/me/v1` → `pkg/pb/me/v1`, named
+after the directory without its slashes) and the module path from `common/go.mod`, so the
+schema stays language-neutral and a new directory needs no configuration. Only the codecs touch
+the generated types: `core/pkg/order_events_queue` and `common/pkg/marketdata` convert to and
+from the domain structs the rest of the code uses.
+
+Field 1 of every envelope is `uint32 version`, reserved in every schema version forever
+(`common/proto/me/header.proto`, package `me`). A consumer reads it first (`me.Version`) and
+decodes with the matching package; an incompatible change is a new `me.v2` directory next to
+`me.v1`, never an edit to it. A body of a version this build does not know is refused as
+`unsupported schema version N` — on this queue that dead-letters it as `malformed` with that
+error text.
+
+After a schema change: edit the `.proto`, `make proto`, commit the generated files, and run
+`go work vendor` at the workspace root before any local build or Docker image (the root `vendor/`
+is gitignored but, when present, forces `-mod=vendor`).
+
 ### Core consumer flow
 
 ```
@@ -73,8 +96,9 @@ The consumer is kept free of I/O — it validates (no DB access) and enqueues. C
 does **not** acknowledge the message. Under **ack-after-commit**, ownership of the ack/nack
 travels with the event to the matcher, which acknowledges only once the transaction that
 persists the order has committed. A command that can never be processed — malformed, invalid,
-or of an unknown type — is instead parked in the dead-letter queue and acked immediately, since
-it has no DB effect and retrying it would only fail again.
+or of an unknown type — is instead **rejected without requeue**: the broker moves it to the
+market's dead-letter queue in that same operation (see *Dead letters* below), since it has no DB
+effect and retrying it would only fail again.
 
 > **Why not ack on enqueue?** Acking the moment the order is buffered would lose it on a
 > commit failure — gone from the broker, never written to the DB. Deferring the ack to
@@ -172,6 +196,51 @@ COMMIT;
 > handling `NULL`s natively. Each statement is skipped when it has nothing to write.
 
 ---
+
+## Dead letters
+
+A command the matcher can never process is rejected without requeue. Every command queue is
+declared with `x-dead-letter-exchange = me.dlx`, so the reject and the park are one broker
+operation: the message lands on `me.dlq.<market>` (bound to `me.dlx` under the market ref) and is
+never redelivered to the matcher, never dropped. Four things get rejected: a message that does
+not parse (`malformed`), a well-formed order that fails `ValidateOrderEvent` against the market's
+constraints (`invalid`), an envelope of a type core does not handle (`unknown_type`), and an
+order that failed to commit deterministically `maxOrderFailures` times in isolation (`poison`).
+
+Core runs one `deadletter.Consumer` per served market that drains that market's parking queue
+into the `dead_letters` table, which is what operators read:
+
+```
+GET /admin/dlq?market=ETH-USDT&limit=50      → cli dlq list [--market] [--limit] [--json]
+```
+
+**The reason is recomputed, not remembered.** The broker records only that a message was
+rejected (`x-death`: queue, count, time). Classification is a pure function of the payload and
+the market's constraints — `deadletter.Classify`, the same function the matcher used on delivery —
+so the consumer re-derives `malformed` / `unknown_type` / `invalid` exactly, at any time, after
+any restart. A payload that classifies as processable can only be on the parking queue because it
+was poison, so that is what it is recorded as. The single value that is not a function of the
+payload is the poison error text (which DB constraint fired): the matcher hands it to the consumer
+through an in-process `PoisonErrors` map just before rejecting, best effort; a restart between the
+reject and the consume leaves `"see core log at dead_at"` on that one row. Two consequences: the
+consumer must run in the same process as the matcher that rejects (hence one parking queue per
+market, drained by the core serving it), and it validates against the market's *current*
+constraints, so a market edited in that same window could re-classify an `invalid` as `poison`.
+
+The consumer acks only after the row is written; a database error nacks the message and waits a
+second before the next attempt (`me_core_dlq_persist_failures_total`), so a dead letter can be
+delayed but not lost. The insert skips a row that already exists for the same message, market,
+event type and dead-at, so a redelivery after a crash between insert and ack adds nothing.
+`dead_letters.payload` is JSONB: the command rendered with `protojson` when the body decodes
+(`"version"`, then `"open"` or `"cancel"`; UUIDs show as base64 because they are `bytes` on the
+wire), otherwise `{"raw_base64": "…"}` holding the exact bytes, so a malformed or wrong-version
+body is kept whole. `dead_letters.status` is `parked` for every row today; replay / discard will
+be an `UPDATE` on it plus a republish of the payload re-encoded from either shape.
+
+⚠️ Upgrading to this topology is breaking: a queue cannot gain `x-dead-letter-exchange` after
+the fact (`PRECONDITION_FAILED`, and both api and core crash-loop on the declare). Delete the
+command queues before starting the new binaries — `make stack-down` (the deps compose drops its
+volumes) or `rabbitmqctl delete_queue <market>` per market — and run migration `000005`.
 
 ## Queue 2 — Event log (core → world)
 

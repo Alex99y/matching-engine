@@ -56,18 +56,23 @@ These helpers live in `common/pkg/marketdata` (`PublicKey`, `PrivateKey`, `Marke
 Events are split into **public** (anyone) and **private** (only the owning user). This split is
 a **security boundary** enforced at the broker, not a convenience — see ⚠️ below.
 
-Wire format: every event is a JSON `Envelope` (`common/pkg/marketdata`):
+Wire format: every event is a protobuf `me.v1.Event` (`common/proto/me/v1/events.proto`,
+`content-type: application/protobuf`), which `common/pkg/marketdata` decodes into an `Envelope`:
 
 ```go
 type Envelope struct {
-    Epoch   string          // per-core-instance UUID — changes on every core restart
-    Seq     uint64          // per-market monotonic counter, advanced on each book delta
-    Type    EventType       // "trade" | "book" | "heartbeat" | "snapshot" | "order"
-    Market  string          // omitted for private events
-    Ts      int64           // unix milliseconds
-    Payload json.RawMessage // type-specific DTO below
+    Epoch   string    // per-core-instance UUID — changes on every core restart
+    Seq     uint64    // per-market monotonic counter, advanced on each book delta
+    Type    EventType // "trade" | "book" | "heartbeat" | "snapshot" | "order" — derived from Payload
+    Market  string    // empty for private events
+    Ts      int64     // unix milliseconds
+    Payload Payload   // one of the DTOs below (the wire's oneof); consumers switch on its type
 }
 ```
+
+Field 1 of the wire message is the schema version (`common/proto/me/header.proto`); a body of a
+version the api does not know is dropped with an `unsupported schema version` log line, and the
+cache re-syncs from the next snapshot it can read. See `core/ARCHITECTURE.md` § Wire format.
 
 Amounts in the internal `core→api` envelope are `uint64` (native ticks). JS-safe string
 encoding is applied at the SSE edge, not here.

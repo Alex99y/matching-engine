@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package me.v1;
+
+import "me/v1/types.proto";
+
+// The event log core → api on the me.events topic exchange (docs/event-log.md).
+
+message Trade {
+  uint64 price = 1;
+  uint64 quantity = 2;
+  OrderSide taker_side = 3;
+}
+
+message Book {
+  OrderSide side = 1;
+  uint64 price = 2;
+  uint64 quantity = 3;
+}
+
+message Heartbeat {}
+
+message BookLevel {
+  uint64 price = 1;
+  uint64 quantity = 2;
+}
+
+message Snapshot {
+  string epoch = 1;
+  uint64 seq = 2;
+  string market = 3;
+  repeated BookLevel bids = 4;
+  repeated BookLevel asks = 5;
+}
+
+// status is a free string on purpose: the set grows with engine features and the wire must not
+// gate it.
+message OrderUpdate {
+  bytes order_id = 1;
+  string status = 2;
+  uint64 filled = 3;
+  uint64 remaining = 4;
+}
+
+message Event {
+  uint32 version = 1;
+  string epoch = 2;
+  uint64 seq = 3;
+  string market = 4;
+  int64 ts = 5;
+  oneof payload {
+    Trade trade = 10;
+    Book book = 11;
+    Heartbeat heartbeat = 12;
+    Snapshot snapshot = 13;
+    OrderUpdate order = 14;
+  }
+}

@@ -91,7 +91,7 @@ func (o *OrderBook) recordOrderUpdate(userID, orderID uuid.UUID, status string, 
 	o.stream.orders = append(o.stream.orders, orderEvent{
 		userID: userID,
 		update: marketdata.OrderUpdate{
-			OrderID:   orderID.String(),
+			OrderID:   orderID,
 			Status:    status,
 			Filled:    filled,
 			Remaining: remaining,
