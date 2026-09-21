@@ -1021,7 +1021,15 @@ components:
           enum: [gtc, ioc, fok]
           description: Time in force. gtc is only valid for limit orders.
         market: { type: string, description: "Market ref, e.g. ETH-USDT." }
-        price: { type: integer, format: int64, minimum: 0, description: In the market's price_quantum units. }
+        price:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >-
+            In the market's price_quantum units. A limit price more than
+            MAX_PRICE_DEVIATION_PERCENT (default 10%) away from the market's last trade is
+            rejected with "price out of band: …" once the api knows that trade; the band does not
+            apply to market orders or to take_profit_price / stop_loss_price.
         quantity: { type: integer, format: int64, minimum: 0, description: In the market's amount_quantum units. }
         quote_qty: { type: integer, format: int64, minimum: 0 }
         expires_at: { type: integer, format: int64, description: unix seconds. Only meaningful for gtc orders. }

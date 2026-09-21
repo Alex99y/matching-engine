@@ -28,8 +28,12 @@ func (f fakeValidator) ValidateToken(ctx context.Context, rawToken string) (*mid
 }
 
 func newTestApp(repo orders.OrderRepository, cache orders.CacheService, pub orders.OrderCommandPublisher) *fiber.App {
+	return newTestAppWithLastPrice(repo, cache, pub, fakeLastPrice{})
+}
+
+func newTestAppWithLastPrice(repo orders.OrderRepository, cache orders.CacheService, pub orders.OrderCommandPublisher, last fakeLastPrice) *fiber.App {
 	log := logger.NewLogger(logger.Error)
-	svc := orders.NewOrderService(log, repo, cache, pub)
+	svc := orders.NewOrderService(log, repo, cache, pub, last, testPriceBandPercent)
 	h := orders.NewOrderHandler(log, svc)
 	auth := fiber.Handler(middleware.Auth(log, fakeValidator{userID: uuid.New()}))
 
@@ -252,6 +256,37 @@ func TestCreateOrderHandlerForwardsPostOnly(t *testing.T) {
 	}
 	if !open.PostOnly {
 		t.Fatalf("published event PostOnly = false, want true")
+	}
+}
+
+// An out-of-band price is the caller's mistake, so the per-item error must say so — with the
+// numbers — rather than fall through to "internal error".
+func TestCreateOrderHandlerReportsPriceOutOfBand(t *testing.T) {
+	pub := &fakePublisher{}
+	app := newTestAppWithLastPrice(&fakeOrderRepository{}, btcUsdtCache(), pub, fakeLastPrice{"BTC-USDT": 80_000})
+
+	resp, err := app.Test(jsonRequest("POST", "/orders/", []orders.CreateOrderRequest{
+		{OrderSide: oeq.SellOrder, OrderType: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel, Market: "BTC-USDT", Price: 90_000, Quantity: 5},
+	}))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 (every order in the batch was rejected)", resp.StatusCode)
+	}
+
+	var got orders.BatchCreateOrderResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Results) != 1 || got.Results[0].Error == nil {
+		t.Fatalf("results = %+v, want one rejection", got.Results)
+	}
+	if want := "price out of band: limit price 90000 is more than 10% from the last trade at 80000"; *got.Results[0].Error != want {
+		t.Fatalf("error = %q, want %q", *got.Results[0].Error, want)
+	}
+	if len(pub.calls) != 0 {
+		t.Fatalf("published %d events for an out-of-band price, want 0", len(pub.calls))
 	}
 }
 

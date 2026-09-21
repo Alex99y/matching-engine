@@ -111,18 +111,22 @@ func main() {
 	publisher := orderqueue.NewOrderCommandPublisher(log, rabbitmqClient, marketRefs, apiMetrics)
 
 	orderRepository := repository.NewOrderRepository(log, postgresqlClient, dbMetrics, apiConfig.DBQueryTimeout)
-	orderService := orders.NewOrderService(log, orderRepository, cacheService, publisher)
-	orderHandler := orders.NewOrderHandler(log, orderService)
-
-	candleRepository := repository.NewCandleRepository(log, postgresqlClient, apiConfig.DBQueryTimeout)
-	candleService := candles.NewCandleService(log, candleRepository)
-	candleHandler := candles.NewCandleHandler(log, candleService, marketIDs)
 
 	streamHub, err := stream.NewHub(rabbitmqClient, marketRefs, log, apiMetrics)
 	if err != nil {
 		panic(err)
 	}
+	if err := streamHub.SeedLastPrices(ctx, orderRepository, marketIDs); err != nil {
+		panic(err)
+	}
 	go streamHub.Run(ctx)
+
+	orderService := orders.NewOrderService(log, orderRepository, cacheService, publisher, streamHub, apiConfig.MaxPriceDeviationPercent)
+	orderHandler := orders.NewOrderHandler(log, orderService)
+
+	candleRepository := repository.NewCandleRepository(log, postgresqlClient, apiConfig.DBQueryTimeout)
+	candleService := candles.NewCandleService(log, candleRepository)
+	candleHandler := candles.NewCandleHandler(log, candleService, marketIDs)
 
 	candleHub, err := stream.NewCandleHub(rabbitmqClient, marketRefs, marketIDs, candleRepository, log)
 	if err != nil {

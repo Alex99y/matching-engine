@@ -107,6 +107,10 @@ services:
       PORT: "4000"
       HOST: 0.0.0.0
       METRICS_PORT: "9091"
+      # The suite hands each test its own price band, 1% apart and anchored above the best bid,
+      # and two auth tests rest bids far below any quote on purpose. With the last-trade guard on,
+      # most of those orders would be refused, so it is off here (see TODO-internal.MD).
+      MAX_PRICE_DEVIATION_PERCENT: "0"
     ports:
       - "4000:4000"
     depends_on:

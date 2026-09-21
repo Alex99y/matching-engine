@@ -274,7 +274,7 @@ func (o *OrderHandler) CreateOrder(c fiber.Ctx) error {
 				errStr = "market not found"
 			case errors.Is(err, ErrDuplicateClientOrderID):
 				errStr = "client_order_id already used"
-			case errors.Is(err, ErrInvalidOrder):
+			case errors.Is(err, ErrInvalidOrder), errors.Is(err, ErrPriceOutOfBand):
 				// err.Error() = "invalid order: <validation detail>" — safe to expose
 				errStr = err.Error()
 			default:
