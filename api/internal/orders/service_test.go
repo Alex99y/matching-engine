@@ -111,8 +111,24 @@ func (f *fakePublisher) Publish(ctx context.Context, messageId string, marketRef
 	return f.err
 }
 
+// fakeLastPrice answers LastPrice from a fixed map; a market not in it has never traded.
+type fakeLastPrice map[string]uint64
+
+func (f fakeLastPrice) LastPrice(marketRef string) (uint64, bool) {
+	p, ok := f[marketRef]
+	return p, ok
+}
+
+// testPriceBandPercent is the production default; the fixtures below carry no last price, so
+// existing tests never hit the band unless they set one.
+const testPriceBandPercent = 10
+
 func newTestService(repo orders.OrderRepository, cache orders.CacheService, pub orders.OrderCommandPublisher) *orders.OrderService {
-	return orders.NewOrderService(logger.NewLogger(logger.Error), repo, cache, pub)
+	return newTestServiceWithLastPrice(repo, cache, pub, fakeLastPrice{}, testPriceBandPercent)
+}
+
+func newTestServiceWithLastPrice(repo orders.OrderRepository, cache orders.CacheService, pub orders.OrderCommandPublisher, last fakeLastPrice, percent uint) *orders.OrderService {
+	return orders.NewOrderService(logger.NewLogger(logger.Error), repo, cache, pub, last, percent)
 }
 
 func btcUsdtCache() *fakeCacheService {
@@ -517,5 +533,83 @@ func TestBatchCancelOrdersRepositoryErrorFailsWholeBatch(t *testing.T) {
 	_, err := svc.BatchCancelOrders(context.Background(), uuid.New(), []uuid.UUID{uuid.New()})
 	if err == nil {
 		t.Fatal("expected an error when the repository lookup fails")
+	}
+}
+
+// The price band is a fat-finger guard on the limit price only: it needs a last trade to measure
+// against, it is inclusive at both edges, and it leaves market orders and bracket triggers alone.
+func TestPublishOrderToQueuePriceBand(t *testing.T) {
+	const last = 80_000
+	tests := []struct {
+		name     string
+		last     fakeLastPrice
+		percent  uint
+		order    orders.OrderToPublish
+		rejected bool
+	}{
+		{"no last trade yet", fakeLastPrice{}, 10, limitAt(90_000), false},
+		{"within the band", fakeLastPrice{"BTC-USDT": last}, 10, limitAt(85_000), false},
+		{"on the upper edge", fakeLastPrice{"BTC-USDT": last}, 10, limitAt(88_000), false},
+		{"on the lower edge", fakeLastPrice{"BTC-USDT": last}, 10, limitAt(72_000), false},
+		{"above the band", fakeLastPrice{"BTC-USDT": last}, 10, limitAt(88_001), true},
+		{"below the band", fakeLastPrice{"BTC-USDT": last}, 10, limitAt(71_999), true},
+		{"band disabled", fakeLastPrice{"BTC-USDT": last}, 0, limitAt(200_000), false},
+		{"wider band", fakeLastPrice{"BTC-USDT": last}, 50, limitAt(119_000), false},
+		{"market order has no price to check", fakeLastPrice{"BTC-USDT": last}, 10, orders.OrderToPublish{
+			MarketID: "BTC-USDT", Side: oeq.BuyOrder, Type: oeq.MarketOrder, TimeInForce: oeq.ImmediateOrCancel, QuoteQty: ptr(uint64(1_000)),
+		}, false},
+		{"triggers may sit far from the market", fakeLastPrice{"BTC-USDT": last}, 10, orders.OrderToPublish{
+			MarketID: "BTC-USDT", Side: oeq.BuyOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+			Price: 80_000, Quantity: 5, TakeProfitPrice: ptr(uint64(120_000)), StopLossPrice: ptr(uint64(40_000)),
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pub := &fakePublisher{}
+			svc := newTestServiceWithLastPrice(&fakeOrderRepository{}, btcUsdtCache(), pub, tt.last, tt.percent)
+
+			_, err := svc.PublishOrderToQueue(context.Background(), uuid.New(), &tt.order)
+
+			if errors.Is(err, orders.ErrPriceOutOfBand) != tt.rejected {
+				t.Fatalf("err = %v, want rejected=%v", err, tt.rejected)
+			}
+			if !tt.rejected && err != nil {
+				t.Fatalf("PublishOrderToQueue: %v", err)
+			}
+			if published := len(pub.calls); published != map[bool]int{false: 1, true: 0}[tt.rejected] {
+				t.Fatalf("published %d events, rejected=%v", published, tt.rejected)
+			}
+		})
+	}
+}
+
+// The band is checked after the structural validation and before the client-order-id lookup:
+// a malformed order is reported as such, and an out-of-band one never costs a database round trip.
+func TestPublishOrderToQueuePriceBandOrdering(t *testing.T) {
+	repo := &fakeOrderRepository{}
+	svc := newTestServiceWithLastPrice(repo, btcUsdtCache(), &fakePublisher{}, fakeLastPrice{"BTC-USDT": 80_000}, 10)
+
+	invalid := limitAt(200_000)
+	invalid.Quantity = 0
+	if _, err := svc.PublishOrderToQueue(context.Background(), uuid.New(), &invalid); !errors.Is(err, orders.ErrInvalidOrder) {
+		t.Fatalf("err = %v, want ErrInvalidOrder before the band is consulted", err)
+	}
+
+	outOfBand := limitAt(200_000)
+	outOfBand.ClientOrderID = strings.Repeat("a", 32)
+	if _, err := svc.PublishOrderToQueue(context.Background(), uuid.New(), &outOfBand); !errors.Is(err, orders.ErrPriceOutOfBand) {
+		t.Fatalf("err = %v, want ErrPriceOutOfBand", err)
+	}
+	if repo.gotClientOrderIDCheck != "" {
+		t.Fatal("an out-of-band order must be refused before the client_order_id lookup")
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func limitAt(price uint64) orders.OrderToPublish {
+	return orders.OrderToPublish{
+		MarketID: "BTC-USDT", Side: oeq.SellOrder, Type: oeq.LimitOrder, TimeInForce: oeq.GoodTillCancel,
+		Price: price, Quantity: 5,
 	}
 }

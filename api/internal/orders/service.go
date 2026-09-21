@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/alex99y/matching-engine/api/pkg/utils"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
 	"github.com/alex99y/matching-engine/common/pkg/uuidv7"
 	"github.com/alex99y/matching-engine/core/pkg/order_events_queue"
@@ -20,6 +21,7 @@ var (
 	ErrOrderNotFound          = errors.New("order not found")
 	ErrInvalidLimit           = errors.New("limit must be between 1 and 100")
 	ErrDuplicateClientOrderID = errors.New("client_order_id already used")
+	ErrPriceOutOfBand         = errors.New("price out of band")
 )
 
 type OrderToPublish struct {
@@ -76,11 +78,19 @@ type OrderCommandPublisher interface {
 	Publish(ctx context.Context, messageId string, marketRef string, event *order_events_queue.OrderEvent) error
 }
 
+// LastPriceSource is the live view of each market's last trade. ok is false until the market has
+// traded since the api started or was seeded at boot; the price band is not enforced until then.
+type LastPriceSource interface {
+	LastPrice(marketRef string) (price uint64, ok bool)
+}
+
 type OrderService struct {
-	logger          *logger.Logger
-	orderRepository OrderRepository
-	cacheService    CacheService
-	publisher       OrderCommandPublisher
+	logger                   *logger.Logger
+	orderRepository          OrderRepository
+	cacheService             CacheService
+	publisher                OrderCommandPublisher
+	lastPrice                LastPriceSource
+	maxPriceDeviationPercent uint64
 }
 
 func (o *OrderService) GetOrderByID(ctx context.Context, userID uuid.UUID, id uuid.UUID) (*repository.OrderRow, error) {
@@ -184,6 +194,9 @@ func (o *OrderService) PublishOrderToQueue(
 	); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidOrder, err)
 	}
+	if err := o.checkPriceBand(order); err != nil {
+		return nil, err
+	}
 
 	if order.ClientOrderID != "" {
 		exists, err := o.orderRepository.ClientOrderIDExists(ctx, userID, order.ClientOrderID)
@@ -249,11 +262,25 @@ func (o *OrderService) BatchCancelOrders(ctx context.Context, userID uuid.UUID, 
 	return results, nil
 }
 
+func (o *OrderService) checkPriceBand(order *OrderToPublish) error {
+	if o.maxPriceDeviationPercent == 0 || order.Type != order_events_queue.LimitOrder {
+		return nil
+	}
+	last, ok := o.lastPrice.LastPrice(order.MarketID)
+	if !ok || utils.WithinPercent(order.Price, last, o.maxPriceDeviationPercent) {
+		return nil
+	}
+	return fmt.Errorf("%w: limit price %d is more than %d%% from the last trade at %d",
+		ErrPriceOutOfBand, order.Price, o.maxPriceDeviationPercent, last)
+}
+
 func NewOrderService(
 	logger *logger.Logger,
 	orderRepository OrderRepository,
 	cacheService CacheService,
 	publisher OrderCommandPublisher,
+	lastPrice LastPriceSource,
+	maxPriceDeviationPercent uint,
 ) *OrderService {
 	if logger == nil {
 		panic("logger cannot be nil")
@@ -267,11 +294,16 @@ func NewOrderService(
 	if publisher == nil {
 		panic("publisher cannot be nil")
 	}
+	if lastPrice == nil {
+		panic("last price source cannot be nil")
+	}
 
 	return &OrderService{
-		logger:          logger,
-		orderRepository: orderRepository,
-		cacheService:    cacheService,
-		publisher:       publisher,
+		logger:                   logger,
+		orderRepository:          orderRepository,
+		cacheService:             cacheService,
+		publisher:                publisher,
+		lastPrice:                lastPrice,
+		maxPriceDeviationPercent: uint64(maxPriceDeviationPercent),
 	}
 }

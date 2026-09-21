@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/alex99y/matching-engine/common/pkg/logger"
@@ -46,6 +47,7 @@ func newTestHub(source eventSource, markets ...string) *Hub {
 		caches:       map[string]*bookCache{},
 		marketGroups: map[string]map[uint64]*groupView{},
 		userClients:  map[string]map[*userclient]struct{}{},
+		lastPrice:    map[string]*atomic.Uint64{},
 		events:       make(chan event, eventBuffer),
 		register:     make(chan client),
 		unregister:   make(chan client),
@@ -55,6 +57,7 @@ func newTestHub(source eventSource, markets ...string) *Hub {
 	for _, m := range markets {
 		h.caches[m] = newBookCache()
 		h.marketGroups[m] = map[uint64]*groupView{}
+		h.lastPrice[m] = new(atomic.Uint64)
 	}
 	return h
 }
@@ -356,5 +359,78 @@ func TestHubUserBindFailureDropsClient(t *testing.T) {
 	}
 	if _, ok := h.userClients[uid.String()]; ok {
 		t.Fatal("failed registration should leave no user index entry")
+	}
+}
+
+// fakeLastPriceSeeder answers LoadLastPrice per market id, or fails for every market.
+type fakeLastPriceSeeder struct {
+	prices map[int]uint64
+	err    error
+}
+
+func (f *fakeLastPriceSeeder) LoadLastPrice(ctx context.Context, marketID int) (uint64, bool, error) {
+	if f.err != nil {
+		return 0, false, f.err
+	}
+	p, ok := f.prices[marketID]
+	return p, ok, nil
+}
+
+// The last trade price is what the order path's fat-finger guard reads: unknown until the market
+// trades, then always the most recent fill, and never something for a market this hub does not
+// serve.
+func TestHubLastPriceFollowsTheTape(t *testing.T) {
+	h := newTestHub(&fakeSource{}, testMarket)
+
+	if price, ok := h.LastPrice(testMarket); ok {
+		t.Fatalf("LastPrice before any trade = (%d, %v), want unknown", price, ok)
+	}
+
+	h.handleEvent(publicEvent("e1", 1, marketdata.Trade{Price: 80_000, Quantity: 1, TakerSide: "buy"}))
+	h.handleEvent(publicEvent("e1", 1, marketdata.Trade{Price: 80_500, Quantity: 2, TakerSide: "sell"}))
+
+	if price, ok := h.LastPrice(testMarket); !ok || price != 80_500 {
+		t.Fatalf("LastPrice = (%d, %v), want (80500, true)", price, ok)
+	}
+	if price, ok := h.LastPrice("NOPE-NOPE"); ok {
+		t.Fatalf("LastPrice for an unserved market = (%d, %v), want unknown", price, ok)
+	}
+}
+
+// The seed arms the guard for markets that traded before this api started, but the stream is the
+// newer source: a price it already recorded must survive a later, staler seed.
+func TestHubSeedLastPricesFillsOnlyUntradedMarkets(t *testing.T) {
+	h := newTestHub(&fakeSource{}, testMarket, "ETH-USDT", "SOL-USDT")
+	ids := map[string]int{testMarket: 1, "ETH-USDT": 2, "SOL-USDT": 3}
+	h.handleEvent(event{
+		routingKey: marketdata.PublicKey("ETH-USDT", marketdata.EventTrade),
+		envelope:   marketdata.NewEnvelope("e1", 1, "ETH-USDT", 0, marketdata.Trade{Price: 3_100, Quantity: 1, TakerSide: "buy"}),
+	})
+
+	seeder := &fakeLastPriceSeeder{prices: map[int]uint64{1: 80_000, 2: 2_900}} // SOL never traded
+	if err := h.SeedLastPrices(context.Background(), seeder, ids); err != nil {
+		t.Fatalf("SeedLastPrices: %v", err)
+	}
+
+	if price, ok := h.LastPrice(testMarket); !ok || price != 80_000 {
+		t.Fatalf("seeded BTC = (%d, %v), want (80000, true)", price, ok)
+	}
+	if price, ok := h.LastPrice("ETH-USDT"); !ok || price != 3_100 {
+		t.Fatalf("streamed ETH = (%d, %v), want the stream's 3100 kept over the seed's 2900", price, ok)
+	}
+	if price, ok := h.LastPrice("SOL-USDT"); ok {
+		t.Fatalf("untraded SOL = (%d, %v), want unknown", price, ok)
+	}
+}
+
+func TestHubSeedLastPricesReportsWhatItCannotLoad(t *testing.T) {
+	h := newTestHub(&fakeSource{}, testMarket)
+
+	if err := h.SeedLastPrices(context.Background(), &fakeLastPriceSeeder{}, map[string]int{}); !errors.Is(err, ErrMarketNotServed) {
+		t.Fatalf("err without a market id = %v, want ErrMarketNotServed", err)
+	}
+	dbDown := errors.New("connection refused")
+	if err := h.SeedLastPrices(context.Background(), &fakeLastPriceSeeder{err: dbDown}, map[string]int{testMarket: 1}); !errors.Is(err, dbDown) {
+		t.Fatalf("err = %v, want the repository error wrapped", err)
 	}
 }

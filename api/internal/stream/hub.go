@@ -2,7 +2,9 @@ package stream
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/alex99y/matching-engine/api/internal/metrics"
 	"github.com/alex99y/matching-engine/common/pkg/logger"
@@ -15,12 +17,20 @@ import (
 // consumer back-pressures briefly — and any genuinely missed delta self-heals via the next snapshot.
 const eventBuffer = 4096
 
+var ErrMarketNotServed = errors.New("market not served by this hub")
+
 // eventSource is the subset of rabbitmq.Subscriber the Hub needs (interface in the consumer, for
 // testability). Bind/UnbindPattern drive the dynamic per-user private bindings.
 type eventSource interface {
 	Subscribe(ctx context.Context, handler rabbitmq.ExchangeHandler) error
 	BindPattern(pattern string) error
 	UnbindPattern(pattern string) error
+}
+
+// lastPriceSeeder is the one database read the Hub makes: each market's last trade before the
+// stream took over.
+type lastPriceSeeder interface {
+	LoadLastPrice(ctx context.Context, marketID int) (price uint64, traded bool, err error)
 }
 
 // type Envelope interface {
@@ -43,11 +53,15 @@ type Hub struct {
 	caches       map[string]*bookCache               // market -> canonical L2 cache
 	marketGroups map[string]map[uint64]*groupView    // market -> grouping -> bucketed view + clients
 	userClients  map[string]map[*userclient]struct{} // userID -> connected user clients
-	events       chan event
-	register     chan client
-	unregister   chan client
-	depthReq     chan depthRequest
-	done         chan struct{}
+	// lastPrice is the one piece of market state read off the Hub goroutine (by every limit order
+	// the API accepts), so it bypasses the actor loop: the map is fixed at construction and each
+	// value is an atomic, 0 until the market's first trade.
+	lastPrice  map[string]*atomic.Uint64
+	events     chan event
+	register   chan client
+	unregister chan client
+	depthReq   chan depthRequest
+	done       chan struct{}
 }
 
 // Run starts the consume goroutine and the actor loop, returning when ctx is cancelled.
@@ -148,6 +162,7 @@ func (h *Hub) handleEvent(e event) {
 		}
 
 	case marketdata.Trade:
+		h.lastPrice[env.Market].Store(p.Price)
 		h.broadcastMarket(env.Market, tradeFrame(p))
 
 	case marketdata.Heartbeat:
@@ -335,6 +350,37 @@ func (h *Hub) broadcastUserEnv(userID string, frame []byte) {
 	}
 }
 
+// LastPrice is the market's most recent trade price; ok is false until one has been seen or
+// seeded. Safe to call from any goroutine.
+func (h *Hub) LastPrice(market string) (price uint64, ok bool) {
+	p, served := h.lastPrice[market]
+	if !served {
+		return 0, false
+	}
+	price = p.Load()
+	return price, price != 0
+}
+
+// SeedLastPrices loads each served market's last trade from the database so LastPrice answers
+// from the first request rather than the first trade. A trade the stream has already recorded is
+// never overwritten, so it is safe to call before or after Run.
+func (h *Hub) SeedLastPrices(ctx context.Context, seeder lastPriceSeeder, marketIDs map[string]int) error {
+	for market, p := range h.lastPrice {
+		id, ok := marketIDs[market]
+		if !ok {
+			return fmt.Errorf("seed last price: %w: %s", ErrMarketNotServed, market)
+		}
+		price, traded, err := seeder.LoadLastPrice(ctx, id)
+		if err != nil {
+			return fmt.Errorf("seed last price %s: %w", market, err)
+		}
+		if traded {
+			p.CompareAndSwap(0, price)
+		}
+	}
+	return nil
+}
+
 // closeAll tears down every client on shutdown so their stream writers return promptly.
 func (h *Hub) closeAll() {
 	for _, groups := range h.marketGroups {
@@ -400,6 +446,7 @@ func NewHub(rmqClient *rabbitmq.RabbitMQClient, markets []string, log *logger.Lo
 		caches:       make(map[string]*bookCache, len(markets)),
 		marketGroups: make(map[string]map[uint64]*groupView, len(markets)),
 		userClients:  make(map[string]map[*userclient]struct{}),
+		lastPrice:    make(map[string]*atomic.Uint64, len(markets)),
 		events:       make(chan event, eventBuffer),
 		register:     make(chan client),
 		unregister:   make(chan client),
@@ -409,6 +456,7 @@ func NewHub(rmqClient *rabbitmq.RabbitMQClient, markets []string, log *logger.Lo
 	for _, market := range markets {
 		h.caches[market] = newBookCache()
 		h.marketGroups[market] = make(map[uint64]*groupView)
+		h.lastPrice[market] = new(atomic.Uint64)
 	}
 	// Pre-create the bounded stream series at zero so dashboards render flat-zero from boot instead
 	// of "No data" (mirrors the core publisher's pre-binding).
