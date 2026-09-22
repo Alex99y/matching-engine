@@ -278,6 +278,11 @@ func (o *OrderBook) settleTakerCompletion(t *Order, rests bool, result *reposito
 	if !rests {
 		keep = 0
 	}
+	// Defensive: held >= keep should always hold
+	if keep > held {
+		o.logger.Error("orderbook: settleTakerCompletion invariant violated, held < keep, clamping release to zero")
+		keep = held
+	}
 	if release := held - keep; release > 0 {
 		releaseBlocked(result, t.OpenOrder.UserID, o.haveInstr(t.OpenOrder.Side), release)
 	}
